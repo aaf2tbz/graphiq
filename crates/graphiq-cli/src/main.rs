@@ -57,6 +57,12 @@ enum Commands {
         db: PathBuf,
     },
     Demo,
+    Setup {
+        #[arg(long, value_name = "PATH")]
+        project: Option<PathBuf>,
+        #[arg(long)]
+        skip_index: bool,
+    },
     #[cfg(feature = "embed")]
     EmbedTest {
         text: Option<String>,
@@ -91,6 +97,10 @@ fn main() {
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
         Commands::Demo => cmd_demo(),
+        Commands::Setup {
+            project,
+            skip_index,
+        } => cmd_setup(project.as_deref(), skip_index),
         #[cfg(feature = "embed")]
         Commands::EmbedTest { text } => cmd_embed_test(text.as_deref().unwrap_or("hello world")),
     }
@@ -351,6 +361,329 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
             std::process::exit(1);
         }
     }
+}
+
+fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
+    use serde_json::{json, Value};
+
+    fn pretty(v: &Value) -> String {
+        serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
+    }
+
+    println!("╭──────────────────────────────────────────────╮");
+    println!("│            GraphIQ Setup                      │");
+    println!("╰──────────────────────────────────────────────╯");
+    println!();
+
+    let project_path = match project {
+        Some(p) => {
+            let resolved = if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                match std::env::current_dir() {
+                    Ok(cwd) => cwd.join(p),
+                    Err(_) => p.to_path_buf(),
+                }
+            };
+            let resolved = resolved.canonicalize().unwrap_or(resolved);
+            if !resolved.join(".git").exists() {
+                eprintln!("  warning: {} is not a git repository", resolved.display());
+            }
+            resolved
+        }
+        None => match std::env::current_dir() {
+            Ok(cwd) => {
+                let mut candidate = cwd.as_path().canonicalize().unwrap_or_else(|_| cwd.clone());
+                loop {
+                    if candidate.join(".git").exists() {
+                        break candidate;
+                    }
+                    if !candidate.pop() {
+                        break cwd;
+                    }
+                }
+            }
+            Err(_) => {
+                eprintln!("  error: cannot determine current directory");
+                std::process::exit(1);
+            }
+        },
+    };
+
+    println!("  Project: {}", project_path.display());
+    println!();
+
+    let mut configured: Vec<String> = Vec::new();
+    let graphiq_bin = which_graphiq();
+
+    let claude_config =
+        dirs::config_dir().map(|d| d.join("Claude").join("claude_desktop_config.json"));
+
+    if let Some(ref config_path) = claude_config {
+        if config_path.exists() || config_path.parent().map_or(false, |p| p.exists()) {
+            let project_str = project_path.display().to_string();
+            let entry = json!({
+                "command": "graphiq-mcp",
+                "args": [project_str]
+            });
+
+            let (config, written) = if config_path.exists() {
+                match std::fs::read_to_string(config_path) {
+                    Ok(content) => {
+                        let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+                        let servers = parsed
+                            .as_object_mut()
+                            .unwrap()
+                            .entry("mcpServers")
+                            .or_insert_with(|| json!({}))
+                            .as_object_mut()
+                            .unwrap();
+                        let already = servers
+                            .get("graphiq")
+                            .and_then(|v| v.get("args"))
+                            .and_then(|a| a.as_array())
+                            .and_then(|arr| arr.first())
+                            .and_then(|v| v.as_str())
+                            .map_or(false, |s| s == project_str);
+                        if already {
+                            servers.insert("graphiq".into(), entry);
+                            (pretty(&parsed), false)
+                        } else {
+                            servers.insert("graphiq".into(), entry);
+                            (pretty(&parsed), true)
+                        }
+                    }
+                    Err(_) => {
+                        let obj = json!({"mcpServers": {"graphiq": entry}});
+                        (pretty(&obj), true)
+                    }
+                }
+            } else {
+                let obj = json!({"mcpServers": {"graphiq": entry}});
+                (pretty(&obj), true)
+            };
+
+            if let Some(parent) = config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::write(config_path, &config) {
+                Ok(()) => {
+                    let status = if written { "configured" } else { "updated" };
+                    println!("  Claude Desktop: {} {}", status, config_path.display());
+                    configured.push("Claude Desktop".to_string());
+                }
+                Err(e) => {
+                    eprintln!("  Claude Desktop: failed to write config: {e}");
+                }
+            }
+        }
+    }
+
+    let opencode_config =
+        dirs::home_dir().map(|d| d.join(".config").join("opencode").join("opencode.json"));
+
+    if let Some(ref config_path) = opencode_config {
+        let project_str = project_path.display().to_string();
+        let entry = json!({
+            "type": "local",
+            "command": ["graphiq-mcp"],
+            "args": [project_str],
+            "enabled": true
+        });
+
+        let (config, written) = if config_path.exists() {
+            match std::fs::read_to_string(config_path) {
+                Ok(content) => {
+                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+                    let mcp = parsed
+                        .as_object_mut()
+                        .unwrap()
+                        .entry("mcp")
+                        .or_insert_with(|| json!({}))
+                        .as_object_mut()
+                        .unwrap();
+                    let already = mcp
+                        .get("graphiq")
+                        .and_then(|v| v.get("args"))
+                        .and_then(|a| a.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|v| v.as_str())
+                        .map_or(false, |s| s == project_str);
+                    mcp.insert("graphiq".into(), entry);
+                    (pretty(&parsed), !already)
+                }
+                Err(_) => {
+                    let obj = json!({"mcp": {"graphiq": entry}});
+                    (pretty(&obj), true)
+                }
+            }
+        } else {
+            let obj = json!({"mcp": {"graphiq": entry}});
+            (pretty(&obj), true)
+        };
+
+        if let Some(parent) = config_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::write(config_path, &config) {
+            Ok(()) => {
+                let status = if written { "configured" } else { "updated" };
+                println!("  opencode:      {} {}", status, config_path.display());
+                configured.push("opencode".to_string());
+            }
+            Err(e) => {
+                eprintln!("  opencode:      failed to write config: {e}");
+            }
+        }
+    }
+
+    let codex_config = dirs::home_dir().map(|d| d.join(".codex").join("config.json"));
+
+    if let Some(ref config_path) = codex_config {
+        let project_str = project_path.display().to_string();
+        let entry = json!({
+            "command": "graphiq-mcp",
+            "args": [project_str]
+        });
+
+        let (config, written) = if config_path.exists() {
+            match std::fs::read_to_string(config_path) {
+                Ok(content) => {
+                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+                    let servers = parsed
+                        .as_object_mut()
+                        .unwrap()
+                        .entry("mcpServers")
+                        .or_insert_with(|| json!({}))
+                        .as_object_mut()
+                        .unwrap();
+                    let already = servers
+                        .get("graphiq")
+                        .and_then(|v| v.get("args"))
+                        .and_then(|a| a.as_array())
+                        .and_then(|arr| arr.first())
+                        .and_then(|v| v.as_str())
+                        .map_or(false, |s| s == project_str);
+                    servers.insert("graphiq".into(), entry);
+                    (pretty(&parsed), !already)
+                }
+                Err(_) => {
+                    let obj = json!({"mcpServers": {"graphiq": entry}});
+                    (pretty(&obj), true)
+                }
+            }
+        } else {
+            let obj = json!({"mcpServers": {"graphiq": entry}});
+            (pretty(&obj), true)
+        };
+
+        if let Some(parent) = config_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::write(config_path, &config) {
+            Ok(()) => {
+                let status = if written { "configured" } else { "updated" };
+                println!("  Codex:         {} {}", status, config_path.display());
+                configured.push("Codex".to_string());
+            }
+            Err(e) => {
+                eprintln!("  Codex:         failed to write config: {e}");
+            }
+        }
+    }
+
+    if configured.is_empty() {
+        println!("  No harness configs found to update.");
+        println!("  You can manually configure graphiq-mcp as an MCP server:");
+        println!("    graphiq-mcp {}", project_path.display());
+    }
+
+    println!();
+
+    if !skip_index {
+        let db_path = project_path.join(".graphiq").join("graphiq.db");
+        if let Some(parent) = db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        if db_path.exists() {
+            let _ = std::fs::remove_file(&db_path);
+        }
+
+        let db = match graphiq_core::db::GraphDb::open(&db_path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("  error opening database: {e}");
+                std::process::exit(1);
+            }
+        };
+
+        print!("  Indexing {} ... ", project_path.display());
+        let indexer = graphiq_core::index::Indexer::new(&db);
+        match indexer.index_project(&project_path) {
+            Ok(stats) => {
+                println!("done");
+                println!(
+                    "    {} files, {} symbols, {} edges",
+                    stats.files_indexed, stats.symbols_indexed, stats.edges_inserted
+                );
+            }
+            Err(e) => {
+                println!("failed");
+                eprintln!("  index error: {e}");
+            }
+        }
+    } else {
+        println!("  Skipping index (--skip-index)");
+    }
+
+    println!();
+    println!("── Ready ──");
+    println!();
+
+    if !configured.is_empty() {
+        println!("  GraphIQ is configured for: {}", configured.join(", "));
+        println!("  Restart your harness(es) to pick up the new MCP server.");
+    }
+
+    println!();
+    println!("  Try it:");
+    println!(
+        "    graphiq search \"rate limit middleware\" --db {}/.graphiq/graphiq.db",
+        project_path.display()
+    );
+    println!(
+        "    graphiq blast RateLimiter --db {}/.graphiq/graphiq.db",
+        project_path.display()
+    );
+    println!("    graphiq demo");
+
+    if let Some(ref bin_path) = graphiq_bin {
+        println!();
+        println!("  MCP server: {} <project>", bin_path.display());
+        println!("  Installed at: {}", bin_path.display());
+    }
+
+    println!();
+}
+
+fn which_graphiq() -> Option<PathBuf> {
+    let graphiq_mcp = std::env::current_exe().ok()?;
+    let bin_name = graphiq_mcp.file_name()?.to_str()?.to_string();
+    if bin_name == "graphiq" {
+        let mut p = graphiq_mcp.clone();
+        p.set_file_name("graphiq-mcp");
+        if p.exists() {
+            return Some(p);
+        }
+        if let Some(parent) = graphiq_mcp.parent() {
+            let alt = parent.join("graphiq-mcp");
+            if alt.exists() {
+                return Some(alt);
+            }
+        }
+    }
+    None
 }
 
 fn cmd_demo() {
