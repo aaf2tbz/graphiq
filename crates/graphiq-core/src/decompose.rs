@@ -342,4 +342,35 @@ mod tests {
         assert!(all_terms.iter().any(|t| t == "indexer"));
         assert!(all_terms.iter().any(|t| t == "symbol"));
     }
+
+    #[test]
+    fn test_guard_rails_non_abstract() {
+        assert!(!is_abstract_query("RateLimiter"));
+        assert!(!is_abstract_query("rate limit"));
+        assert!(!is_abstract_query("cache"));
+        assert!(!is_abstract_query("bm25 full text search"));
+        assert!(!is_abstract_query("edge"));
+        assert!(!is_abstract_query("insert symbol database"));
+        assert!(!is_abstract_query("compute blast radius"));
+        assert!(!is_abstract_query("all edge kinds"));
+        assert!(!is_abstract_query("all language parsers"));
+        assert!(!is_abstract_query("symbol.rs"));
+        assert!(!is_abstract_query("graph.rs"));
+        assert!(!is_abstract_query("DbError"));
+        assert!(!is_abstract_query("rerank"));
+        assert!(!is_abstract_query("bounded_bfs"));
+        assert!(!is_abstract_query("tokenize"));
+        assert!(!is_abstract_query("HotCache"));
+    }
+
+    #[test]
+    fn test_decomposed_search_returns_none_for_non_abstract() {
+        let db = crate::db::GraphDb::open_in_memory().unwrap();
+        let result = decomposed_search(&db, "RateLimiter", 10, false);
+        assert!(result.is_none());
+        let result = decomposed_search(&db, "rate limit", 10, false);
+        assert!(result.is_none());
+        let result = decomposed_search(&db, "cache", 10, false);
+        assert!(result.is_none());
+    }
 }
