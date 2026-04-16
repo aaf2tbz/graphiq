@@ -30,6 +30,41 @@ impl Default for HeuristicConfig {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct EvidenceChannels {
+    pub lexical: bool,
+    pub structural: bool,
+    pub test: bool,
+    pub path: bool,
+    pub hints: bool,
+}
+
+impl EvidenceChannels {
+    pub fn count(&self) -> usize {
+        [
+            self.lexical,
+            self.structural,
+            self.test,
+            self.path,
+            self.hints,
+        ]
+        .iter()
+        .filter(|&&b| b)
+        .count()
+    }
+
+    pub fn agreement_mult(&self) -> f64 {
+        match self.count() {
+            0 => 0.9,
+            1 => 0.95,
+            2 => 1.05,
+            3 => 1.12,
+            4 => 1.18,
+            _ => 1.22,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ScoreBreakdown {
     pub layer2_score: f64,
@@ -38,6 +73,8 @@ pub struct ScoreBreakdown {
     pub path_weight: f64,
     pub diversity_dampen: f64,
     pub final_score: f64,
+    pub channels: EvidenceChannels,
+    pub channel_agreement: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -300,6 +337,14 @@ impl Reranker {
                 }
             };
 
+            let mut channels = EvidenceChannels::default();
+            channels.lexical = name_exact > 1.0;
+            channels.structural = !c.is_fts_hit;
+            channels.test = test_boost > 1.0;
+            channels.path = file_path_boost > 1.0;
+            channels.hints = full_coverage > 1.0;
+            let channel_agreement = channels.agreement_mult();
+
             let heuristic_multiplier = density
                 * entry_boost
                 * export_boost
@@ -309,7 +354,8 @@ impl Reranker {
                 * name_exact
                 * module_shadow
                 * file_path_boost
-                * full_coverage;
+                * full_coverage
+                * channel_agreement;
 
             if self.debug {
                 c.breakdown = Some(ScoreBreakdown {
@@ -325,11 +371,14 @@ impl Reranker {
                         ("module_shadow", module_shadow),
                         ("file_path_boost", file_path_boost),
                         ("full_coverage", full_coverage),
+                        ("channel_agree", channel_agreement),
                     ],
                     heuristic_multiplier,
                     path_weight: 1.0,
                     diversity_dampen: 1.0,
                     final_score: c.score * heuristic_multiplier,
+                    channels,
+                    channel_agreement,
                 });
             }
 
