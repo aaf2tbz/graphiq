@@ -26,7 +26,7 @@ impl Default for FtsConfig {
                 4.0,  // signature
                 1.0,  // source
                 3.0,  // doc_comment
-                2.0,  // file_path
+                3.5,  // file_path
                 0.5,  // kind
                 0.5,  // language
                 5.0,  // search_hints
@@ -59,7 +59,18 @@ impl<'a> FtsSearch<'a> {
             return Vec::new();
         }
 
-        let and_query = build_fts_query(&tokens, false);
+        let content_tokens: Vec<String> = tokens
+            .iter()
+            .filter(|t| !is_stop_word(t))
+            .cloned()
+            .collect();
+
+        let and_tokens = if content_tokens.len() >= 2 {
+            &content_tokens
+        } else {
+            &tokens
+        };
+        let and_query = build_fts_query(and_tokens, false);
         let results = self.run_fts_query(&and_query, limit);
 
         if results.len() < 10 {
@@ -154,6 +165,86 @@ fn tokenize_query(query: &str) -> Vec<String> {
         .map(|t| t.to_lowercase())
         .filter(|t| t.len() >= 2)
         .collect()
+}
+
+fn is_stop_word(token: &str) -> bool {
+    matches!(
+        token,
+        "the"
+            | "a"
+            | "an"
+            | "is"
+            | "are"
+            | "was"
+            | "were"
+            | "be"
+            | "been"
+            | "being"
+            | "have"
+            | "has"
+            | "had"
+            | "do"
+            | "does"
+            | "did"
+            | "will"
+            | "would"
+            | "could"
+            | "should"
+            | "may"
+            | "might"
+            | "can"
+            | "shall"
+            | "of"
+            | "in"
+            | "to"
+            | "for"
+            | "on"
+            | "at"
+            | "by"
+            | "with"
+            | "from"
+            | "as"
+            | "into"
+            | "through"
+            | "and"
+            | "or"
+            | "but"
+            | "not"
+            | "no"
+            | "if"
+            | "that"
+            | "this"
+            | "these"
+            | "those"
+            | "it"
+            | "its"
+            | "my"
+            | "your"
+            | "his"
+            | "her"
+            | "their"
+            | "all"
+            | "each"
+            | "every"
+            | "any"
+            | "some"
+            | "how"
+            | "what"
+            | "which"
+            | "who"
+            | "when"
+            | "where"
+            | "why"
+            | "there"
+            | "here"
+            | "than"
+            | "then"
+            | "so"
+            | "up"
+            | "out"
+            | "about"
+            | "just"
+    )
 }
 
 fn build_fts_query(tokens: &[String], is_or: bool) -> String {

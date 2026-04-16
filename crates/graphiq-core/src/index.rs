@@ -355,6 +355,14 @@ impl<'a> Indexer<'a> {
 
             hints.push(name_decomposed.clone());
 
+            let morph_hints: Vec<String> = name_decomposed
+                .split_whitespace()
+                .filter_map(|w| morphological_variants(w))
+                .collect();
+            if !morph_hints.is_empty() {
+                hints.push(morph_hints.join(" "));
+            }
+
             if let Some(ref doc) = doc_comment {
                 if !doc.is_empty() {
                     let cleaned = doc.lines().take(3).collect::<Vec<_>>().join(" ");
@@ -751,6 +759,32 @@ fn extract_module_name(path: &str) -> Option<String> {
         return None;
     }
     Some(crate::tokenize::decompose_identifier(name))
+}
+
+fn morphological_variants(word: &str) -> Option<String> {
+    let variants: Vec<&str> = match word {
+        "expand" => vec!["expansion", "expanding"],
+        "expander" => vec!["expansion", "expand"],
+        "parse" => vec!["parser", "parsers", "parsing"],
+        "parser" => vec!["parse", "parsers", "parsing"],
+        "chunk" => vec!["chunker", "chunking"],
+        "chunker" => vec!["chunk", "parser", "parsing"],
+        "search" => vec!["searching", "searcher"],
+        "index" => vec!["indexer", "indexing", "indices"],
+        "indexer" => vec!["index", "indexing"],
+        "rank" => vec!["ranking", "rerank", "reranking"],
+        "rerank" => vec!["ranking", "rank", "reranking"],
+        "token" => vec!["tokenizer", "tokenize", "tokenizing"],
+        "tokenize" => vec!["tokenizer", "token", "tokenizing"],
+        "cache" => vec!["caching", "cached"],
+        "blast" => vec!["blasting", "explosion"],
+        "embed" => vec!["embedding", "embeddings"],
+        "graph" => vec!["graphs", "graphing"],
+        "traverse" => vec!["traversal", "traversing"],
+        "decompose" => vec!["decomposition", "decomposing"],
+        _ => return None,
+    };
+    Some(variants.join(" "))
 }
 
 fn extract_source_terms(db: &GraphDb, symbol_id: i64) -> String {

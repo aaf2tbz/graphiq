@@ -223,13 +223,20 @@ impl Reranker {
                 1.0
             };
 
+            let module_shadow = if is_container_kind(sym.kind) && !self.query_tokens.is_empty() {
+                0.75
+            } else {
+                1.0
+            };
+
             let heuristic_multiplier = density
                 * entry_boost
                 * export_boost
                 * test_boost
                 * importance_factor
                 * recency
-                * name_exact;
+                * name_exact
+                * module_shadow;
 
             if self.debug {
                 c.breakdown = Some(ScoreBreakdown {
@@ -242,6 +249,7 @@ impl Reranker {
                         ("importance", importance_factor),
                         ("recency", recency),
                         ("name_exact", name_exact),
+                        ("module_shadow", module_shadow),
                     ],
                     heuristic_multiplier,
                     path_weight: 1.0,
@@ -303,6 +311,13 @@ fn is_entry_point(path: &str) -> bool {
     let path_lower = path.to_lowercase();
     let patterns = ["/main.", "/index.", "/app.", "/server.", "/mod.", "/lib."];
     patterns.iter().any(|p| path_lower.contains(p))
+}
+
+fn is_container_kind(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Module | SymbolKind::Namespace | SymbolKind::Section | SymbolKind::Import
+    )
 }
 
 #[cfg(test)]
