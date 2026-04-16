@@ -170,6 +170,7 @@ pub fn walk_project(root: &Path) -> impl Iterator<Item = PathBuf> {
     builder.filter_entry(|entry| {
         let name = entry.file_name().to_string_lossy();
         if name == ".git"
+            || name == ".github"
             || name == "node_modules"
             || name == "target"
             || name == ".graphiq"

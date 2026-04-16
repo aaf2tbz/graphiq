@@ -1,7 +1,7 @@
 use std::io::{BufRead, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
@@ -9,22 +9,141 @@ const SERVER_NAME: &str = "graphiq";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
+struct ServerState {
+    project_root: PathBuf,
+    db_path: PathBuf,
+    db: graphiq_core::db::GraphDb,
+    cache: graphiq_core::cache::HotCache,
+}
+
+fn resolve_project_root(raw: &str) -> PathBuf {
+    let mut path = PathBuf::from(raw);
+
+    if path.exists() && path.is_file() && path.extension().map_or(false, |e| e == "db") {
+        if let Some(parent) = path.parent() {
+            if parent.file_name().map_or(false, |n| n == ".graphiq") {
+                if let Some(project) = parent.parent() {
+                    path = project.to_path_buf();
+                }
+            }
+        }
+    }
+
+    let resolved = if path.is_absolute() {
+        path
+    } else {
+        match std::env::current_dir() {
+            Ok(cwd) => cwd.join(&path),
+            Err(_) => path,
+        }
+    };
+
+    let resolved = resolved.canonicalize().unwrap_or(resolved);
+
+    if !resolved.exists() {
+        return resolved;
+    }
+
+    let mut candidate = resolved.clone();
+    loop {
+        if candidate.join(".git").exists() {
+            log_err(&format!("detected git root: {}", candidate.display()));
+            return candidate;
+        }
+        if !candidate.pop() {
+            break;
+        }
+    }
+
+    log_err(&format!("no git root found, using: {}", resolved.display()));
+    resolved
+}
+
+fn resolve_db_path(project_root: &Path) -> PathBuf {
+    project_root.join(".graphiq").join("graphiq.db")
+}
+
+fn ensure_indexed(state: &mut ServerState) -> Result<(), String> {
+    let stats = state
+        .db
+        .stats()
+        .map_err(|e| format!("failed to read stats: {e}"))?;
+
+    if stats.files == 0 {
+        log_err("database is empty, auto-indexing...");
+        do_index(state)?;
+    }
+
+    Ok(())
+}
+
+fn do_index(state: &mut ServerState) -> Result<String, String> {
+    let db_path = &state.db_path;
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
+    }
+
+    let indexer = graphiq_core::index::Indexer::new(&state.db);
+    let result = indexer
+        .index_project(&state.project_root)
+        .map_err(|e| format!("index failed: {e}"))?;
+
+    state.cache = graphiq_core::cache::HotCache::with_defaults();
+    state.cache.prewarm(&state.db, 200);
+
+    let msg = format!(
+        "Indexed {} in {} files ({} symbols, {} edges)",
+        state.project_root.display(),
+        result.files_indexed,
+        result.symbols_indexed,
+        result.edges_inserted,
+    );
+    log_err(&msg);
+    Ok(msg)
+}
+
 fn main() {
-    let db_path = std::env::args()
-        .nth(1)
-        .unwrap_or_else(|| ".graphiq/graphiq.db".into());
-    let db_path = PathBuf::from(&db_path);
+    let raw_arg = std::env::args().nth(1).unwrap_or_else(|| ".".into());
+
+    let project_root = resolve_project_root(&raw_arg);
+    let db_path = resolve_db_path(&project_root);
+
+    log_err(&format!("project root: {}", project_root.display()));
+    log_err(&format!("db path: {}", db_path.display()));
+
+    if let Some(parent) = db_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
 
     let db = match graphiq_core::db::GraphDb::open(&db_path) {
         Ok(d) => d,
         Err(e) => {
-            log_err(&format!("failed to open database: {e}"));
-            send_error(-1, -32603, &format!("failed to open database: {e}"));
+            let msg = format!("failed to open database {}: {e}", db_path.display());
+            log_err(&msg);
+            send_error(-1, -32603, &msg);
             std::process::exit(1);
         }
     };
 
     let cache = graphiq_core::cache::HotCache::with_defaults();
+    let mut state = ServerState {
+        project_root: project_root.clone(),
+        db_path: db_path.clone(),
+        db,
+        cache,
+    };
+
+    if let Err(e) = ensure_indexed(&mut state) {
+        log_err(&format!("auto-index failed: {e}"));
+        send_error(-1, -32603, &format!("failed to auto-index project: {e}"));
+        std::process::exit(1);
+    }
+
+    state.cache.prewarm(&state.db, 200);
+    log_err("ready");
+
+    let state = Arc::new(Mutex::new(state));
     let running = Arc::new(AtomicBool::new(true));
 
     let stdin = std::io::stdin();
@@ -57,7 +176,7 @@ fn main() {
             }
         };
 
-        if let Err(e) = handle_message(&msg, &db, &cache, &running, &mut stdout) {
+        if let Err(e) = handle_message(&msg, &state, &running, &mut stdout) {
             log_err(&format!("handler error: {e}"));
         }
     }
@@ -65,8 +184,7 @@ fn main() {
 
 fn handle_message(
     msg: &Value,
-    db: &graphiq_core::db::GraphDb,
-    cache: &graphiq_core::cache::HotCache,
+    state: &Arc<Mutex<ServerState>>,
     running: &Arc<AtomicBool>,
     out: &mut impl Write,
 ) -> Result<(), String> {
@@ -90,6 +208,7 @@ fn handle_message(
 
     match method {
         "initialize" => {
+            let s = state.lock().map_err(|e| e.to_string())?;
             let result = json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {
@@ -98,6 +217,10 @@ fn handle_message(
                 "serverInfo": {
                     "name": SERVER_NAME,
                     "version": SERVER_VERSION
+                },
+                "_meta": {
+                    "projectRoot": s.project_root.display().to_string(),
+                    "dbPath": s.db_path.display().to_string()
                 }
             });
             send_response(id, &result, out)?;
@@ -120,7 +243,7 @@ fn handle_message(
         }
         "tools/call" => {
             let params = msg.get("params").cloned().unwrap_or(json!({}));
-            let result = handle_tool_call(db, cache, params);
+            let result = handle_tool_call(state, params);
             send_response(id, &result, out)?;
         }
         "shutdown" => {
@@ -242,7 +365,15 @@ fn tools_list() -> Value {
             },
             {
                 "name": "status",
-                "description": "Get indexing status — file count, symbol count, edge count, and database size.",
+                "description": "Get indexing status — project root, file count, symbol count, edge count, and database size.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "index",
+                "description": "(Re)index the project. Call this after significant code changes to update the symbol database. Auto-called on first use if the database is empty.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {}
@@ -252,11 +383,7 @@ fn tools_list() -> Value {
     })
 }
 
-fn handle_tool_call(
-    db: &graphiq_core::db::GraphDb,
-    cache: &graphiq_core::cache::HotCache,
-    params: Value,
-) -> Value {
+fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
     let tool_name = match params.get("name").and_then(|v| v.as_str()) {
         Some(n) => n,
         None => {
@@ -271,10 +398,44 @@ fn handle_tool_call(
     }
 
     match tool_name {
-        "search" => tool_search(db, cache, arguments),
-        "blast" => tool_blast(db, arguments),
-        "context" => tool_context(db, cache, arguments),
-        "status" => tool_status(db),
+        "search" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_search(&s.db, &s.cache, arguments)
+        }
+        "blast" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_blast(&s.db, arguments)
+        }
+        "context" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_context(&s.db, &s.cache, arguments)
+        }
+        "status" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_status(&s)
+        }
+        "index" => {
+            let mut s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            match do_index(&mut s) {
+                Ok(msg) => tool_ok(msg),
+                Err(e) => tool_error(&e),
+            }
+        }
         _ => tool_error(&format!("unknown tool: {tool_name}")),
     }
 }
@@ -515,16 +676,16 @@ fn tool_context(
     tool_ok(lines.join("\n"))
 }
 
-fn tool_status(db: &graphiq_core::db::GraphDb) -> Value {
-    match db.stats() {
+fn tool_status(state: &ServerState) -> Value {
+    match state.db.stats() {
         Ok(stats) => {
-            let db_path = std::env::args()
-                .nth(1)
-                .unwrap_or_else(|| ".graphiq/graphiq.db".into());
-            let size = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+            let size = std::fs::metadata(&state.db_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
             let text = format!(
-                "GraphIQ v{}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB Size: {}",
+                "GraphIQ v{}\n  Project:  {}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB: {}",
                 SERVER_VERSION,
+                state.project_root.display(),
                 stats.files,
                 stats.symbols,
                 stats.edges,

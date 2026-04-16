@@ -103,15 +103,18 @@ graphiq-bench /path/to/project [db-path] [queries.json]
 
 ## MCP Server
 
-The `graphiq-mcp` binary speaks JSON-RPC 2.0 over stdio. Four tools:
+The `graphiq-mcp` binary speaks JSON-RPC 2.0 over stdio. Five tools:
 
 - **`search`** — ranked symbol search with optional file filter and top_k (max 50)
 - **`blast`** — blast radius analysis (forward/backward/both, depth 1-10)
 - **`context`** — full symbol source + structural neighborhood (callers, callees, members, parents, tests)
 - **`status`** — indexing stats with database size
+- **`index`** — (re)index the project on demand
+
+Pass a **project directory** — the server auto-detects the git root, creates `.graphiq/graphiq.db`, and indexes on first use if needed. You can also pass a subdirectory; it walks up to find the git root.
 
 ```bash
-graphiq-mcp /path/to/.graphiq/graphiq.db
+graphiq-mcp /path/to/project
 ```
 
 ### MCP Client Configuration
@@ -123,7 +126,7 @@ For **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_con
   "mcpServers": {
     "graphiq": {
       "command": "graphiq-mcp",
-      "args": ["/path/to/project/.graphiq/graphiq.db"]
+      "args": ["/path/to/project"]
     }
   }
 }
@@ -136,7 +139,33 @@ For **opencode** (in `.opencode.json` or project config):
   "mcpServers": {
     "graphiq": {
       "command": "graphiq-mcp",
-      "args": [".graphiq/graphiq.db"]
+      "args": ["."]
+    }
+  }
+}
+```
+
+For **Codex** (in project `.codex/config.json`):
+
+```json
+{
+  "mcpServers": {
+    "graphiq": {
+      "command": "graphiq-mcp",
+      "args": ["."]
+    }
+  }
+}
+```
+
+For **Hermes** (in project config):
+
+```json
+{
+  "mcpServers": {
+    "graphiq": {
+      "command": "graphiq-mcp",
+      "args": ["."]
     }
   }
 }
