@@ -551,7 +551,7 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
                     } else {
                         let mut cleaned = existing;
                         let section = format!(
-                            "\n[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"]\n",
+                            "\n[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"]\nenabled = true\n",
                             project_str
                         );
                         cleaned.push_str(&section);
@@ -565,7 +565,7 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
             }
         } else {
             let section = format!(
-                "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"]\n",
+                "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"]\nenabled = true\n",
                 project_str
             );
             (section, true)
@@ -579,6 +579,65 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
             }
             Err(e) => {
                 eprintln!("  Codex:         failed to write config: {e}");
+            }
+        }
+    }
+
+    let hermes_config = dirs::home_dir().map(|d| d.join(".hermes").join("config.yaml"));
+
+    if let Some(ref config_path) = hermes_config {
+        let project_str = project_path.display().to_string();
+
+        let (content, written) = if config_path.exists() {
+            match std::fs::read_to_string(config_path) {
+                Ok(existing) => {
+                    let has_graphiq =
+                        existing.contains("mcp_servers:") && existing.contains("graphiq:");
+                    if has_graphiq {
+                        let updated = regex::Regex::new(
+                            r"(?m)^(mcp_servers:\n(\s+graphiq:.*?)(?=\n\n|\n[a-z_]+:|\z))"
+                        )
+                        .map(|re| {
+                            let replacement = format!(
+                                "mcp_servers:\n  graphiq:\n    command: graphiq-mcp\n    args:\n      - {}\
+                                \n    enabled: true",
+                                project_str
+                            );
+                            re.replace(&existing, replacement.as_str()).to_string()
+                        })
+                        .unwrap_or_else(|_| existing.clone());
+                        (updated, false)
+                    } else {
+                        let section = format!(
+                            "\nmcp_servers:\n  graphiq:\n    command: graphiq-mcp\n    args:\n      - {}\n    enabled: true\n",
+                            project_str
+                        );
+                        let mut out = existing;
+                        out.push_str(&section);
+                        (out, true)
+                    }
+                }
+                Err(e) => {
+                    eprintln!("  Hermes:        failed to read config: {e}");
+                    return;
+                }
+            }
+        } else {
+            let section = format!(
+                "mcp_servers:\n  graphiq:\n    command: graphiq-mcp\n    args:\n      - {}\n    enabled: true\n",
+                project_str
+            );
+            (section, true)
+        };
+
+        match std::fs::write(config_path, &content) {
+            Ok(()) => {
+                let status = if written { "configured" } else { "updated" };
+                println!("  Hermes:        {} {}", status, config_path.display());
+                configured.push("Hermes".to_string());
+            }
+            Err(e) => {
+                eprintln!("  Hermes:        failed to write config: {e}");
             }
         }
     }

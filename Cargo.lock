@@ -1172,6 +1172,7 @@ dependencies = [
  "clap",
  "dirs",
  "graphiq-core",
+ "regex",
  "serde_json",
 ]
 
