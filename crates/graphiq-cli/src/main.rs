@@ -18,6 +18,9 @@ enum Commands {
         path: PathBuf,
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
+        #[cfg(feature = "embed")]
+        #[arg(long)]
+        embed: bool,
     },
     Search {
         query: String,
@@ -53,12 +56,20 @@ enum Commands {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
+    #[cfg(feature = "embed")]
+    EmbedTest { text: Option<String> },
 }
 
 fn main() {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Index { path, db } => cmd_index(&path, &db),
+        #[cfg(not(feature = "embed"))]
+        Commands::Index { path, db, .. } => cmd_index(&path, &db, false),
+        #[cfg(feature = "embed")]
+        Commands::Index {
+            path, db, embed, ..
+        } => cmd_index(&path, &db, embed),
+
         Commands::Search {
             query,
             db,
@@ -76,10 +87,12 @@ fn main() {
         } => cmd_blast(&symbol, &db, depth, &direction),
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
+        #[cfg(feature = "embed")]
+        Commands::EmbedTest { text } => cmd_embed_test(text.as_deref().unwrap_or("hello world")),
     }
 }
 
-fn cmd_index(path: &std::path::Path, db_path: &std::path::Path) {
+fn cmd_index(path: &std::path::Path, db_path: &std::path::Path, do_embed: bool) {
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
@@ -110,6 +123,24 @@ fn cmd_index(path: &std::path::Path, db_path: &std::path::Path) {
             println!("failed");
             eprintln!("error: {e}");
             std::process::exit(1);
+        }
+    }
+
+    if do_embed {
+        #[cfg(feature = "embed")]
+        {
+            eprintln!("Embedding symbols ...");
+            match indexer.embed_symbols(None) {
+                Ok(count) => eprintln!("  done ({} symbols embedded)", count),
+                Err(e) => {
+                    println!("failed");
+                    eprintln!("embed error: {e}");
+                }
+            }
+        }
+        #[cfg(not(feature = "embed"))]
+        {
+            eprintln!("embed feature not enabled — rebuild with --features embed");
         }
     }
 }
@@ -330,5 +361,38 @@ fn human_bytes(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / KB as f64)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+#[cfg(feature = "embed")]
+fn cmd_embed_test(text: &str) {
+    use graphiq_core::embed::Embedder;
+    use std::time::Instant;
+
+    eprintln!("Loading model...");
+    let t = Instant::now();
+    let embedder = match Embedder::new(None) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("FAILED to load model: {e}");
+            std::process::exit(1);
+        }
+    };
+    eprintln!("Model loaded in {:.1}s", t.elapsed().as_secs_f64());
+
+    eprintln!("Embedding {:?}...", text);
+    let t = Instant::now();
+    match embedder.embed_symbol_text(text) {
+        Ok(vec) => {
+            eprintln!("Done in {:.0}ms", t.elapsed().as_millis());
+            eprintln!("Dim: {}", vec.len());
+            eprintln!("First 5: {:?}", &vec[..5]);
+            let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+            eprintln!("L2 norm: {:.4}", norm);
+        }
+        Err(e) => {
+            eprintln!("FAILED to embed: {e}");
+            std::process::exit(1);
+        }
     }
 }

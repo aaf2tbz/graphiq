@@ -1,8 +1,7 @@
 use tree_sitter::Tree;
 
 use crate::chunker::{
-    extract_signature, fill_unclaimed_gaps, make_parsed_symbol, LanguageChunker,
-    ParsedSymbol,
+    extract_signature, fill_unclaimed_gaps, make_parsed_symbol, LanguageChunker, ParsedSymbol,
 };
 use crate::symbol::{SymbolKind, Visibility};
 

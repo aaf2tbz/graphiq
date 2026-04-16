@@ -105,6 +105,11 @@ impl<'a> SearchEngine<'a> {
         let reranker = Reranker::new(self.db, query.debug).for_query(&query.query);
         let mut results = reranker.rerank(&fts_results, &expanded, &file_paths, query.top_k);
 
+        #[cfg(feature = "embed")]
+        {
+            results = self.embed_rerank(&query.query, results);
+        }
+
         if let Some(ref filter) = query.file_filter {
             results.retain(|r| {
                 r.file_path
@@ -166,6 +171,101 @@ impl<'a> SearchEngine<'a> {
             Some(r) => r.flatten().collect(),
             None => HashMap::new(),
         }
+    }
+
+    #[cfg(feature = "embed")]
+    fn embed_rerank(&self, query_text: &str, mut results: Vec<ScoredSymbol>) -> Vec<ScoredSymbol> {
+        use crate::embed::{cosine_similarity, Embedder};
+
+        if results.is_empty() {
+            return results;
+        }
+
+        let is_nl = Self::looks_like_natural_language(query_text);
+        if !is_nl {
+            if results[0].score >= 3.0 {
+                return results;
+            }
+        }
+
+        let embedder = match Embedder::new(None) {
+            Ok(e) => e,
+            Err(_) => return results,
+        };
+        let query_embedding = match embedder.embed_symbol_text(query_text) {
+            Ok(e) => e,
+            Err(_) => return results,
+        };
+
+        let symbol_ids: Vec<i64> = results.iter().map(|r| r.symbol.id).collect();
+        let stored = match self.db.get_embeddings_batch(&symbol_ids) {
+            Ok(e) => e,
+            Err(_) => return results,
+        };
+        let embed_map: std::collections::HashMap<i64, Vec<f32>> = stored.into_iter().collect();
+        if !embed_map.values().any(|v| !v.is_empty()) {
+            return results;
+        }
+
+        if is_nl {
+            let all_embeds = match self.db.all_embeddings() {
+                Ok(e) => e,
+                Err(_) => {
+                    return results;
+                }
+            };
+            let existing_ids: std::collections::HashSet<i64> =
+                results.iter().map(|r| r.symbol.id).collect();
+
+            let mut best_extra: Vec<(i64, f64)> = all_embeds
+                .iter()
+                .filter(|(id, _)| !existing_ids.contains(id))
+                .filter_map(|(id, emb)| {
+                    let sim = cosine_similarity(&query_embedding, emb) as f64;
+                    if sim > 0.55 {
+                        Some((*id, sim))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            best_extra.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            let file_paths = self.load_file_paths();
+            for (sym_id, sim) in best_extra.iter().take(5) {
+                if let Ok(Some(sym)) = self.db.get_symbol(*sym_id) {
+                    let file_path = file_paths.get(&sym.file_id).cloned();
+                    results.push(ScoredSymbol {
+                        symbol: sym,
+                        score: *sim,
+                        file_path,
+                        breakdown: None,
+                        is_fts_hit: false,
+                    });
+                }
+            }
+        }
+
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        results.truncate(10);
+        results
+    }
+
+    fn looks_like_natural_language(query: &str) -> bool {
+        let words: Vec<&str> = query.split_whitespace().collect();
+        if words.len() < 3 {
+            return false;
+        }
+        let stop_words = [
+            "how", "what", "where", "why", "when", "does", "is", "are", "the", "a", "an", "to",
+            "from", "of", "in", "for", "with", "that", "this", "it", "do", "can", "will", "was",
+            "were", "been", "be", "has", "have", "had",
+        ];
+        let stop_count = words
+            .iter()
+            .filter(|w| stop_words.contains(&w.to_lowercase().as_str()))
+            .count();
+        stop_count as f64 / words.len() as f64 > 0.3
     }
 }
 

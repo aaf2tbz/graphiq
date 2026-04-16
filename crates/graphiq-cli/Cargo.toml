@@ -10,3 +10,7 @@ path = "src/main.rs"
 [dependencies]
 graphiq-core = { path = "../graphiq-core" }
 clap = { version = "4", features = ["derive"] }
+
+[features]
+default = []
+embed = ["graphiq-core/embed"]

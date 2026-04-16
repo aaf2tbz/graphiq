@@ -306,6 +306,62 @@ impl<'a> Indexer<'a> {
 
         Ok(stats)
     }
+
+    #[cfg(feature = "embed")]
+    pub fn embed_symbols(
+        &self,
+        cache_dir: Option<std::path::PathBuf>,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        use crate::embed::{build_symbol_text, Embedder};
+        use std::time::Instant;
+
+        let embedder = Embedder::new(cache_dir)?;
+        let conn = self.db.conn();
+        let mut stmt =
+            conn.prepare("SELECT id, name, signature, doc_comment, source FROM symbols")?;
+        let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .flatten()
+            .collect();
+
+        let total = rows.len();
+        eprintln!("  embedding {total} symbols ...");
+        let start = Instant::now();
+        let mut embedded = 0;
+
+        let batch_size = 32;
+        for chunk in rows.chunks(batch_size) {
+            let texts: Vec<String> = chunk
+                .iter()
+                .map(|(_, name, sig, doc, src)| build_symbol_text(name, sig, doc, src))
+                .collect();
+            let results = embedder.embed_batch(&texts);
+            for ((id, _, _, _, _), result) in chunk.iter().zip(results.into_iter()) {
+                if let Ok(vec) = result {
+                    let _ = self
+                        .db
+                        .put_embedding(*id, &vec, "jinaai/jina-embeddings-v2-base-code");
+                    embedded += 1;
+                }
+            }
+            eprintln!(
+                "  {}/{} ({:.0}ms/ea, ~{:.0}s remaining)",
+                embedded,
+                total,
+                start.elapsed().as_secs_f64() / embedded as f64 * 1000.0,
+                (start.elapsed().as_secs_f64() / embedded as f64) * (total - embedded) as f64
+            );
+        }
+        Ok(embedded)
+    }
 }
 
 fn resolve_symbol(name_map: &HashMap<String, Vec<i64>>, name: &str) -> Option<i64> {

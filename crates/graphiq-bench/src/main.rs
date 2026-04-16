@@ -19,6 +19,7 @@ struct BenchResult {
     category: String,
     found_rank: Option<usize>,
     hit_at_1: bool,
+    hit_at_3: bool,
     hit_at_5: bool,
     hit_at_10: bool,
     latency_us: u128,
@@ -112,6 +113,7 @@ fn main() {
             query: q.query.clone(),
             category: q.category.clone(),
             hit_at_1: found_rank.map_or(false, |r| r <= 1),
+            hit_at_3: found_rank.map_or(false, |r| r <= 3),
             hit_at_5: found_rank.map_or(false, |r| r <= 5),
             hit_at_10: found_rank.map_or(false, |r| r <= 10),
             found_rank,
@@ -122,6 +124,7 @@ fn main() {
 
     let total = results.len();
     let hits_1 = results.iter().filter(|r| r.hit_at_1).count();
+    let hits_3 = results.iter().filter(|r| r.hit_at_3).count();
     let hits_5 = results.iter().filter(|r| r.hit_at_5).count();
     let hits_10 = results.iter().filter(|r| r.hit_at_10).count();
 
@@ -147,6 +150,12 @@ fn main() {
         hits_1,
         total,
         hits_1 as f64 / total as f64 * 100.0
+    );
+    println!(
+        "Hit@3:    {}/{} ({:.0}%)",
+        hits_3,
+        total,
+        hits_3 as f64 / total as f64 * 100.0
     );
     println!(
         "Hit@5:    {}/{} ({:.0}%)",
@@ -212,13 +221,17 @@ fn main() {
             .filter_map(|r| r.found_rank.map(|rank| 1.0 / rank as f64))
             .sum::<f64>()
             / cat_total as f64;
+        let cat_hit3 = cat_results.iter().filter(|r| r.hit_at_3).count();
         let cat_hit5 = cat_results.iter().filter(|r| r.hit_at_5).count();
         let cat_hit10 = cat_results.iter().filter(|r| r.hit_at_10).count();
 
         println!(
-            "{:<20} MRR={:.3}  Hit@5={}/{} ({:.0}%)  Hit@10={}/{} ({:.0}%)",
+            "{:<20} MRR={:.3}  Hit@3={}/{} ({:.0}%)  Hit@5={}/{} ({:.0}%)  Hit@10={}/{} ({:.0}%)",
             cat,
             cat_mrr,
+            cat_hit3,
+            cat_total,
+            cat_hit3 as f64 / cat_total as f64 * 100.0,
             cat_hit5,
             cat_total,
             cat_hit5 as f64 / cat_total as f64 * 100.0,

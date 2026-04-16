@@ -109,6 +109,14 @@ CREATE TABLE IF NOT EXISTS blast_cache (
 );
 
 CREATE INDEX IF NOT EXISTS idx_blast_symbol ON blast_cache(symbol_id, direction);
+
+CREATE TABLE IF NOT EXISTS symbol_embeddings (
+    symbol_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+    embedding BLOB NOT NULL,
+    model TEXT NOT NULL DEFAULT 'gte-modernbert-base',
+    dim INTEGER NOT NULL DEFAULT 768,
+    PRIMARY KEY (symbol_id)
+);
 "#;
 
 #[derive(Debug, thiserror::Error)]
@@ -423,6 +431,135 @@ impl GraphDb {
         Ok(self
             .conn
             .query_row("SELECT COUNT(*) FROM file_edges", [], |row| row.get(0))?)
+    }
+
+    pub fn put_embedding(
+        &self,
+        symbol_id: i64,
+        embedding: &[f32],
+        model: &str,
+    ) -> Result<(), DbError> {
+        let bytes: Vec<u8> = embedding.iter().flat_map(|f| f.to_le_bytes()).collect();
+        self.conn.execute(
+            "INSERT OR REPLACE INTO symbol_embeddings (symbol_id, embedding, model, dim) VALUES (?1, ?2, ?3, ?4)",
+            params![symbol_id, bytes, model, embedding.len() as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_embedding(&self, symbol_id: i64) -> Result<Option<Vec<f32>>, DbError> {
+        let bytes: Option<Vec<u8>> = self
+            .conn
+            .query_row(
+                "SELECT embedding FROM symbol_embeddings WHERE symbol_id = ?1",
+                params![symbol_id],
+                |row| row.get(0),
+            )
+            .ok();
+        match bytes {
+            Some(b) => {
+                let embedding: Vec<f32> = b
+                    .chunks_exact(4)
+                    .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                    .collect();
+                Ok(Some(embedding))
+            }
+            None => Ok(None),
+        }
+    }
+
+    pub fn get_embeddings_batch(
+        &self,
+        symbol_ids: &[i64],
+    ) -> Result<Vec<(i64, Vec<f32>)>, DbError> {
+        if symbol_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders: Vec<String> = symbol_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect();
+        let sql = format!(
+            "SELECT symbol_id, embedding FROM symbol_embeddings WHERE symbol_id IN ({})",
+            placeholders.join(",")
+        );
+        let params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(params.as_slice(), |row| {
+            let symbol_id: i64 = row.get(0)?;
+            let bytes: Vec<u8> = row.get(1)?;
+            Ok((symbol_id, bytes))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            let (symbol_id, bytes): (i64, Vec<u8>) = row?;
+            let embedding: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect();
+            result.push((symbol_id, embedding));
+        }
+        Ok(result)
+    }
+
+    pub fn all_embeddings(&self) -> Result<Vec<(i64, Vec<f32>)>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT symbol_id, embedding FROM symbol_embeddings")?;
+        let rows = stmt.query_map([], |row| {
+            let symbol_id: i64 = row.get(0)?;
+            let bytes: Vec<u8> = row.get(1)?;
+            Ok((symbol_id, bytes))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            let (symbol_id, bytes): (i64, Vec<u8>) = row?;
+            let embedding: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect();
+            result.push((symbol_id, embedding));
+        }
+        Ok(result)
+    }
+
+    pub fn embedding_count(&self) -> Result<i64, DbError> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM symbol_embeddings", [], |row| {
+                row.get(0)
+            })?)
+    }
+
+    pub fn delete_embeddings_for_file(&self, file_id: i64) -> Result<(), DbError> {
+        let symbol_ids: Vec<i64> = self
+            .conn
+            .prepare("SELECT id FROM symbols WHERE file_id = ?1")?
+            .query_map(params![file_id], |row| row.get(0))?
+            .flatten()
+            .collect();
+        if symbol_ids.is_empty() {
+            return Ok(());
+        }
+        let placeholders: Vec<String> = symbol_ids
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 1))
+            .collect();
+        let sql = format!(
+            "DELETE FROM symbol_embeddings WHERE symbol_id IN ({})",
+            placeholders.join(",")
+        );
+        let params: Vec<&dyn rusqlite::ToSql> = symbol_ids
+            .iter()
+            .map(|id| id as &dyn rusqlite::ToSql)
+            .collect();
+        self.conn.execute(&sql, params.as_slice())?;
+        Ok(())
     }
 
     // --- Stats ---

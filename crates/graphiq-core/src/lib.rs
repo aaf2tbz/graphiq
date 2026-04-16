@@ -4,6 +4,8 @@ pub mod calls;
 pub mod chunker;
 pub mod db;
 pub mod edge;
+#[cfg(feature = "embed")]
+pub mod embed;
 pub mod files;
 pub mod fts;
 pub mod graph;
