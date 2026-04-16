@@ -102,13 +102,18 @@ graphiq/
 │   │   │   │   └── css.rs
 │   │   │   └── files.rs        # Language detection, project walking
 │   │   └── Cargo.toml
-│   ├── graphiq-cli/            # CLI — index, search, blast, status
+│   ├── graphiq-cli/            # CLI — index, search, blast, status, demo, setup
+│   │   ├── src/main.rs
+│   │   └── Cargo.toml
+│   ├── graphiq-mcp/            # MCP server — JSON-RPC 2.0 over stdio
 │   │   ├── src/main.rs
 │   │   └── Cargo.toml
 │   └── graphiq-bench/          # Benchmarking — MRR, Hit@K, latency
 │       ├── src/main.rs
 │       ├── Cargo.toml
 │       └── queries/            # Benchmark query sets
+├── .github/workflows/
+│   └── release.yml             # CI: build releases on tag push
 └── README.md
 ```
 
