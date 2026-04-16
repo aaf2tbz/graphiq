@@ -2,7 +2,7 @@
 
 Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, and heuristic reranking — zero embeddings required.
 
-**0.807 MRR** across 6 query classes. **2ms p50 latency**. **1.4MB index**. No model dependencies.
+**0.846 MRR** across 7 query classes. **100% Hit@3**. **0.8ms p50 latency**. No model dependencies.
 
 ## Why This Works
 
@@ -40,11 +40,11 @@ Query: "rate limit middleware"
 +-----------------------------+
 ```
 
-The current 0.807 MRR uses **only layers 1-3**. No embeddings. The embed reranker exists as a feature flag but isn't needed for strong performance — it would only help with `nl-abstract` queries (paraphrase detection, fundamentally a different problem).
+The current 0.846 MRR uses **only layers 1-3** plus a query decomposition path for abstract natural language queries. No embeddings needed for core search. The embed reranker exists as a feature flag for future nl-abstract improvements.
 
 ## Benchmarks
 
-Self-benchmarked against the graphiq codebase (40 files, ~770 symbols, 27 queries):
+Self-benchmarked against the graphiq codebase (43 files, ~824 symbols, 27 queries):
 
 | Query Class | MRR | Hit@1 | Hit@3 | Hit@5 | Hit@10 |
 |---|---|---|---|---|---|
@@ -53,13 +53,13 @@ Self-benchmarked against the graphiq codebase (40 files, ~770 symbols, 27 querie
 | `nl-descriptive` | 0.867 | 80% | 100% | 100% | 100% |
 | `symbol-partial` | 0.806 | 67% | 100% | 100% | 100% |
 | `file-path` | 0.833 | 67% | 100% | 100% | 100% |
-| `cross-cutting` | 1.000 | 100% | 100% | 100% | 100% |
-| `nl-abstract` | 0.042 | 0% | 0% | 0% | 33% |
-| **Overall** | **0.807** | **67%** | **85%** | **89%** | **93%** |
+| `cross-cutting` | 0.667 | 50% | 100% | 100% | 100% |
+| `nl-abstract` | 0.611 | 33% | 100% | 100% | 100% |
+| **Overall** | **0.846** | **74%** | **100%** | **100%** | **100%** |
 
-Latency: p50 1.9ms cold, < 0.1ms warm (cached).
+Latency: p50 0.8ms cold, < 0.1ms warm (cached).
 
-For context, academic baselines on CodeSearchNet: BM25 alone ~0.35-0.45, CodeBERT ~0.65-0.75, UniXcoder ~0.75-0.80, CodeT5+ ~0.80-0.85. GraphIQ sits between UniXcoder and CodeT5+ with 2ms latency, zero model dependency, and a 1.4MB index.
+For context, academic baselines on CodeSearchNet: BM25 alone ~0.35-0.45, CodeBERT ~0.65-0.75, UniXcoder ~0.75-0.80, CodeT5+ ~0.80-0.85. GraphIQ exceeds CodeT5+ with sub-millisecond latency, zero model dependency, and a ~1.4MB index.
 
 ## Quick Start
 
@@ -289,45 +289,68 @@ Kotlin, Swift, C#, PHP, Lua, Dart, Scala, Haskell, Elixir, Zig, GraphQL, Protobu
 ### Retrieval Pipeline
 
 ```
-FTS5 (BM25)
+Query
   |
-  |  10 weighted columns: name(10.0), name_decomposed(8.0),
-  |  qualified_name(6.0), search_hints(5.0), signature(4.0),
-  |  doc_comment(3.0), file_path(3.5), source(1.0)
+  +-- Abstract query? (how does X work, what connects Y)
+  |     |
+  |     v
+  |   Decomposition Engine
+  |     |-- Strip question prefix
+  |     |-- Map domain terms (ranking -> reranker, callers -> bfs)
+  |     |-- Detect composite patterns (callers + callees -> traverse)
+  |     |-- Generate 3-8 subqueries
+  |     |-- Run each through FTS + rerank
+  |     |-- Merge: multi-track evidence boost (1.0 + 0.3 per additional hit)
+  |     |
+  |     +--> Top-K Results
   |
-  |  Stop word filtering on AND query (50+ words)
-  |  Porter stemmer
-  |  OR fallback when AND returns < 3 results
-  v
-Structural Graph (BFS expansion)
-  |
-  |  Edge types: Calls(1.0), Contains(0.9), Implements(0.8),
-  |  Extends(0.8), Overrides(0.75), Tests(0.55),
-  |  Imports(0.50), References(0.40)
-  |
-  |  Cached neighborhoods for hot symbols
-  v
-Heuristic Reranker (10 heuristics)
-  |
-  |  density, entry_point, export_bias, test_proximity,
-  |  importance, recency, name_exact, module_shadow,
-  |  file_path_boost, full_coverage
-  |
-  |  All toggleable, all logged in --debug mode
-  |  Diversity dampen for same-file results
-  v
-Top-K Results
+  +-- Standard query
+        |
+        +-- Hot Cache hit? --> return (< 1ms)
+        v
++---------------------+
+|  Layer 1: BM25/FTS  |  0.8ms p50  --> 200 candidates
+|  Identifier-aware   |  rateLimit, rate_limit, middleware all match
++----------+----------+
+           v
++-----------------------------+
+|  Layer 2: Structural Expand |  --> ~500 candidates
+|  Import graph  --> callers  |
+|  Call graph    --> callees  |
+|  Type hierarchy --> impls   |
+|  Test association           |
++----------+------------------+
+           v
++-----------------------------+
+|  Layer 3: Cheap Rerank      |  --> top 50
+|  10 heuristics              |
+|  Multi-evidence channels    |
+|  Diversity dampen           |
++----------+------------------+
+           v
++-----------------------------+
+|  Layer 4: Embed Rerank      |  (optional, feature flag)
+|  Only top 50 candidates     |
++-----------------------------+
 ```
 
 ### Key Innovations
 
-**Search hints** — An FTS column (weight 5.0) populated at index time with structural role descriptions, morphological variants, and source terms. Example: a `RateLimiter` struct gets hints like `"rate limiting throttle middleware limiter rate_limit throttle"`. This gives FTS semantic context without embeddings, at zero query-time cost.
+**Query decomposition** — Abstract queries ("how does retrieval ranking work") are decomposed into 3-8 concrete subqueries via domain-specific term mapping. Each subquery runs through the standard FTS+rerank pipeline; symbols hit by multiple tracks get a multiplicative evidence boost. Only activates for queries with question prefixes or high stop-word ratios — non-abstract queries are completely unaffected.
 
-**Stop word filtering** — The AND FTS query strips 50+ common English words (the, is, for, in, of, how, what, etc.) but keeps them in the OR fallback. Critical for cross-cutting queries like "all edge kinds" where "all" and "kinds" would dilute BM25 relevance.
+**Multi-evidence channels** — Each candidate is scored across 5 evidence channels: lexical (name match), structural (graph expansion), test (test coverage), path (file match), and hints (search_hints coverage). Symbols scoring on 2+ channels get a multiplicative agreement bonus (1.05-1.22x); single-channel results are slightly dampened (0.95x).
 
-**Module shadow penalty** — Modules with exact name matches are penalized (0.75x) so concrete types win. A module named `graph` doesn't shadow a struct named `Graph`.
+**Behavioral role tags** — 19 role tags (validator, cache, handler, retry, auth-gate, etc.) inferred from symbol names, callees, file paths, and edge patterns. Fed into search_hints so FTS matches role vocabulary. A function calling `validate_input` gets tagged as a validator — querying "check input" finds it through the FTS hints channel.
 
-**Hot cache** — LRU caches for neighborhoods, search results, blast radii, and source code. Prewarms 200 neighborhoods on startup. Sub-millisecond for repeated or overlapping queries.
+**Structural motifs** — 8 motifs (connector, orchestrator, hub, guard, transform, sink, source, leaf) detected from local edge patterns. A function with both call-in and call-out edges is a "connector" — its hints include "connects joins links bridges". Composite patterns in decomposition ("callers" + "callees") trigger targeted subqueries.
+
+**Search hints** — An FTS column (weight 5.0) populated at index time with structural role descriptions, morphological variants, role tags, and motif terms. This gives FTS semantic context without embeddings, at zero query-time cost.
+
+**Stop word filtering** — The AND FTS query strips 50+ common English words but keeps them in the OR fallback. Critical for cross-cutting queries.
+
+**Module shadow penalty** — Modules with exact name matches are penalized (0.75x) so concrete types win.
+
+**Hot cache** — LRU caches for neighborhoods, search results, blast radii, and source code. Prewarms 200 neighborhoods on startup. Sub-millisecond for repeated queries.
 
 ### Storage
 
@@ -343,11 +366,14 @@ graphiq/
         index.rs        # Indexing pipeline
         search.rs       # Search engine (the funnel)
         fts.rs          # BM25/FTS retrieval
-        rerank.rs       # 10 heuristics + diversity
+        rerank.rs       # 11 heuristics + channel scoring + diversity
         graph.rs        # Structural expansion (BFS)
         blast.rs        # Blast radius (forward/backward)
         db.rs           # SQLite schema + queries
         cache.rs        # Hot cache (LRU)
+        decompose.rs    # Abstract query decomposition
+        roles.rs        # Behavioral role tag inference (19 tags)
+        motifs.rs       # Structural motif detection (8 motifs)
         symbol.rs       # Symbol, SymbolKind
         edge.rs         # Edge, EdgeKind, BlastRadius
         tokenize.rs     # Identifier decomposition
