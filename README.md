@@ -54,14 +54,31 @@ Latency: p50 1.9ms cold, < 0.1ms warm (cached).
 
 ## Installation
 
+### Homebrew (macOS + Linux)
+
+```bash
+brew tap aaf2tbz/graphiq
+brew install graphiq
+```
+
+### From source
+
 ```bash
 cargo build --release
 ```
 
 Four binaries:
-- `graphiq` — CLI (index, search, blast, status, reindex)
+- `graphiq` — CLI (index, search, blast, status, reindex, demo)
 - `graphiq-bench` — MRR/Hit@K benchmarking
 - `graphiq-mcp` — MCP server for LLM integration (stdio JSON-RPC)
+
+## Try It
+
+```bash
+graphiq demo
+```
+
+Generates a sample project, indexes it, and runs searches across all query classes — symbol lookup, natural language, file paths, error messages, and blast radius. No setup needed.
 
 ## Usage
 
@@ -86,18 +103,46 @@ graphiq-bench /path/to/project [db-path] [queries.json]
 
 ## MCP Server
 
-The `graphiq-mcp` binary speaks JSON-RPC over stdio. Four tools:
+The `graphiq-mcp` binary speaks JSON-RPC 2.0 over stdio. Four tools:
 
-- **`search`** — ranked symbol search with optional file filter
-- **`blast`** — blast radius analysis (forward/backward/both)
-- **`context`** — full symbol source + structural neighborhood (callers, callees, members, tests)
-- **`status`** — indexing stats
+- **`search`** — ranked symbol search with optional file filter and top_k (max 50)
+- **`blast`** — blast radius analysis (forward/backward/both, depth 1-10)
+- **`context`** — full symbol source + structural neighborhood (callers, callees, members, parents, tests)
+- **`status`** — indexing stats with database size
 
 ```bash
 graphiq-mcp /path/to/.graphiq/graphiq.db
 ```
 
-Compatible with any MCP client (Claude Desktop, opencode, etc).
+### MCP Client Configuration
+
+For **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "graphiq": {
+      "command": "graphiq-mcp",
+      "args": ["/path/to/project/.graphiq/graphiq.db"]
+    }
+  }
+}
+```
+
+For **opencode** (in `.opencode.json` or project config):
+
+```json
+{
+  "mcpServers": {
+    "graphiq": {
+      "command": "graphiq-mcp",
+      "args": [".graphiq/graphiq.db"]
+    }
+  }
+}
+```
+
+Compatible with any MCP client that supports stdio transport.
 
 ## Supported Languages
 
@@ -108,7 +153,7 @@ TypeScript, TSX, JSX, JavaScript, Rust, Python, Go, Java, C, C++, Ruby, YAML, TO
 - **FTS5 with weighted columns** — name (10.0), name_decomposed (8.0), qualified_name (6.0), search_hints (5.0), signature (4.0), doc_comment (3.0), file_path (2.0), source (1.0)
 - **Structural graph** — Calls, Contains, Extends, Implements, Overrides, Imports, References, Tests edges with path-weight scoring
 - **Search hints** — indexing-time structural role hints derived from graph relationships, decomposed identifiers, and source terms. Gives FTS semantic context without embeddings.
-- **Heuristic reranker** — 7 toggleable heuristics (density, entry-point, export, test-proximity, importance, recency, name-exact) with debug score breakdowns
+- **Heuristic reranker** — 10 toggleable heuristics with debug score breakdowns per result
 - **Hot cache** — neighborhood prewarming, LRU result cache, blast radius cache, source cache
 - **SQLite everything** — single-file database, FTS5, recursive CTEs for graph traversal
 
