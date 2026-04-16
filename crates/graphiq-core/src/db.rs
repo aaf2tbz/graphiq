@@ -468,11 +468,12 @@ impl GraphDb {
             r#"
             SELECT
                 s.id,
-                MIN(1.0, 0.3
+                CASE WHEN total_edges = 0 THEN 0.3
+                ELSE MIN(1.0, 0.3
                     + 0.5 * MIN(1.0, COALESCE(call_in_degree, 0) / CAST(total_edges AS REAL))
                     + 0.2 * MIN(1.0, COALESCE(contains_count, 0) / CAST(total_edges AS REAL))
                     + 0.2 * MIN(1.0, COALESCE(implements_in_degree, 0) / 5.0)
-                ) as importance
+                ) END as importance
             FROM symbols s
             LEFT JOIN (
                 SELECT target_id, COUNT(*) as call_in_degree

@@ -55,6 +55,7 @@ pub struct Reranker {
     file_mtimes: HashMap<i64, i64>,
     tested_symbols: Vec<i64>,
     query_tokens: Vec<String>,
+    file_path_query: bool,
 }
 
 impl Reranker {
@@ -67,6 +68,7 @@ impl Reranker {
             file_mtimes,
             tested_symbols,
             query_tokens: Vec::new(),
+            file_path_query: false,
         }
     }
 
@@ -79,6 +81,7 @@ impl Reranker {
             file_mtimes,
             tested_symbols,
             query_tokens: Vec::new(),
+            file_path_query: false,
         }
     }
 
@@ -88,6 +91,7 @@ impl Reranker {
             .map(|t| t.to_lowercase())
             .filter(|t| t.len() >= 2)
             .collect();
+        self.file_path_query = looks_like_file_path(query);
         self
     }
 
@@ -237,6 +241,65 @@ impl Reranker {
                 1.0
             };
 
+            let file_path_boost = if self.file_path_query {
+                let path = c.file_path.as_deref().unwrap_or("");
+                let stem = path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(path)
+                    .rsplit_once('.')
+                    .map(|(n, _)| n)
+                    .unwrap_or(path)
+                    .to_lowercase();
+                let name_lower = sym.name.to_lowercase();
+                let decomp_lower = sym.name_decomposed.to_lowercase();
+
+                if name_lower == stem && is_primary_definition(sym.kind) {
+                    2.0
+                } else if decomp_lower.contains(&stem) && is_primary_definition(sym.kind) {
+                    1.5
+                } else if name_lower == stem {
+                    1.3
+                } else {
+                    let matches_file = self
+                        .query_tokens
+                        .iter()
+                        .any(|t| stem.contains(t) || t.contains(&stem));
+                    if matches_file && is_primary_definition(sym.kind) {
+                        1.2
+                    } else {
+                        1.0
+                    }
+                }
+            } else {
+                1.0
+            };
+
+            let full_coverage = {
+                let content_tokens: Vec<&String> = self
+                    .query_tokens
+                    .iter()
+                    .filter(|t| !is_query_stop_word(t))
+                    .collect();
+                if content_tokens.len() >= 3 {
+                    let decomp_lower = sym.name_decomposed.to_lowercase();
+                    let hints_lower = sym.search_hints.to_lowercase();
+                    let covered = content_tokens
+                        .iter()
+                        .filter(|t| {
+                            decomp_lower.contains(t.as_str()) || hints_lower.contains(t.as_str())
+                        })
+                        .count();
+                    if covered == content_tokens.len() {
+                        1.3
+                    } else {
+                        1.0
+                    }
+                } else {
+                    1.0
+                }
+            };
+
             let heuristic_multiplier = density
                 * entry_boost
                 * export_boost
@@ -244,7 +307,9 @@ impl Reranker {
                 * importance_factor
                 * recency
                 * name_exact
-                * module_shadow;
+                * module_shadow
+                * file_path_boost
+                * full_coverage;
 
             if self.debug {
                 c.breakdown = Some(ScoreBreakdown {
@@ -258,6 +323,8 @@ impl Reranker {
                         ("recency", recency),
                         ("name_exact", name_exact),
                         ("module_shadow", module_shadow),
+                        ("file_path_boost", file_path_boost),
+                        ("full_coverage", full_coverage),
                     ],
                     heuristic_multiplier,
                     path_weight: 1.0,
@@ -325,6 +392,106 @@ fn is_container_kind(kind: SymbolKind) -> bool {
     matches!(
         kind,
         SymbolKind::Module | SymbolKind::Namespace | SymbolKind::Section | SymbolKind::Import
+    )
+}
+
+fn is_primary_definition(kind: SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Struct
+            | SymbolKind::Class
+            | SymbolKind::Enum
+            | SymbolKind::Interface
+            | SymbolKind::Trait
+    )
+}
+
+fn looks_like_file_path(query: &str) -> bool {
+    let extensions = [
+        ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".java", ".c", ".cpp", ".h", ".rb",
+        ".yaml", ".yml", ".toml", ".json", ".html", ".css", ".scss",
+    ];
+    let lower = query.to_lowercase();
+    extensions.iter().any(|ext| lower.contains(ext))
+}
+
+fn is_query_stop_word(token: &str) -> bool {
+    matches!(
+        token,
+        "the"
+            | "a"
+            | "an"
+            | "is"
+            | "are"
+            | "was"
+            | "were"
+            | "be"
+            | "been"
+            | "being"
+            | "have"
+            | "has"
+            | "had"
+            | "do"
+            | "does"
+            | "did"
+            | "will"
+            | "would"
+            | "could"
+            | "should"
+            | "may"
+            | "might"
+            | "can"
+            | "shall"
+            | "of"
+            | "in"
+            | "to"
+            | "for"
+            | "on"
+            | "at"
+            | "by"
+            | "with"
+            | "from"
+            | "as"
+            | "into"
+            | "through"
+            | "and"
+            | "or"
+            | "but"
+            | "not"
+            | "no"
+            | "if"
+            | "that"
+            | "this"
+            | "these"
+            | "those"
+            | "it"
+            | "its"
+            | "my"
+            | "your"
+            | "his"
+            | "her"
+            | "their"
+            | "all"
+            | "each"
+            | "every"
+            | "any"
+            | "some"
+            | "how"
+            | "what"
+            | "which"
+            | "who"
+            | "when"
+            | "where"
+            | "why"
+            | "there"
+            | "here"
+            | "than"
+            | "then"
+            | "so"
+            | "up"
+            | "out"
+            | "about"
+            | "just"
     )
 }
 
