@@ -183,7 +183,14 @@ fn generate_subqueries(core: &str) -> Vec<Vec<String>> {
         }
     }
 
-    tracks.truncate(6);
+    if content_words.iter().any(|w| w == "callers") && content_words.iter().any(|w| w == "callees")
+    {
+        tracks.push(vec!["bfs".to_string()]);
+        tracks.push(vec!["traverse".to_string()]);
+        tracks.push(vec!["bounded_bfs".to_string()]);
+    }
+
+    tracks.truncate(8);
     tracks
 }
 

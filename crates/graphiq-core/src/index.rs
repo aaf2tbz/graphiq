@@ -8,6 +8,7 @@ use crate::chunker::LanguageChunker;
 use crate::db::GraphDb;
 use crate::edge::EdgeKind;
 use crate::files::{content_hash, detect_language, walk_project, Language};
+use crate::motifs::{detect_motifs, motifs_to_hints, MotifEvidence};
 use crate::roles::{infer_roles, roles_to_hints, RoleEvidence};
 use crate::symbol::{SymbolBuilder, SymbolKind};
 
@@ -489,6 +490,47 @@ impl<'a> Indexer<'a> {
                 hints.push(roles_to_hints(&symbol_roles));
             }
 
+            let motif_evidence = MotifEvidence {
+                has_call_in: in_by_id
+                    .get(id)
+                    .map_or(false, |v| v.iter().any(|(k, _)| k == "calls")),
+                has_call_out: out_by_id
+                    .get(id)
+                    .map_or(false, |v| v.iter().any(|(k, _)| k == "calls")),
+                call_in_count: in_by_id
+                    .get(id)
+                    .map_or(0, |v| v.iter().filter(|(k, _)| k == "calls").count()),
+                call_out_count: out_by_id
+                    .get(id)
+                    .map_or(0, |v| v.iter().filter(|(k, _)| k == "calls").count()),
+                has_contains_out: out_by_id
+                    .get(id)
+                    .map_or(false, |v| v.iter().any(|(k, _)| k == "contains")),
+                contains_count: out_by_id
+                    .get(id)
+                    .map_or(0, |v| v.iter().filter(|(k, _)| k == "contains").count()),
+                has_implements_out: out_by_id
+                    .get(id)
+                    .map_or(false, |v| v.iter().any(|(k, _)| k == "implements")),
+                has_extends_out: out_by_id
+                    .get(id)
+                    .map_or(false, |v| v.iter().any(|(k, _)| k == "extends")),
+                has_imports_in: in_by_id
+                    .get(id)
+                    .map_or(false, |v| v.iter().any(|(k, _)| k == "imports")),
+                imports_in_count: in_by_id
+                    .get(id)
+                    .map_or(0, |v| v.iter().filter(|(k, _)| k == "imports").count()),
+                has_tests_in: in_by_id
+                    .get(id)
+                    .map_or(false, |v| v.iter().any(|(k, _)| k == "tests")),
+                is_container: is_container_kind_str(kind_str),
+            };
+            let symbol_motifs = detect_motifs(&motif_evidence);
+            if !symbol_motifs.is_empty() {
+                hints.push(motifs_to_hints(&symbol_motifs));
+            }
+
             let source_terms = extract_source_terms(self.db, *id);
             if !source_terms.is_empty() {
                 hints.push(source_terms);
@@ -596,6 +638,13 @@ fn is_container_kind(kind: crate::symbol::SymbolKind) -> bool {
             | crate::symbol::SymbolKind::Enum
             | crate::symbol::SymbolKind::Module
             | crate::symbol::SymbolKind::Namespace
+    )
+}
+
+fn is_container_kind_str(kind: &str) -> bool {
+    matches!(
+        kind,
+        "class" | "struct" | "interface" | "trait" | "enum" | "module" | "namespace"
     )
 }
 

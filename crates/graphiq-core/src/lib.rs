@@ -12,6 +12,7 @@ pub mod fts;
 pub mod graph;
 pub mod index;
 pub mod languages;
+pub mod motifs;
 pub mod rerank;
 pub mod roles;
 pub mod search;
