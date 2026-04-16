@@ -70,10 +70,10 @@ fn ensure_indexed(state: &mut ServerState) -> Result<(), String> {
         .map_err(|e| format!("failed to read stats: {e}"))?;
 
     if stats.files == 0 {
-        log_err("database is empty, auto-indexing...");
-        do_index(state)?;
+        log_err("database is empty — use the 'index' tool to index, or run 'graphiq setup'");
     }
 
+    state.cache.prewarm(&state.db, 200);
     Ok(())
 }
 
@@ -136,11 +136,8 @@ fn main() {
 
     if let Err(e) = ensure_indexed(&mut state) {
         log_err(&format!("auto-index failed: {e}"));
-        send_error(-1, -32603, &format!("failed to auto-index project: {e}"));
-        std::process::exit(1);
     }
 
-    state.cache.prewarm(&state.db, 200);
     log_err("ready");
 
     let state = Arc::new(Mutex::new(state));
