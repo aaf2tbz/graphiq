@@ -486,8 +486,7 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
         let project_str = project_path.display().to_string();
         let entry = json!({
             "type": "local",
-            "command": ["graphiq-mcp"],
-            "args": [project_str],
+            "command": ["graphiq-mcp", project_str],
             "enabled": true
         });
 
@@ -504,9 +503,9 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
                         .unwrap();
                     let already = mcp
                         .get("graphiq")
-                        .and_then(|v| v.get("args"))
+                        .and_then(|v| v.get("command"))
                         .and_then(|a| a.as_array())
-                        .and_then(|arr| arr.first())
+                        .and_then(|arr| arr.get(1))
                         .and_then(|v| v.as_str())
                         .map_or(false, |s| s == project_str);
                     mcp.insert("graphiq".into(), entry);
