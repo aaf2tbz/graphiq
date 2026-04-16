@@ -1,0 +1,5 @@
+/target
+.graphiq/
+*.db
+*.db-wal
+*.db-shm

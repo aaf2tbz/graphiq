@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["crates/graphiq-core", "crates/graphiq-cli", "crates/graphiq-bench", "crates/graphiq-mcp"]
