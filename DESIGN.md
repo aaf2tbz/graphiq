@@ -1125,3 +1125,27 @@ embed = []  # ["llama-cpp-2", "sqlite-vec"]
 12. **Every heuristic is toggleable and logged.** When retrieval feels off, you need to know which signal helped and which hurt. Debug mode prints score breakdowns per result.
 13. **Caches in SQLite are disposable.** `blast_cache` is fully recomputable from the `edges` table. Nothing depends on it being fresh. If in doubt, truncate and recompute. It is never a source of truth.
 14. **Benchmark by class, not average.** Every latency number carries (query type, cache state, repo scale). "p95 < 100ms" without those three qualifiers means nothing.
+
+---
+
+## Roadmap
+
+### Phase 1: Behavioral Role Tags
+
+Add derived tags like `validator`, `cache`, `retry`, `auth-gate`, `serializer`. Infer them from paths, symbol kinds, callees, imports, and nearby tests. Store as lightweight indexed metadata on symbols. Add tag overlap as a rerank feature for abstract queries.
+
+### Phase 2: Concept-Shaped Neighborhoods
+
+Define a small set of structural motifs — guard, transform, orchestration, persistence. Detect motifs from local edge patterns and surrounding symbol types. Cache 1-hop or 2-hop neighborhood fingerprints for hot symbols. Score candidates by motif match, not just direct lexical hit.
+
+### Phase 3: Query-to-Evidence Decomposition
+
+Map abstract phrases to expected repo evidence — errors, retries, parsers, caches, tests. Expand one abstract query into a few concrete subqueries. Run those through normal FTS plus graph expansion. Merge results and reward symbols hit by multiple evidence tracks.
+
+### Phase 4: Multi-Evidence Agreement
+
+Keep separate scores for lexical, structural, test, path, and role evidence. Boost candidates that score across multiple channels. Penalize one-channel flukes and same-file pileups. Expose score breakdowns in debug so tuning stays honest.
+
+### Phase 5: nl-abstract as Evidence Recovery
+
+Only enable this path when the query looks abstract. Leave the default fast path untouched for normal recall. Make the abstract path additive, not a replacement. Benchmark it separately so it cannot quietly degrade baseline.
