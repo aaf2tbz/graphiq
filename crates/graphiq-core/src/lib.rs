@@ -3,6 +3,7 @@ pub mod cache;
 pub mod calls;
 pub mod chunker;
 pub mod db;
+pub mod decompose;
 pub mod edge;
 #[cfg(feature = "embed")]
 pub mod embed;

@@ -88,6 +88,33 @@ impl<'a> SearchEngine<'a> {
             };
         }
 
+        if let Some(decomposed) =
+            crate::decompose::decomposed_search(self.db, &query.query, query.top_k, query.debug)
+        {
+            let results = if let Some(ref filter) = query.file_filter {
+                let mut r = decomposed.results;
+                r.retain(|res| {
+                    res.file_path
+                        .as_deref()
+                        .map(|p| p.contains(filter))
+                        .unwrap_or(false)
+                });
+                r
+            } else {
+                decomposed.results
+            };
+
+            self.cache.put_results(query_hash, results.clone());
+
+            return SearchResult {
+                results,
+                blast_radius: None,
+                total_fts_candidates: decomposed.subqueries.len(),
+                total_expanded: 0,
+                from_cache: false,
+            };
+        }
+
         let fts = FtsSearch::new(self.db);
         let fts_results = fts.search(&query.query, Some(200));
         let total_fts = fts_results.len();
@@ -249,23 +276,6 @@ impl<'a> SearchEngine<'a> {
         results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
         results.truncate(10);
         results
-    }
-
-    fn looks_like_natural_language(query: &str) -> bool {
-        let words: Vec<&str> = query.split_whitespace().collect();
-        if words.len() < 3 {
-            return false;
-        }
-        let stop_words = [
-            "how", "what", "where", "why", "when", "does", "is", "are", "the", "a", "an", "to",
-            "from", "of", "in", "for", "with", "that", "this", "it", "do", "can", "will", "was",
-            "were", "been", "be", "has", "have", "had",
-        ];
-        let stop_count = words
-            .iter()
-            .filter(|w| stop_words.contains(&w.to_lowercase().as_str()))
-            .count();
-        stop_count as f64 / words.len() as f64 > 0.3
     }
 }
 
