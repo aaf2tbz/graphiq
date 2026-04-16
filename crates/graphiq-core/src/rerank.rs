@@ -212,7 +212,15 @@ impl Reranker {
                     .iter()
                     .all(|t| name_lower.contains(t) || decomposed_lower.contains(t));
                 let exact_name = self.query_tokens.len() == 1 && name_lower == self.query_tokens[0];
-                if exact_name {
+                if is_container_kind(sym.kind) {
+                    if exact_name {
+                        1.0
+                    } else if matches_query {
+                        1.0
+                    } else {
+                        1.0
+                    }
+                } else if exact_name {
                     1.5
                 } else if matches_query {
                     1.25

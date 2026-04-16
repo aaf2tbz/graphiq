@@ -468,14 +468,10 @@ impl GraphDb {
             r#"
             SELECT
                 s.id,
-                COALESCE(
-                    CASE
-                        WHEN total_edges = 0 THEN 0.3
-                        ELSE MIN(1.0, 0.3
-                            + 0.5 * COALESCE(call_in_degree, 0) / CAST(total_edges AS REAL)
-                            + 0.2 * COALESCE(contains_count, 0) / CAST(total_edges AS REAL))
-                    END,
-                    0.3
+                MIN(1.0, 0.3
+                    + 0.5 * MIN(1.0, COALESCE(call_in_degree, 0) / CAST(total_edges AS REAL))
+                    + 0.2 * MIN(1.0, COALESCE(contains_count, 0) / CAST(total_edges AS REAL))
+                    + 0.2 * MIN(1.0, COALESCE(implements_in_degree, 0) / 5.0)
                 ) as importance
             FROM symbols s
             LEFT JOIN (
@@ -493,6 +489,11 @@ impl GraphDb {
                 FROM edges WHERE kind = 'contains'
                 GROUP BY source_id
             ) contained ON contained.source_id = s.id
+            LEFT JOIN (
+                SELECT target_id, COUNT(*) as implements_in_degree
+                FROM edges WHERE kind = 'implements'
+                GROUP BY target_id
+            ) impls ON impls.target_id = s.id
             CROSS JOIN (
                 SELECT COUNT(*) as total_edges FROM edges
             )
