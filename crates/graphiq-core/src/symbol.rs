@@ -153,6 +153,7 @@ pub struct Symbol {
     pub language: String,
     pub metadata: serde_json::Value,
     pub importance: f64,
+    pub search_hints: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -257,6 +258,7 @@ impl SymbolBuilder {
             language: self.language,
             metadata: self.metadata,
             importance: self.kind.default_importance(),
+            search_hints: String::new(),
         }
     }
 }

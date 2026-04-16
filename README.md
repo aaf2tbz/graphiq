@@ -37,20 +37,20 @@ Embeddings only touch 50 candidates max — never the full corpus. And only when
 
 ## Benchmark Results
 
-Self-benchmarked against the graphiq codebase (38 files, 680 symbols):
+Self-benchmarked against the graphiq codebase (40 files, 749 symbols):
 
 | Query Class | MRR | Hit@1 | Hit@5 | Hit@10 |
 |---|---|---|---|---|
 | `symbol-exact` | 1.000 | 100% | 100% | 100% |
 | `symbol-partial` | 0.681 | 50% | 100% | 100% |
 | `nl-descriptive` | 0.740 | 60% | 100% | 100% |
-| `file-path` | 0.528 | 33% | 100% | 100% |
+| `file-path` | 0.556 | 33% | 100% | 100% |
 | `error-debug` | 1.000 | 100% | 100% | 100% |
 | `cross-cutting` | 0.350 | 0% | 100% | 100% |
 | `nl-abstract` | 0.037 | 0% | 0% | 33% |
-| **Overall** | **0.673** | **56%** | **89%** | **93%** |
+| **Overall** | **0.676** | **56%** | **89%** | **93%** |
 
-Latency: p50 1.7ms cold, < 0.1ms warm (cached).
+Latency: p50 1.9ms cold, < 0.1ms warm (cached).
 
 ## Installation
 
@@ -84,14 +84,30 @@ graphiq status
 graphiq-bench /path/to/project [db-path] [queries.json]
 ```
 
+## MCP Server
+
+The `graphiq-mcp` binary speaks JSON-RPC over stdio. Four tools:
+
+- **`search`** — ranked symbol search with optional file filter
+- **`blast`** — blast radius analysis (forward/backward/both)
+- **`context`** — full symbol source + structural neighborhood (callers, callees, members, tests)
+- **`status`** — indexing stats
+
+```bash
+graphiq-mcp /path/to/.graphiq/graphiq.db
+```
+
+Compatible with any MCP client (Claude Desktop, opencode, etc).
+
 ## Supported Languages
 
 TypeScript, TSX, JSX, JavaScript, Rust, Python, Go, Java, C, C++, Ruby, YAML, TOML, JSON, HTML, CSS, SCSS (38 file extensions, 14 dedicated parsers).
 
 ## Architecture
 
-- **FTS5 with weighted columns** — name (10.0), name_decomposed (8.0), qualified_name (6.0), signature (4.0), doc_comment (3.0), file_path (2.0), source (1.0)
+- **FTS5 with weighted columns** — name (10.0), name_decomposed (8.0), qualified_name (6.0), search_hints (5.0), signature (4.0), doc_comment (3.0), file_path (2.0), source (1.0)
 - **Structural graph** — Calls, Contains, Extends, Implements, Overrides, Imports, References, Tests edges with path-weight scoring
+- **Search hints** — indexing-time structural role hints derived from graph relationships, decomposed identifiers, and source terms. Gives FTS semantic context without embeddings.
 - **Heuristic reranker** — 7 toggleable heuristics (density, entry-point, export, test-proximity, importance, recency, name-exact) with debug score breakdowns
 - **Hot cache** — neighborhood prewarming, LRU result cache, blast radius cache, source cache
 - **SQLite everything** — single-file database, FTS5, recursive CTEs for graph traversal

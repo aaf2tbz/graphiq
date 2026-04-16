@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS symbols (
     content_hash BLOB NOT NULL,
     language TEXT NOT NULL,
     metadata TEXT DEFAULT '{}',
-    importance REAL NOT NULL DEFAULT 0.5
+    importance REAL NOT NULL DEFAULT 0.5,
+    search_hints TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
@@ -55,20 +56,21 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     file_path,
     kind,
     language,
+    search_hints,
     content=symbols,
     content_rowid=id,
     tokenize='porter unicode61'
 );
 
 CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
-    INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language)
-    SELECT new.id, new.name, new.name_decomposed, new.qualified_name, new.signature, new.source, new.doc_comment, f.path, new.kind, new.language
+    INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
+    SELECT new.id, new.name, new.name_decomposed, new.qualified_name, new.signature, new.source, new.doc_comment, f.path, new.kind, new.language, new.search_hints
     FROM files f WHERE f.id = new.file_id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language)
-    VALUES ('delete', old.id, old.name, old.name_decomposed, old.qualified_name, old.signature, old.source, old.doc_comment, '', old.kind, old.language);
+    INSERT INTO symbols_fts(symbols_fts, rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
+    VALUES ('delete', old.id, old.name, old.name_decomposed, old.qualified_name, old.signature, old.source, old.doc_comment, '', old.kind, old.language, old.search_hints);
 END;
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -213,6 +215,28 @@ impl GraphDb {
         }
     }
 
+    pub fn get_file_by_id(&self, id: i64) -> Result<Option<SourceFile>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, path, language, content_hash, mtime_ms, line_count FROM files WHERE id = ?1",
+        )?;
+        let result = stmt.query_row(params![id], |row| {
+            let hash_bytes: Vec<u8> = row.get(3)?;
+            Ok(SourceFile {
+                id: row.get(0)?,
+                path: row.get::<_, String>(1)?.into(),
+                language: row.get(2)?,
+                content_hash: String::from_utf8_lossy(&hash_bytes).to_string(),
+                mtime_ms: row.get(4)?,
+                line_count: row.get(5)?,
+            })
+        });
+        match result {
+            Ok(f) => Ok(Some(f)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DbError::from(e)),
+        }
+    }
+
     pub fn delete_file(&self, path: &str) -> Result<bool, DbError> {
         let deleted = self
             .conn
@@ -232,8 +256,8 @@ impl GraphDb {
         self.conn.execute(
             "INSERT INTO symbols (file_id, name, qualified_name, kind, line_start, line_end,
              signature, visibility, doc_comment, source, name_decomposed, content_hash,
-             language, metadata, importance)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+             language, metadata, importance, search_hints)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
             params![
                 sym.file_id,
                 sym.name,
@@ -250,6 +274,7 @@ impl GraphDb {
                 sym.language,
                 sym.metadata.to_string(),
                 sym.importance,
+                sym.search_hints,
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -259,7 +284,7 @@ impl GraphDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, file_id, name, qualified_name, kind, line_start, line_end,
              signature, visibility, doc_comment, source, name_decomposed, content_hash,
-             language, metadata, importance
+             language, metadata, importance, search_hints
              FROM symbols WHERE id = ?1",
         )?;
         let result = stmt.query_row(params![id], |row| row_to_symbol(row));
@@ -274,7 +299,7 @@ impl GraphDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, file_id, name, qualified_name, kind, line_start, line_end,
              signature, visibility, doc_comment, source, name_decomposed, content_hash,
-             language, metadata, importance
+             language, metadata, importance, search_hints
              FROM symbols WHERE file_id = ?1 ORDER BY line_start",
         )?;
         let symbols = stmt.query_map(params![file_id], |row| row_to_symbol(row))?;
@@ -287,7 +312,7 @@ impl GraphDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, file_id, name, qualified_name, kind, line_start, line_end,
              signature, visibility, doc_comment, source, name_decomposed, content_hash,
-             language, metadata, importance
+             language, metadata, importance, search_hints
              FROM symbols WHERE name = ?1",
         )?;
         let symbols = stmt.query_map(params![name], |row| row_to_symbol(row))?;
@@ -364,12 +389,76 @@ impl GraphDb {
             .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))?)
     }
 
+    pub fn outgoing_edges_grouped(&self) -> Result<Vec<(i64, String, String)>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.source_id, e.kind, s.name
+             FROM edges e JOIN symbols s ON s.id = e.target_id
+             ORDER BY e.source_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<SqlResult<Vec<_>>>().map_err(DbError::from)
+    }
+
+    pub fn incoming_edges_grouped(&self) -> Result<Vec<(i64, String, String)>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.target_id, e.kind, s.name
+             FROM edges e JOIN symbols s ON s.id = e.source_id
+             ORDER BY e.target_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        rows.collect::<SqlResult<Vec<_>>>().map_err(DbError::from)
+    }
+
+    pub fn container_for(&self, symbol_id: i64) -> Result<Option<(i64, String)>, DbError> {
+        let result = self.conn.query_row(
+            "SELECT e.source_id, s.name FROM edges e JOIN symbols s ON s.id = e.source_id WHERE e.target_id = ?1 AND e.kind = 'contains'",
+            params![symbol_id],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+        );
+        match result {
+            Ok(r) => Ok(Some(r)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DbError::from(e)),
+        }
+    }
+
     // --- File Edges ---
 
     pub fn update_importance(&self, symbol_id: i64, importance: f64) -> Result<(), DbError> {
         self.conn.execute(
             "UPDATE symbols SET importance = ?1 WHERE id = ?2",
             params![importance, symbol_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_search_hints(&self, symbol_id: i64, hints: &str) -> Result<(), DbError> {
+        self.conn.execute(
+            "UPDATE symbols SET search_hints = ?1 WHERE id = ?2",
+            params![hints, symbol_id],
+        )?;
+        self.conn.execute(
+            "INSERT INTO symbols_fts(symbols_fts, rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
+             SELECT 'delete', id, name, name_decomposed, qualified_name, signature, source, doc_comment, '', kind, language, search_hints FROM symbols WHERE id = ?1",
+            params![symbol_id],
+        )?;
+        self.conn.execute(
+            "INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
+             SELECT id, name, name_decomposed, qualified_name, signature, source, doc_comment, f.path, kind, language, ?2
+             FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?1",
+            params![symbol_id, hints],
         )?;
         Ok(())
     }
@@ -607,6 +696,7 @@ fn row_to_symbol(row: &rusqlite::Row) -> SqlResult<Symbol> {
         language: row.get(13)?,
         metadata: serde_json::from_str(&meta_str).unwrap_or(serde_json::Value::Null),
         importance: row.get(15)?,
+        search_hints: row.get(16).unwrap_or_default(),
     })
 }
 

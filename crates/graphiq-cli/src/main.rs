@@ -192,37 +192,34 @@ fn cmd_search(
     for (i, scored) in result.results.iter().enumerate() {
         let sym = &scored.symbol;
         let file = scored.file_path.as_deref().unwrap_or("?");
-        let vis = sym.visibility.as_str();
         let kind = sym.kind.as_str();
 
-        print!(
-            "#{:>2} {:8.3}  {} {}::{}",
+        println!(
+            "#{:<3} {:.3}  {}:{}  {}::{}",
             i + 1,
             scored.score,
-            vis,
             file,
-            sym.name
+            sym.line_start,
+            kind,
+            sym.name,
         );
-        if !matches!(kind, "function" | "method" | "class") {
-            print!(" [{}]", kind);
-        }
+
         if let Some(ref sig) = sym.signature {
             let short = sig.lines().next().unwrap_or("");
-            if short.len() > 80 {
-                print!("  {}", &short[..80]);
+            if short.len() > 100 {
+                println!("     {}", &short[..100]);
             } else {
-                print!("  {}", short);
+                println!("     {}", short);
             }
         }
-        println!();
 
         if debug {
             if let Some(ref bd) = scored.breakdown {
                 println!(
-                    "          layer2={:.3}  path_w={:.2}  diversity={:.2}",
+                    "     layer2={:.3}  path_w={:.2}  diversity={:.2}",
                     bd.layer2_score, bd.path_weight, bd.diversity_dampen
                 );
-                print!("          heuristics:");
+                print!("     heuristics:");
                 for (name, val) in &bd.heuristics {
                     print!(" {}={:.2}", name, val);
                 }

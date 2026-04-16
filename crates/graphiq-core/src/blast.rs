@@ -14,8 +14,9 @@ pub fn compute_blast_radius(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("symbol {} not found", symbol_id))?;
 
-    let file = db.get_file_by_path("").ok().flatten();
-    let origin_file = file
+    let origin_file = db
+        .get_file_by_id(origin.file_id)
+        .map_err(|e| e.to_string())?
         .map(|f| f.path.to_string_lossy().to_string())
         .unwrap_or_default();
 
@@ -83,10 +84,12 @@ fn entry_from_bfs(
     edge_kinds: Vec<EdgeKind>,
 ) -> Option<BlastEntry> {
     let sym = db.get_symbol(symbol_id).ok()??;
-    let file = db.get_file_by_path("").ok().flatten();
-    let file_path = file
+    let file_path = db
+        .get_file_by_id(sym.file_id)
+        .ok()
+        .flatten()
         .map(|f| f.path.to_string_lossy().to_string())
-        .unwrap_or_else(|| sym.language.clone());
+        .unwrap_or_default();
 
     Some(BlastEntry {
         symbol_id: sym.id,
@@ -101,34 +104,48 @@ fn entry_from_bfs(
 pub fn format_blast_report(radius: &BlastRadius) -> String {
     let mut out = String::new();
     out.push_str(&format!(
-        "Blast Radius: {} ({})\n",
+        "Blast Radius: {} ({})",
         radius.origin_name, radius.origin_kind
     ));
+    if !radius.origin_file.is_empty() {
+        out.push_str(&format!(" @ {}", radius.origin_file));
+    }
+    out.push('\n');
 
     out.push_str("├── Forward (affects):\n");
-    for entry in &radius.forward {
-        out.push_str(&format!(
-            "│   ├── [{}] {} ({}) via {:?}\n",
-            entry.distance, entry.symbol_name, entry.symbol_kind, entry.path
-        ));
-    }
     if radius.forward.is_empty() {
         out.push_str("│   (none)\n");
+    } else {
+        for entry in &radius.forward {
+            let kinds: Vec<&str> = entry.path.iter().map(|k| k.as_str()).collect();
+            out.push_str(&format!(
+                "│   ├── [{}] {}::{} ({})\n",
+                entry.distance,
+                entry.file_path,
+                entry.symbol_name,
+                kinds.join(" → ")
+            ));
+        }
     }
 
     out.push_str("├── Backward (depends on):\n");
-    for entry in &radius.backward {
-        out.push_str(&format!(
-            "│   ├── [{}] {} ({}) via {:?}\n",
-            entry.distance, entry.symbol_name, entry.symbol_kind, entry.path
-        ));
-    }
     if radius.backward.is_empty() {
         out.push_str("│   (none)\n");
+    } else {
+        for entry in &radius.backward {
+            let kinds: Vec<&str> = entry.path.iter().map(|k| k.as_str()).collect();
+            out.push_str(&format!(
+                "│   ├── [{}] {}::{} ({})\n",
+                entry.distance,
+                entry.file_path,
+                entry.symbol_name,
+                kinds.join(" ← ")
+            ));
+        }
     }
 
     out.push_str(&format!(
-        "└── Summary: {} forward, {} backward, max depth {}\n",
+        "└── Summary: {} forward, {} backward, depth {}",
         radius.forward_count(),
         radius.backward_count(),
         radius.max_depth,

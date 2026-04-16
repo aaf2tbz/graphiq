@@ -333,6 +333,7 @@ mod tests {
             language: "typescript".into(),
             metadata: serde_json::Value::Null,
             importance: 0.9,
+            search_hints: String::new(),
         }
     }
 

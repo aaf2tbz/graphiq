@@ -12,7 +12,7 @@ pub struct FtsResult {
 #[derive(Debug, Clone)]
 pub struct FtsConfig {
     pub max_candidates: usize,
-    pub column_weights: [f64; 9],
+    pub column_weights: [f64; 10],
 }
 
 impl Default for FtsConfig {
@@ -29,6 +29,7 @@ impl Default for FtsConfig {
                 2.0,  // file_path
                 0.5,  // kind
                 0.5,  // language
+                5.0,  // search_hints
             ],
         }
     }
@@ -83,14 +84,14 @@ impl<'a> FtsSearch<'a> {
         let sql = format!(
             "SELECT sym.id, sym.file_id, sym.name, sym.qualified_name, sym.kind, sym.line_start, sym.line_end,
                     sym.signature, sym.visibility, sym.doc_comment, sym.source, sym.name_decomposed,
-                    sym.content_hash, sym.language, sym.metadata, sym.importance,
-                    bm25(symbols_fts, {}, {}, {}, {}, {}, {}, {}, {}, {}) as score
+                    sym.content_hash, sym.language, sym.metadata, sym.importance, sym.search_hints,
+                    bm25(symbols_fts, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}) as score
              FROM symbols_fts
              JOIN symbols sym ON sym.id = symbols_fts.rowid
              WHERE symbols_fts MATCH ?1
              ORDER BY score
              LIMIT ?2",
-            w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8],
+            w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9],
         );
 
         let conn = self.db.conn();
@@ -138,8 +139,9 @@ fn row_to_fts_result(row: &rusqlite::Row) -> FtsResult {
         language: row.get(13).unwrap_or_default(),
         metadata: serde_json::from_str(&meta_str).unwrap_or(serde_json::Value::Null),
         importance: row.get(15).unwrap_or(0.5),
+        search_hints: row.get(16).unwrap_or_default(),
     };
-    let score: f64 = row.get(16).unwrap_or(0.0);
+    let score: f64 = row.get(17).unwrap_or(0.0);
     FtsResult {
         symbol,
         bm25_score: if score < 0.0 { -score } else { 0.0 },

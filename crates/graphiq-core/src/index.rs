@@ -304,7 +304,159 @@ impl<'a> Indexer<'a> {
             let _ = self.db.update_importance(*symbol_id, *importance);
         }
 
+        self.generate_search_hints()?;
+
         Ok(stats)
+    }
+
+    fn generate_search_hints(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use std::collections::HashMap;
+
+        let mut out_by_id: HashMap<i64, Vec<(String, String)>> = HashMap::new();
+        for (source_id, kind, target_name) in self.db.outgoing_edges_grouped()? {
+            out_by_id
+                .entry(source_id)
+                .or_default()
+                .push((kind, target_name));
+        }
+
+        let mut in_by_id: HashMap<i64, Vec<(String, String)>> = HashMap::new();
+        for (target_id, kind, source_name) in self.db.incoming_edges_grouped()? {
+            in_by_id
+                .entry(target_id)
+                .or_default()
+                .push((kind, source_name));
+        }
+
+        let conn = self.db.conn();
+        let mut stmt = conn
+            .prepare("SELECT id, name, name_decomposed, kind, doc_comment, file_id FROM symbols")?;
+        let symbols: Vec<(i64, String, String, String, Option<String>, i64)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })?
+            .flatten()
+            .collect();
+
+        let name_to_decomposed: HashMap<String, String> = symbols
+            .iter()
+            .map(|(_, name, decomposed, _, _, _)| (name.clone(), decomposed.clone()))
+            .collect();
+
+        for (id, _name, name_decomposed, kind_str, doc_comment, file_id) in &symbols {
+            let mut hints = Vec::new();
+
+            hints.push(name_decomposed.clone());
+
+            if let Some(ref doc) = doc_comment {
+                if !doc.is_empty() {
+                    let cleaned = doc.lines().take(3).collect::<Vec<_>>().join(" ");
+                    hints.push(cleaned);
+                }
+            }
+
+            let mut caller_concepts: Vec<String> = Vec::new();
+            let mut callee_concepts: Vec<String> = Vec::new();
+            if let Some(outgoing) = out_by_id.get(id) {
+                for (kind, target_name) in outgoing.iter().take(8) {
+                    hints.push(format_edge_role(kind, target_name, true));
+                    if kind == "calls" {
+                        if let Some(decomp) = name_to_decomposed.get(target_name) {
+                            callee_concepts.push(decomp.clone());
+                        }
+                    }
+                }
+            }
+            if let Some(incoming) = in_by_id.get(id) {
+                for (kind, source_name) in incoming.iter().take(8) {
+                    hints.push(format_edge_role(kind, source_name, false));
+                    if kind == "calls" {
+                        if let Some(decomp) = name_to_decomposed.get(source_name) {
+                            caller_concepts.push(decomp.clone());
+                        }
+                    }
+                }
+            }
+
+            if !caller_concepts.is_empty() && !callee_concepts.is_empty() {
+                let callers = caller_concepts
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let callees = callee_concepts
+                    .iter()
+                    .take(3)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                hints.push(format!("connects {} to {}", callers, callees));
+            } else if !callee_concepts.is_empty() {
+                let callees = callee_concepts
+                    .iter()
+                    .take(4)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                hints.push(format!("uses {}", callees));
+            } else if !caller_concepts.is_empty() {
+                let callers = caller_concepts
+                    .iter()
+                    .take(4)
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                hints.push(format!("used by {}", callers));
+            }
+
+            if let Ok(Some((container_id, container_name))) = self.db.container_for(*id) {
+                hints.push(format!("member of {}", container_name));
+                if let Some(decomp) = name_to_decomposed.get(&container_name) {
+                    hints.push(format!("part of {}", decomp));
+                }
+                if let Some(container_out) = out_by_id.get(&container_id) {
+                    for (_, target_name) in container_out.iter().take(4) {
+                        if let Some(decomp) = name_to_decomposed.get(target_name) {
+                            hints.push(format!("via {} {}", container_name, decomp));
+                        }
+                    }
+                }
+            }
+
+            let file_path = get_file_path(self.db, *file_id);
+            if let Some(ref fp) = file_path {
+                let file_role = infer_file_role(fp);
+                if let Some(role) = file_role {
+                    hints.push(role);
+                }
+                if let Some(module_name) = extract_module_name(fp) {
+                    hints.push(format!("module {}", module_name));
+                }
+            }
+
+            let kind_hints = kind_to_hint(kind_str);
+            if let Some(kh) = kind_hints {
+                hints.push(kh);
+            }
+
+            let source_terms = extract_source_terms(self.db, *id);
+            if !source_terms.is_empty() {
+                hints.push(source_terms);
+            }
+
+            let hint_text = hints.join(". ");
+            let _ = self.db.update_search_hints(*id, &hint_text);
+        }
+
+        Ok(())
     }
 
     #[cfg(feature = "embed")]
@@ -482,6 +634,165 @@ fn generate_path_variants(module_path: &str) -> Vec<String> {
     }
 
     variants
+}
+
+fn format_edge_role(edge_kind: &str, other_name: &str, is_outgoing: bool) -> String {
+    match edge_kind {
+        "calls" => {
+            if is_outgoing {
+                format!("calls {}", other_name)
+            } else {
+                format!("called by {}", other_name)
+            }
+        }
+        "imports" => {
+            if is_outgoing {
+                format!("imports {}", other_name)
+            } else {
+                format!("imported by {}", other_name)
+            }
+        }
+        "contains" => {
+            if is_outgoing {
+                format!("contains {}", other_name)
+            } else {
+                format!("contained in {}", other_name)
+            }
+        }
+        "implements" => {
+            if is_outgoing {
+                format!("implements {}", other_name)
+            } else {
+                format!("implemented by {}", other_name)
+            }
+        }
+        "extends" => {
+            if is_outgoing {
+                format!("extends {}", other_name)
+            } else {
+                format!("extended by {}", other_name)
+            }
+        }
+        "references" => {
+            if is_outgoing {
+                format!("references {}", other_name)
+            } else {
+                format!("referenced by {}", other_name)
+            }
+        }
+        "tests" => {
+            if is_outgoing {
+                format!("tests {}", other_name)
+            } else {
+                format!("tested in {}", other_name)
+            }
+        }
+        "overrides" => {
+            if is_outgoing {
+                format!("overrides {}", other_name)
+            } else {
+                format!("overridden by {}", other_name)
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+fn kind_to_hint(kind_str: &str) -> Option<String> {
+    match kind_str {
+        "function" => Some("function".into()),
+        "method" => Some("method".into()),
+        "class" => Some("class".into()),
+        "struct" => Some("struct".into()),
+        "interface" => Some("interface".into()),
+        "trait" => Some("trait definition".into()),
+        "enum" => Some("enum".into()),
+        "module" => Some("module".into()),
+        _ => None,
+    }
+}
+
+fn get_file_path(db: &GraphDb, file_id: i64) -> Option<String> {
+    let conn = db.conn();
+    conn.query_row(
+        "SELECT path FROM files WHERE id = ?1",
+        rusqlite::params![file_id],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+fn infer_file_role(path: &str) -> Option<String> {
+    let lower = path.to_lowercase();
+    if lower.contains("/test") || lower.contains("/tests/") || lower.contains("_test.") {
+        Some("test file".into())
+    } else if lower.ends_with("/main.rs")
+        || lower.ends_with("/main.ts")
+        || lower.ends_with("/index.ts")
+        || lower.ends_with("/index.js")
+    {
+        Some("entry point".into())
+    } else if lower.contains("/src/lib") || lower.contains("/mod.rs") {
+        Some("library module".into())
+    } else if lower.contains("/cli/") || lower.contains("cli.rs") || lower.contains("cli.ts") {
+        Some("cli command".into())
+    } else if lower.contains("/bench/") || lower.contains("bench.rs") {
+        Some("benchmark".into())
+    } else {
+        None
+    }
+}
+
+fn extract_module_name(path: &str) -> Option<String> {
+    let path = path.trim_start_matches("./");
+    let stem = path.rsplit('/').next()?;
+    let name = stem.rsplit_once('.').map(|(n, _)| n).unwrap_or(stem);
+    if name.is_empty() {
+        return None;
+    }
+    Some(crate::tokenize::decompose_identifier(name))
+}
+
+fn extract_source_terms(db: &GraphDb, symbol_id: i64) -> String {
+    let sym = match db.get_symbol(symbol_id) {
+        Ok(Some(s)) => s,
+        _ => return String::new(),
+    };
+
+    let mut seen = std::collections::HashSet::new();
+    let mut terms = Vec::new();
+
+    let names = [
+        sym.name.clone(),
+        sym.signature.unwrap_or_default(),
+        sym.doc_comment.unwrap_or_default(),
+        sym.source.clone(),
+    ];
+    let combined = names.join(" ");
+
+    for word in combined.split(|c: char| !c.is_alphanumeric() && c != '_') {
+        if word.len() < 3 {
+            continue;
+        }
+        let lower = word.to_lowercase();
+        let stop = [
+            "the", "for", "and", "not", "has", "all", "new", "let", "mut", "pub", "use", "self",
+            "true", "false", "none", "some", "from", "into", "with", "return", "match", "where",
+            "impl", "fn", "mod", "ref", "box", "move",
+        ];
+        if stop.contains(&lower.as_str()) {
+            continue;
+        }
+        if seen.insert(lower.clone()) {
+            let decomp = crate::tokenize::decompose_identifier(&lower);
+            terms.push(decomp);
+        }
+        if terms.len() >= 40 {
+            break;
+        }
+    }
+
+    terms.join(" ")
 }
 
 #[cfg(test)]

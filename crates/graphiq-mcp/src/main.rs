@@ -107,7 +107,7 @@ fn handle_tools_list() -> Value {
             },
             {
                 "name": "blast",
-                "description": "Compute blast radius for a symbol — what it affects (forward) and what it depends on (backward). Useful for understanding change impact.",
+                "description": "Compute blast radius for a symbol — what it affects (forward) and what it depends on (backward). Useful for understanding change impact before making modifications.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -201,19 +201,27 @@ fn tool_search(
         let file = scored.file_path.as_deref().unwrap_or("?");
         let line_count = sym.line_end.saturating_sub(sym.line_start);
         lines.push(format!(
-            "#{} [{:.2}] {}::{} ({}:{}, {}L) [{}]",
+            "#{} [{:.2}] {}:{}  {}::{} ({}L)",
             i + 1,
             scored.score,
             file,
-            sym.name,
             sym.line_start,
             sym.kind.as_str(),
+            sym.name,
             line_count,
-            sym.visibility.as_str(),
         ));
         if let Some(ref sig) = sym.signature {
             let short = sig.lines().next().unwrap_or("");
             lines.push(format!("  {}", short));
+        }
+        let source_lines: Vec<&str> = sym.source.lines().take(3).collect();
+        if !source_lines.is_empty() {
+            let preview = source_lines.join("\n    ");
+            if preview.len() > 200 {
+                lines.push(format!("    {}...", &preview[..200]));
+            } else {
+                lines.push(format!("    {}", preview));
+            }
         }
     }
 
