@@ -536,50 +536,42 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
         }
     }
 
-    let codex_config = dirs::home_dir().map(|d| d.join(".codex").join("config.json"));
+    let codex_config = dirs::home_dir().map(|d| d.join(".codex").join("config.toml"));
 
     if let Some(ref config_path) = codex_config {
         let project_str = project_path.display().to_string();
-        let entry = json!({
-            "command": "graphiq-mcp",
-            "args": [project_str]
-        });
 
-        let (config, written) = if config_path.exists() {
+        let (content, written) = if config_path.exists() {
             match std::fs::read_to_string(config_path) {
-                Ok(content) => {
-                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
-                    let servers = parsed
-                        .as_object_mut()
-                        .unwrap()
-                        .entry("mcpServers")
-                        .or_insert_with(|| json!({}))
-                        .as_object_mut()
-                        .unwrap();
-                    let already = servers
-                        .get("graphiq")
-                        .and_then(|v| v.get("args"))
-                        .and_then(|a| a.as_array())
-                        .and_then(|arr| arr.first())
-                        .and_then(|v| v.as_str())
-                        .map_or(false, |s| s == project_str);
-                    servers.insert("graphiq".into(), entry);
-                    (pretty(&parsed), !already)
+                Ok(existing) => {
+                    let already = existing.contains("[mcp_servers.graphiq]")
+                        && existing.contains(&project_str);
+                    if already {
+                        (existing, false)
+                    } else {
+                        let mut cleaned = existing;
+                        let section = format!(
+                            "\n[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"]\n",
+                            project_str
+                        );
+                        cleaned.push_str(&section);
+                        (cleaned, true)
+                    }
                 }
-                Err(_) => {
-                    let obj = json!({"mcpServers": {"graphiq": entry}});
-                    (pretty(&obj), true)
+                Err(e) => {
+                    eprintln!("  Codex:         failed to read config: {e}");
+                    return;
                 }
             }
         } else {
-            let obj = json!({"mcpServers": {"graphiq": entry}});
-            (pretty(&obj), true)
+            let section = format!(
+                "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"]\n",
+                project_str
+            );
+            (section, true)
         };
 
-        if let Some(parent) = config_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match std::fs::write(config_path, &config) {
+        match std::fs::write(config_path, &content) {
             Ok(()) => {
                 let status = if written { "configured" } else { "updated" };
                 println!("  Codex:         {} {}", status, config_path.display());
