@@ -8,6 +8,7 @@ use crate::chunker::LanguageChunker;
 use crate::db::GraphDb;
 use crate::edge::EdgeKind;
 use crate::files::{content_hash, detect_language, walk_project, Language};
+use crate::roles::{infer_roles, roles_to_hints, RoleEvidence};
 use crate::symbol::{SymbolBuilder, SymbolKind};
 
 pub struct Indexer<'a> {
@@ -453,6 +454,39 @@ impl<'a> Indexer<'a> {
             let kind_hints = kind_to_hint(kind_str);
             if let Some(kh) = kind_hints {
                 hints.push(kh);
+            }
+
+            let role_evidence = RoleEvidence {
+                name: _name.clone(),
+                name_decomposed: name_decomposed.clone(),
+                file_path: file_path.clone(),
+                callee_names: out_by_id
+                    .get(id)
+                    .map(|v| {
+                        v.iter()
+                            .filter(|(k, _)| k == "calls")
+                            .map(|(_, n)| n.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                caller_names: in_by_id
+                    .get(id)
+                    .map(|v| {
+                        v.iter()
+                            .filter(|(k, _)| k == "calls")
+                            .map(|(_, n)| n.clone())
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                outgoing_edge_kinds: out_by_id
+                    .get(id)
+                    .map(|v| v.iter().map(|(k, _)| k.clone()).collect())
+                    .unwrap_or_default(),
+                container_name: self.db.container_for(*id).ok().flatten().map(|(_, n)| n),
+            };
+            let symbol_roles = infer_roles(&role_evidence);
+            if !symbol_roles.is_empty() {
+                hints.push(roles_to_hints(&symbol_roles));
             }
 
             let source_terms = extract_source_terms(self.db, *id);

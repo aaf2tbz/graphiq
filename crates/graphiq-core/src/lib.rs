@@ -13,6 +13,7 @@ pub mod graph;
 pub mod index;
 pub mod languages;
 pub mod rerank;
+pub mod roles;
 pub mod search;
 pub mod symbol;
 pub mod tokenize;
