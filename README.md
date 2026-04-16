@@ -37,20 +37,20 @@ Embeddings only touch 50 candidates max — never the full corpus. And only when
 
 ## Benchmark Results
 
-Self-benchmarked against the graphiq codebase (40 files, 749 symbols):
+Self-benchmarked against the graphiq codebase (40 files, 752 symbols):
 
 | Query Class | MRR | Hit@1 | Hit@3 | Hit@5 | Hit@10 |
 |---|---|---|---|---|---|
 | `symbol-exact` | 1.000 | 100% | 100% | 100% | 100% |
 | `error-debug` | 1.000 | 100% | 100% | 100% | 100% |
-| `nl-descriptive` | 0.740 | 60% | 80% | 100% | 100% |
-| `symbol-partial` | 0.681 | 50% | 83% | 100% | 100% |
-| `file-path` | 0.556 | 33% | 100% | 100% | 100% |
-| `cross-cutting` | 0.350 | 0% | 50% | 100% | 100% |
-| `nl-abstract` | 0.037 | 0% | 0% | 0% | 33% |
-| **Overall** | **0.676** | **56%** | **78%** | **89%** | **93%** |
+| `nl-descriptive` | 0.867 | 80% | 100% | 100% | 100% |
+| `symbol-partial` | 0.806 | 67% | 100% | 100% | 100% |
+| `file-path` | 0.833 | 67% | 100% | 100% | 100% |
+| `cross-cutting` | 1.000 | 100% | 100% | 100% | 100% |
+| `nl-abstract` | 0.042 | 0% | 0% | 0% | 33% |
+| **Overall** | **0.807** | **67%** | **85%** | **89%** | **93%** |
 
-Latency: p50 1.8ms cold, < 0.1ms warm (cached).
+Latency: p50 1.9ms cold, < 0.1ms warm (cached).
 
 ## Installation
 
