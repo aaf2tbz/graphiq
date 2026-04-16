@@ -101,7 +101,7 @@ Release binaries are ~16MB each. No runtime dependencies beyond the OS.
 
 ### `graphiq setup`
 
-One-command onboarding. Detects git root, writes MCP configs for installed harnesses, indexes the project.
+One-command onboarding. Detects git root, writes MCP configs for all installed harnesses, indexes the project.
 
 ```bash
 # Use current directory (walks up to find git root)
@@ -116,7 +116,15 @@ graphiq setup --skip-index
 
 What it does:
 1. Detects the project's git root (or uses the specified path)
-2. Checks for installed harnesses and writes `graphiq-mcp` entries to their configs
+2. Checks for installed harnesses and writes `graphiq-mcp` entries:
+
+| Harness | Config file | Format |
+|---|---|---|
+| opencode | `~/.config/opencode/opencode.json` | JSON `mcp` section |
+| Codex | `~/.codex/config.toml` | TOML `[mcp_servers.graphiq]` |
+| Hermes | `~/.hermes/config.yaml` | YAML `mcp_servers` section |
+| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | JSON `mcpServers` section |
+
 3. Indexes the project (deletes stale DB to avoid schema drift)
 4. Prints a summary with next steps
 
