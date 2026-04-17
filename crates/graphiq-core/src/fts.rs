@@ -73,7 +73,8 @@ impl<'a> FtsSearch<'a> {
         let and_query = build_fts_query(and_tokens, false);
         let results = self.run_fts_query(&and_query, limit);
 
-        if results.len() < 10 {
+        let fallback_threshold = if content_tokens.len() >= 3 { 30 } else { 10 };
+        if results.len() < fallback_threshold {
             let or_query = build_fts_query(&tokens, true);
             let or_results = self.run_fts_query(&or_query, limit);
             let mut merged = results;
