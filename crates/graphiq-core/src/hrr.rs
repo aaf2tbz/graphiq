@@ -464,3 +464,341 @@ pub fn hrr_rerank(
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     scored
 }
+
+pub fn hrr_seed_expand(seed_ids: &[i64], index: &HrrIndex, top_k: usize) -> Vec<(i64, f64)> {
+    let id_to_idx: HashMap<i64, usize> = index
+        .symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let seed_indices: Vec<usize> = seed_ids
+        .iter()
+        .filter_map(|id| id_to_idx.get(id).copied())
+        .collect();
+
+    if seed_indices.is_empty() {
+        return Vec::new();
+    }
+
+    let n_seeds = seed_indices.len() as f64;
+    let mut seed_holo = vec![0.0; index.dim];
+    for &si in &seed_indices {
+        for j in 0..index.dim {
+            seed_holo[j] += index.holograms[si][j] / n_seeds;
+        }
+    }
+
+    let seed_norm: f64 = seed_holo.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if seed_norm < 1e-10 {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(usize, f64)> = (0..index.symbol_ids.len())
+        .map(|i| {
+            let s = dot(&seed_holo, &index.holograms[i]).max(0.0);
+            (i, s)
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+
+    scored
+        .into_iter()
+        .map(|(i, s)| (index.symbol_ids[i], s))
+        .collect()
+}
+
+pub fn hrr_expand_query(seed_ids: &[i64], index: &HrrIndex) -> String {
+    let id_to_idx: HashMap<i64, usize> = index
+        .symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let seed_indices: Vec<usize> = seed_ids
+        .iter()
+        .filter_map(|id| id_to_idx.get(id).copied())
+        .collect();
+
+    if seed_indices.is_empty() {
+        return String::new();
+    }
+
+    let n_seeds = seed_indices.len() as f64;
+    let mut seed_holo = vec![0.0; index.dim];
+    for &si in &seed_indices {
+        for j in 0..index.dim {
+            seed_holo[j] += index.holograms[si][j] / n_seeds;
+        }
+    }
+
+    let seed_norm: f64 = seed_holo.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if seed_norm < 1e-10 {
+        return String::new();
+    }
+
+    let mut scored: Vec<(usize, f64)> = (0..index.symbol_ids.len())
+        .map(|i| (i, dot(&seed_holo, &index.holograms[i]).max(0.0)))
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let mut expanded_terms: HashMap<String, f64> = HashMap::new();
+    let max_expand = 10.min(scored.len());
+    for &(si, score) in scored.iter().take(max_expand) {
+        let terms = extract_terms(&index.symbol_names[si]);
+        for t in terms {
+            let entry = expanded_terms.entry(t).or_insert(0.0);
+            *entry += score;
+        }
+    }
+
+    let mut term_vec: Vec<(String, f64)> = expanded_terms.into_iter().collect();
+    term_vec.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    term_vec
+        .iter()
+        .take(15)
+        .map(|(t, _)| t.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+pub fn hrr_antivector_rerank(
+    query: &str,
+    candidate_ids: &[i64],
+    candidate_scores: &[f64],
+    index: &HrrIndex,
+    beta: f64,
+) -> Vec<(i64, f64)> {
+    let id_to_idx: HashMap<i64, usize> = index
+        .symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let q = build_query_vec(query, &index.term_vectors, &index.term_idf, index.dim);
+    if q.iter().all(|x| x.abs() < 1e-10) {
+        return candidate_ids
+            .iter()
+            .zip(candidate_scores.iter())
+            .map(|(&id, &s)| (id, s))
+            .collect();
+    }
+
+    let q_norm_sq: f64 = q.iter().map(|x| x * x).sum();
+
+    let seed_indices: Vec<usize> = candidate_ids
+        .iter()
+        .filter_map(|id| id_to_idx.get(id).copied())
+        .collect();
+
+    let n_seeds = seed_indices.len() as f64;
+    let mut anti_dir = vec![0.0; index.dim];
+    for &si in &seed_indices {
+        let h = &index.holograms[si];
+        let proj_scale = dot(&q, h) / q_norm_sq;
+        for j in 0..index.dim {
+            anti_dir[j] += (h[j] - proj_scale * q[j]) / n_seeds;
+        }
+    }
+
+    let anti_norm: f64 = anti_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if anti_norm < 1e-10 {
+        return hrr_rerank(query, candidate_ids, candidate_scores, index);
+    }
+    for x in anti_dir.iter_mut() {
+        *x /= anti_norm;
+    }
+
+    let mut scored: Vec<(i64, f64)> = candidate_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            let base = candidate_scores.get(i).copied().unwrap_or(0.0);
+            if base <= 0.0 {
+                return (id, base);
+            }
+            if let Some(&idx) = id_to_idx.get(&id) {
+                let hrr_sim = dot(&q, &index.holograms[idx]).max(0.0);
+                let anti_sim = dot(&anti_dir, &index.holograms[idx]);
+                let boost = 1.0 + 0.10 * hrr_sim + beta * anti_sim;
+                (id, base * boost.max(0.0))
+            } else {
+                (id, base)
+            }
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored
+}
+
+pub fn hrr_antivector_expand(
+    query: &str,
+    seed_ids: &[i64],
+    index: &HrrIndex,
+    top_k: usize,
+    beta: f64,
+) -> Vec<(i64, f64)> {
+    let id_to_idx: HashMap<i64, usize> = index
+        .symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let q = build_query_vec(query, &index.term_vectors, &index.term_idf, index.dim);
+    if q.iter().all(|x| x.abs() < 1e-10) {
+        return Vec::new();
+    }
+
+    let q_norm_sq: f64 = q.iter().map(|x| x * x).sum();
+
+    let seed_indices: Vec<usize> = seed_ids
+        .iter()
+        .filter_map(|id| id_to_idx.get(id).copied())
+        .collect();
+
+    let n_seeds = seed_indices.len() as f64;
+    let mut anti_dir = vec![0.0; index.dim];
+    for &si in &seed_indices {
+        let h = &index.holograms[si];
+        let proj_scale = dot(&q, h) / q_norm_sq;
+        for j in 0..index.dim {
+            anti_dir[j] += (h[j] - proj_scale * q[j]) / n_seeds;
+        }
+    }
+
+    let anti_norm: f64 = anti_dir.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if anti_norm < 1e-10 {
+        return Vec::new();
+    }
+    for x in anti_dir.iter_mut() {
+        *x /= anti_norm;
+    }
+
+    let seed_set: HashSet<i64> = seed_ids.iter().copied().collect();
+
+    let mut scored: Vec<(usize, f64)> = (0..index.symbol_ids.len())
+        .filter(|i| !seed_set.contains(&index.symbol_ids[*i]))
+        .map(|i| {
+            let h = &index.holograms[i];
+            let q_sim = dot(&q, h).max(0.0);
+            let anti_sim = dot(&anti_dir, h);
+            let score = q_sim + beta * anti_sim;
+            (i, score)
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+
+    scored
+        .into_iter()
+        .map(|(i, s)| (index.symbol_ids[i], s))
+        .collect()
+}
+
+pub fn hrr_bivector_expand(seed_ids: &[i64], index: &HrrIndex, top_k: usize) -> Vec<(i64, f64)> {
+    let (expanded, _) = hrr_bivector_expand_scored(seed_ids, index, top_k);
+    expanded
+}
+
+pub fn hrr_bivector_expand_scored(
+    seed_ids: &[i64],
+    index: &HrrIndex,
+    top_k: usize,
+) -> (Vec<(i64, f64)>, f64) {
+    let id_to_idx: HashMap<i64, usize> = index
+        .symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let seed_indices: Vec<usize> = seed_ids
+        .iter()
+        .filter_map(|id| id_to_idx.get(id).copied())
+        .collect();
+
+    if seed_indices.len() < 2 {
+        return (Vec::new(), 0.0);
+    }
+
+    let dim = index.dim;
+    let mut bivec = vec![0.0; dim];
+    let mut n_pairs = 0.0;
+
+    let max_seeds = seed_indices.len().min(10);
+    let mut pairwise_cos: Vec<f64> = Vec::new();
+    for i in 0..max_seeds {
+        for j in (i + 1)..max_seeds {
+            let a = &index.holograms[seed_indices[i]];
+            let b = &index.holograms[seed_indices[j]];
+            let a_dot_b = dot(a, b);
+            let a_norm: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt();
+            let b_norm: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if a_norm < 1e-10 || b_norm < 1e-10 {
+                continue;
+            }
+            pairwise_cos.push(a_dot_b / (a_norm * b_norm));
+            let b_norm_sq = b_norm * b_norm;
+            let proj_scale = a_dot_b / b_norm_sq;
+            for k in 0..dim {
+                bivec[k] += (a[k] - proj_scale * b[k]) / dim as f64;
+            }
+            n_pairs += 1.0;
+        }
+    }
+
+    let coherence = if pairwise_cos.is_empty() {
+        0.0
+    } else {
+        pairwise_cos.iter().sum::<f64>() / pairwise_cos.len() as f64
+    };
+
+    if n_pairs < 1.0 {
+        return (Vec::new(), coherence);
+    }
+    for x in bivec.iter_mut() {
+        *x /= n_pairs;
+    }
+
+    let bv_norm: f64 = bivec.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if bv_norm < 1e-10 {
+        return (Vec::new(), coherence);
+    }
+    for x in bivec.iter_mut() {
+        *x /= bv_norm;
+    }
+
+    let seed_set: HashSet<i64> = seed_ids.iter().copied().collect();
+
+    let mut scored: Vec<(usize, f64)> = (0..index.symbol_ids.len())
+        .filter(|i| !seed_set.contains(&index.symbol_ids[*i]))
+        .map(|i| {
+            let score = dot(&bivec, &index.holograms[i]);
+            (i, score)
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+
+    let result = scored
+        .into_iter()
+        .map(|(i, s)| (index.symbol_ids[i], s))
+        .collect();
+    (result, coherence)
+}

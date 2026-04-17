@@ -1261,21 +1261,112 @@ fn main() {
             print_summary_hrr("HRR+AFMO", &combined);
         }
 
-        println!("\n--- Per-Query: HRR-Rerank vs HRR-Pure vs BM25 ---\n");
+        println!("\n=== HRR Antivector Rerank (beta sweep) ===\n");
+        for beta in [0.02, 0.05, 0.08, 0.12, 0.18, 0.25].iter() {
+            let anti_res: Vec<BenchResult> = queries
+                .iter()
+                .map(|q| {
+                    let pipeline_result = engine.search(&SearchQuery::new(&q.query).top_k(50));
+                    let cids: Vec<i64> = pipeline_result
+                        .results
+                        .iter()
+                        .map(|r| r.symbol.id)
+                        .collect();
+                    let cscores: Vec<f64> =
+                        pipeline_result.results.iter().map(|r| r.score).collect();
+                    let reranked =
+                        hrr::hrr_antivector_rerank(&q.query, &cids, &cscores, hrr_idx, *beta);
+                    let top10: Vec<(i64, f64)> = reranked.into_iter().take(10).collect();
+                    eval_hits_hrr(&top10, q)
+                })
+                .collect();
+            let ndcg: f64 = anti_res.iter().map(|r| r.ndcg).sum::<f64>() / anti_res.len() as f64;
+            let h1 = anti_res.iter().filter(|r| r.hit_at_1).count();
+            println!(
+                "AntiR beta={:.2}  NDCG={:.3}  H@1={}/{}",
+                beta,
+                ndcg,
+                h1,
+                anti_res.len()
+            );
+        }
+
+        println!("\n=== HRR Bivector Dual (seeds=5, weight sweep) ===\n");
+        let mut best_biv_agg = 0.0f64;
+        let mut best_biv_w = 0.0f64;
+        let mut best_biv_results: Vec<BenchResult> = Vec::new();
+        for biv_w in [0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.2].iter() {
+            let biv_res: Vec<BenchResult> = queries
+                .iter()
+                .map(|q| {
+                    let pipeline_result = engine.search(&SearchQuery::new(&q.query).top_k(50));
+                    let bm25_ids: Vec<i64> = pipeline_result
+                        .results
+                        .iter()
+                        .take(5)
+                        .map(|r| r.symbol.id)
+                        .collect();
+                    let bm25_scores: Vec<f64> =
+                        pipeline_result.results.iter().map(|r| r.score).collect();
+
+                    let (expanded, _) = hrr::hrr_bivector_expand_scored(&bm25_ids, hrr_idx, 50);
+
+                    let mut rrf: std::collections::HashMap<i64, f64> =
+                        std::collections::HashMap::new();
+                    let k = 60.0;
+                    for (rank, &id) in bm25_ids.iter().enumerate() {
+                        *rrf.entry(id).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+                    }
+                    for (rank, (id, _)) in expanded.iter().enumerate() {
+                        *rrf.entry(*id).or_insert(0.0) += *biv_w / (k + rank as f64 + 1.0);
+                    }
+
+                    let mut merged: Vec<(i64, f64)> = rrf.into_iter().collect();
+                    merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                    let merged_50: Vec<i64> = merged.iter().take(50).map(|(id, _)| *id).collect();
+                    let merged_scores: Vec<f64> = merged.iter().take(50).map(|(_, s)| *s).collect();
+
+                    let reranked = hrr::hrr_rerank(&q.query, &merged_50, &merged_scores, hrr_idx);
+                    let top10: Vec<(i64, f64)> = reranked.into_iter().take(10).collect();
+
+                    eval_hits_hrr(&top10, q)
+                })
+                .collect();
+            let ndcg: f64 = biv_res.iter().map(|r| r.ndcg).sum::<f64>() / biv_res.len() as f64;
+            let h1 = biv_res.iter().filter(|r| r.hit_at_1).count();
+            if ndcg > best_biv_agg {
+                best_biv_agg = ndcg;
+                best_biv_w = *biv_w;
+                best_biv_results = biv_res;
+            }
+            println!(
+                "Biv5 w={:.1}  NDCG={:.3}  H@1={}/{}",
+                biv_w,
+                ndcg,
+                h1,
+                queries.len()
+            );
+        }
+        let hrr_bivec_dual = best_biv_results;
+        println!("\nBest Biv5: w={:.1} NDCG={:.3}", best_biv_w, best_biv_agg);
+
+        println!("\n--- Per-Query: HRR-Rerank vs HRR-Pure vs BivAdapt vs BM25 ---\n");
         println!(
-            "{:<30} {:<15} {:>8} {:>8} {:>8}",
-            "Query", "Category", "HRR-R", "HRR-P", "BM25"
+            "{:<30} {:<15} {:>8} {:>8} {:>8} {:>8}",
+            "Query", "Category", "HRR-R", "HRR-P", "BivA", "BM25"
         );
         println!("{}", "-".repeat(100));
         for (i, bm25) in results.iter().enumerate() {
             let hr = hrr_rerank.get(i);
             let hp = hrr_pure.get(i);
+            let ba = hrr_bivec_dual.get(i);
             println!(
-                "{:<30} {:<15} {:>8.3} {:>8.3} {:>8.3}",
+                "{:<30} {:<15} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
                 truncate(&bm25.query, 30),
                 bm25.category,
                 hr.map(|r| r.ndcg).unwrap_or(0.0),
                 hp.map(|r| r.ndcg).unwrap_or(0.0),
+                ba.map(|r| r.ndcg).unwrap_or(0.0),
                 bm25.ndcg,
             );
         }

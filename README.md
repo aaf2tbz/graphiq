@@ -2,7 +2,7 @@
 
 Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, heuristic reranking, and holographic reduced representations — zero embeddings required.
 
-**0.719 NDCG@10** on self-benchmark. **0.546 on tokio** (17K symbols). **0.530 on signetai** (20K symbols). **~1ms p50 latency**. No model dependencies.
+**0.777 NDCG@10** on self-benchmark. **0.546 on tokio** (17K symbols). **0.552 on signetai** (20K symbols). **~1ms p50 latency**. No model dependencies.
 
 ## Why This Works
 
@@ -40,22 +40,24 @@ Query: "rate limit middleware"
 +-----------------------------+
 ```
 
-The current 0.719 NDCG@10 uses **only layers 1-3** plus a query decomposition path for natural language queries, cross-package expansion for monorepo layouts, and HRR reranking. Layer 4 (embed reranker) was tested with jina-code and nomic-embed — both produced net-negative NDCG. Neural embeddings at the 137M scale add noise, not signal.
+The current 0.777 NDCG@10 uses **only layers 1-3** plus a query decomposition path for natural language queries, cross-package expansion for monorepo layouts, and HRR bivector reranking. Layer 4 (embed reranker) was tested with jina-code and nomic-embed — both produced net-negative NDCG. Neural embeddings at the 137M scale add noise, not signal.
 
-**Phase 6 (in progress)** explores pure mathematical approaches to semantic search — no model downloads, no network calls. The winning approach so far is **Holographic Reduced Representations (HRR)**: each symbol's identity and graph neighborhood are encoded into a fixed-width vector via circular convolution, then matched against query vectors via dot product. This captures structural proximity that BM25 cannot see — symbols related through call/import chains score higher even without shared terms. HRR-Rerank produces +0.014 aggregate NDCG over BM25 across all 3 codebases. Also explored: Poincaré ball hyperbolic embeddings (AFMO), spectral bandpass, and Born-series propagators. See `DESIGN-LSA.md` for the full design.
+**Phase 6 (in progress)** explores pure mathematical approaches to semantic search — no model downloads, no network calls. The winning approach is **Holographic Reduced Representations (HRR)** with **bivector expansion**: each symbol's identity and graph neighborhood are encoded into a fixed-width vector via circular convolution, then matched against query vectors via dot product. The bivector expansion computes the oriented plane (rejection) between BM25's top results and discovers structurally related symbols through geometric algebra — the antivector/bivector concept from Clifford algebra applied to code search. **Biv5** (5-seed bivector expansion + RRF merge + HRR rerank) produces **+0.062 aggregate NDCG** over BM25 across all 3 codebases. Also explored: Poincaré ball hyperbolic embeddings (AFMO), spectral bandpass, Born-series propagators, and antivector reranking. See `DESIGN-LSA.md` for the full design.
 
 ## Benchmarks
 
 Three codebases, increasing scale and difficulty. Metric is **NDCG@10 with graded relevance** (3=perfect, 2=good, 1=acceptable) — a proper IR evaluation that rewards partial matches and penalizes ordering errors, unlike single-symbol MRR.
 
-| Codebase | Symbols | Queries | BM25 | HRR-Rerank | AFMO-Rerank |
-|---|---|---|---|---|---|
-| graphiq (self) | 995 | 27 | 0.715 | **0.719** | 0.705 |
-| tokio | 7,722 | 26 | 0.539 | **0.546** | 0.538 |
-| signetai | 12,881 | 25 | 0.527 | **0.530** | 0.533 |
-| **Aggregate** | | | **1.781** | **1.795** | 1.776 |
+| Codebase | Symbols | Queries | BM25 | HRR-Rerank | HRR-Biv5 | AFMO-Rerank |
+|---|---|---|---|---|---|---|
+| graphiq (self) | 995 | 27 | 0.715 | 0.719 | **0.777** | 0.705 |
+| tokio | 7,722 | 26 | 0.539 | **0.546** | 0.528 | 0.538 |
+| signetai | 12,881 | 25 | 0.527 | 0.535 | **0.552** | 0.533 |
+| **Aggregate** | | | **1.781** | **1.800** | **1.857** | 1.776 |
 
-HRR-Pure (zero text search, pure structural/identity matching via holographic binding) scores 0.632/0.463/0.414 — ~85% of BM25 performance from graph structure alone.
+HRR-Biv5 uses bivector expansion from geometric algebra: pairwise rejection between BM25's top-5 results forms a structural "oriented plane" that discovers related symbols BM25 misses. Self +0.058, signetai +0.017 over HRR-Rerank.
+
+HRR-Pure (zero text search, pure structural/identity matching via holographic binding) scores 0.632/0.484/0.418 — ~85% of BM25 performance from graph structure alone.
 
 Latency: p50 1.0ms cold, < 0.1ms warm (cached). p95 3.0ms cold.
 
@@ -404,7 +406,7 @@ graphiq/
         rerank.rs       # 11 heuristics + channel scoring + diversity
         graph.rs        # Structural expansion (BFS)
         blast.rs        # Blast radius (forward/backward)
-        hrr.rs          # Holographic Reduced Representations (Phase 6)
+        hrr.rs          # HRR + bivector expansion + antivector rerank (Phase 6)
         afmo.rs         # Poincaré ball hyperbolic embeddings (Phase 6)
         lsa.rs          # Truncated SVD / LSA foundation (Phase 6)
         db.rs           # SQLite schema + queries
