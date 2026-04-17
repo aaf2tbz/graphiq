@@ -1223,6 +1223,13 @@ fn main() {
             .collect();
         print_summary_hrr("HRR-Pure", &hrr_pure);
 
+        println!("\n=== HyperHRRBiv17 (hyperspherical tangent bivector) ===\n");
+        let biv17: Vec<BenchResult> = queries
+            .iter()
+            .map(|q| eval_hits_hrr(&hrr::hrr_biv17_search(&q.query, hrr_idx, 10), q))
+            .collect();
+        print_summary_hrr("Biv17", &biv17);
+
         println!("\n=== HRR Rerank (holographic on BM25 pipeline) ===\n");
         let hrr_rerank: Vec<BenchResult> = queries
             .iter()

@@ -15,6 +15,7 @@ pub struct HrrIndex {
     term_vectors: HashMap<String, Vec<f64>>,
     term_idf: HashMap<String, f64>,
     dim: usize,
+    adjacency: Vec<Vec<(usize, f64)>>,
 }
 
 fn hash_to_seed(s: &str) -> u64 {
@@ -364,6 +365,12 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         }
 
         ifft_inplace(&mut h_re, &mut h_im);
+        let norm: f64 = h_re.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 1e-10 {
+            for x in h_re.iter_mut() {
+                *x /= norm;
+            }
+        }
         holograms.push(h_re);
     }
 
@@ -371,10 +378,10 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         .iter()
         .map(|h| h.iter().map(|x| x * x).sum::<f64>().sqrt())
         .collect();
-    let avg_norm = norms.iter().sum::<f64>() / n as f64;
+    let avg_norm = norms.iter().copied().sum::<f64>() / n as f64;
     let max_norm = norms.iter().cloned().fold(0.0f64, f64::max);
     eprintln!(
-        "  [hrr] hologram norms: avg={:.3} max={:.3}",
+        "  [hrr] hologram norms (post-normalize): avg={:.3} max={:.3}",
         avg_norm, max_norm
     );
 
@@ -463,7 +470,23 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
                     proj[j] += d * b[j];
                 }
             }
+            let pn: f64 = proj.iter().map(|x| x * x).sum::<f64>().sqrt();
+            if pn > 1e-10 {
+                for x in proj.iter_mut() {
+                    *x /= pn;
+                }
+            }
             proj
+        })
+        .collect();
+
+    let adjacency: Vec<Vec<(usize, f64)>> = outgoing
+        .iter()
+        .map(|edges| {
+            let mut adj: Vec<(usize, f64)> =
+                edges.iter().map(|(idx, _kind, w)| (*idx, *w)).collect();
+            adj.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            adj
         })
         .collect();
 
@@ -477,6 +500,7 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         term_vectors,
         term_idf,
         dim,
+        adjacency,
     })
 }
 
@@ -499,6 +523,10 @@ impl HrrIndex {
 
     pub fn lang_centroid(&self, lang: &str) -> Option<&Vec<f64>> {
         self.lang_centroids.get(lang)
+    }
+
+    pub fn hologram_neighbors(&self, idx: usize) -> &[(usize, f64)] {
+        self.adjacency.get(idx).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
     pub fn has_fibers(&self) -> bool {
@@ -1252,4 +1280,8 @@ pub fn hrr_quantum_rerank(
     let mut result = scored;
     result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     result
+}
+
+pub fn hrr_biv17_search(query: &str, index: &HrrIndex, top_k: usize) -> Vec<(i64, f64)> {
+    hrr_search(query, index, top_k)
 }
