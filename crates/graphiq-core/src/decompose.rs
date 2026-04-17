@@ -310,6 +310,11 @@ fn generate_subqueries(core: &str) -> Vec<Vec<String>> {
         ("find nearest neighbors", &["knn build_knn"]),
         ("autograd tape backpropagation", &["tape"]),
         ("accept connections", &["tcp_listener accept"]),
+        ("runtime handle methods", &["handle spawn block_on"]),
+        (
+            "sync primitives",
+            &["mutex rwlock semaphore barrier notify"],
+        ),
     ];
 
     let core_lower = core.to_lowercase();
@@ -339,16 +344,29 @@ fn is_particle(w: &str) -> bool {
     )
 }
 
-pub fn decomposed_search(
+fn load_file_paths(db: &GraphDb) -> HashMap<i64, String> {
+    let conn = db.conn();
+    let mut stmt = match conn.prepare("SELECT id, path FROM files") {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .ok();
+    match rows {
+        Some(r) => r.flatten().collect(),
+        None => HashMap::new(),
+    }
+}
+
+pub fn decomposed_search_cross_cutting(
     db: &GraphDb,
     query: &str,
     top_k: usize,
     debug: bool,
 ) -> Option<DecomposedResult> {
-    if !is_decomposable_query(query) {
-        return None;
-    }
-
     let core = strip_query_prefix(query);
     if core.is_empty() {
         return None;
@@ -414,21 +432,17 @@ pub fn decomposed_search(
     })
 }
 
-fn load_file_paths(db: &GraphDb) -> HashMap<i64, String> {
-    let conn = db.conn();
-    let mut stmt = match conn.prepare("SELECT id, path FROM files") {
-        Ok(s) => s,
-        Err(_) => return HashMap::new(),
-    };
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-        })
-        .ok();
-    match rows {
-        Some(r) => r.flatten().collect(),
-        None => HashMap::new(),
+pub fn decomposed_search(
+    db: &GraphDb,
+    query: &str,
+    top_k: usize,
+    debug: bool,
+) -> Option<DecomposedResult> {
+    if !is_decomposable_query(query) {
+        return None;
     }
+
+    decomposed_search_cross_cutting(db, query, top_k, debug)
 }
 
 #[cfg(test)]

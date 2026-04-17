@@ -90,8 +90,8 @@ impl<'a> SearchEngine<'a> {
         }
 
         let mut results: Vec<ScoredSymbol>;
-        let total_fts: usize;
-        let total_expanded: usize;
+        let mut total_fts: usize;
+        let mut total_expanded: usize;
 
         if let Some(decomposed) =
             crate::decompose::decomposed_search(self.db, &query.query, query.top_k, query.debug)
@@ -157,6 +157,15 @@ impl<'a> SearchEngine<'a> {
                     }
                     results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
                     results.truncate(query.top_k);
+                } else if let Some(decomposed) = crate::decompose::decomposed_search_cross_cutting(
+                    self.db,
+                    &query.query,
+                    query.top_k,
+                    query.debug,
+                ) {
+                    results = decomposed.results;
+                    total_fts = decomposed.subqueries.len();
+                    total_expanded = 0;
                 }
             }
         }
