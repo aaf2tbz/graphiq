@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::db::GraphDb;
+use crate::directory_expand::DirectorySibling;
 use crate::fts::FtsResult;
 use crate::graph::ExpansionEntry;
 use crate::symbol::{Symbol, SymbolKind, Visibility};
@@ -136,6 +137,7 @@ impl Reranker {
         &self,
         fts_results: &[FtsResult],
         expanded: &[ExpansionEntry],
+        cross_cutting: &[DirectorySibling],
         file_paths: &HashMap<i64, String>,
         top_k: usize,
     ) -> Vec<ScoredSymbol> {
@@ -161,6 +163,23 @@ impl Reranker {
             });
         }
 
+        if !cross_cutting.is_empty() {
+            let best_fts_score = fts_results
+                .iter()
+                .map(|r| r.bm25_score)
+                .fold(0.0f64, f64::max);
+            for sib in cross_cutting {
+                let fp = file_paths.get(&sib.symbol.file_id).cloned();
+                candidates.push(ScoredSymbol {
+                    symbol: sib.symbol.clone(),
+                    score: best_fts_score * sib.proximity,
+                    breakdown: None,
+                    is_fts_hit: false,
+                    file_path: fp,
+                });
+            }
+        }
+
         self.apply_heuristics(&mut candidates);
         self.apply_diversity_dampen(&mut candidates);
 
@@ -169,7 +188,7 @@ impl Reranker {
         candidates
     }
 
-    fn apply_heuristics(&self, candidates: &mut [ScoredSymbol]) {
+    pub fn apply_heuristics(&self, candidates: &mut [ScoredSymbol]) {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -280,7 +299,7 @@ impl Reranker {
                 1.0
             };
 
-            let name_coverage = if self.query_tokens.len() <= 2 && !self.query_tokens.is_empty() {
+            let name_coverage = if self.query_tokens.len() <= 3 && !self.query_tokens.is_empty() {
                 let decomp_tokens: Vec<&str> = sym.name_decomposed.split_whitespace().collect();
                 if decomp_tokens.is_empty() {
                     1.0
@@ -420,7 +439,7 @@ impl Reranker {
         }
     }
 
-    fn apply_diversity_dampen(&self, candidates: &mut [ScoredSymbol]) {
+    pub fn apply_diversity_dampen(&self, candidates: &mut [ScoredSymbol]) {
         candidates.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
 
         let mut file_counts: HashMap<i64, usize> = HashMap::new();
@@ -662,7 +681,7 @@ mod tests {
         }];
 
         let file_paths = HashMap::from([(1i64, "src/main.ts".into())]);
-        let results = reranker.rerank(&fts_results, &[], &file_paths, 10);
+        let results = reranker.rerank(&fts_results, &[], &[], &file_paths, 10);
 
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].symbol.name, "authenticate");
@@ -684,7 +703,7 @@ mod tests {
         };
 
         let file_paths = HashMap::from([(1i64, "src/main.ts".into())]);
-        let results = reranker.rerank(&[small, large], &[], &file_paths, 10);
+        let results = reranker.rerank(&[small, large], &[], &[], &file_paths, 10);
 
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].symbol.name, "small");
@@ -708,7 +727,7 @@ mod tests {
         };
 
         let file_paths = HashMap::from([(1i64, "src/main.ts".into())]);
-        let results = reranker.rerank(&[s1], &[], &file_paths, 10);
+        let results = reranker.rerank(&[s1], &[], &[], &file_paths, 10);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].score > 5.0);
@@ -731,7 +750,7 @@ mod tests {
         ];
 
         let file_paths = HashMap::from([(1i64, "src/main.ts".into())]);
-        let results = reranker.rerank(&fts_results, &[], &file_paths, 10);
+        let results = reranker.rerank(&fts_results, &[], &[], &file_paths, 10);
 
         assert_eq!(results.len(), 2);
         assert!(results[0].score > results[1].score);

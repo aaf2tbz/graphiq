@@ -126,24 +126,30 @@ impl<'a> SearchEngine<'a> {
             let file_paths = self.load_file_paths();
 
             let reranker = Reranker::new(self.db, query.debug).for_query(&query.query);
-            results = reranker.rerank(&fts_results, &expanded, &file_paths, query.top_k);
+            results = reranker.rerank(&fts_results, &expanded, &[], &file_paths, query.top_k);
 
             if is_cross_cutting_query(&query.query) {
                 let existing_ids: std::collections::HashSet<i64> =
                     results.iter().map(|r| r.symbol.id).collect();
                 let dir_expander = DirectoryExpander::new(self.db);
-                let siblings = dir_expander.expand(&fts_results, &existing_ids, 30, &query.query);
-                if !siblings.is_empty() {
+
+                let cross_pkg = dir_expander.expand_cross_package(
+                    &fts_results,
+                    &existing_ids,
+                    20,
+                    &query.query,
+                );
+
+                if !cross_pkg.is_empty() {
                     let best_fts_score = fts_results
                         .iter()
                         .map(|r| r.bm25_score)
                         .fold(0.0f64, f64::max);
-                    for sib in &siblings {
+                    for sib in &cross_pkg {
                         let fp = file_paths.get(&sib.symbol.file_id).cloned();
-                        let score = best_fts_score * 0.8 * sib.proximity;
                         results.push(ScoredSymbol {
                             symbol: sib.symbol.clone(),
-                            score,
+                            score: best_fts_score * sib.proximity,
                             breakdown: None,
                             is_fts_hit: false,
                             file_path: fp,

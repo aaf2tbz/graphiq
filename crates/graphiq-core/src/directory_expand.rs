@@ -91,6 +91,118 @@ impl<'a> DirectoryExpander<'a> {
         siblings
     }
 
+    pub fn expand_cross_package(
+        &self,
+        fts_results: &[FtsResult],
+        existing_ids: &HashSet<i64>,
+        max_siblings: usize,
+        query: &str,
+    ) -> Vec<DirectorySibling> {
+        let query_lower = query.to_lowercase();
+        let query_tokens: Vec<&str> = query_lower
+            .split_whitespace()
+            .filter(|t| t.len() >= 3)
+            .filter(|t| *t != "all" && *t != "the")
+            .collect();
+
+        if query_tokens.is_empty() {
+            return Vec::new();
+        }
+
+        let seed_paths = self.collect_seed_paths(fts_results, 5);
+        let seed_packages = extract_package_prefixes(&seed_paths);
+        if seed_packages.is_empty() {
+            return Vec::new();
+        }
+
+        let all_prefixes = match self.db.distinct_path_prefixes(2) {
+            Ok(p) => p,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut matching_prefixes = Vec::new();
+        for token in &query_tokens {
+            for prefix in &all_prefixes {
+                let basename = prefix.rsplit_once('/').map(|(_, n)| n).unwrap_or(prefix);
+                if basename.contains(token) {
+                    matching_prefixes.push(prefix.clone());
+                }
+            }
+        }
+
+        let mut sibling_packages: Vec<String> = Vec::new();
+        for seed_pkg in &seed_packages {
+            let seed_base = package_base_name(seed_pkg);
+            for prefix in &matching_prefixes {
+                let prefix_base = package_base_name(prefix);
+                if seed_base == prefix_base && prefix != seed_pkg {
+                    sibling_packages.push(prefix.clone());
+                }
+            }
+        }
+
+        if sibling_packages.is_empty() {
+            for _token in &query_tokens {
+                for prefix in &matching_prefixes {
+                    if !seed_packages.contains(prefix) {
+                        sibling_packages.push(prefix.clone());
+                    }
+                }
+            }
+        }
+
+        sibling_packages.sort();
+        sibling_packages.dedup();
+
+        let mut siblings = Vec::new();
+        let mut seen = existing_ids.clone();
+        let mut per_pkg_count: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+
+        for pkg_prefix in &sibling_packages {
+            let pkg_limit = 1;
+            if *per_pkg_count.entry(pkg_prefix.clone()).or_insert(0) >= pkg_limit {
+                continue;
+            }
+
+            let dir_symbols = match self
+                .db
+                .symbols_by_path_prefix(&format!("{}/", pkg_prefix), 20)
+            {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+
+            let mut added = 0;
+            for sym in dir_symbols {
+                if added >= pkg_limit {
+                    break;
+                }
+                if seen.contains(&sym.id) {
+                    continue;
+                }
+                if !is_primary_export(&sym) {
+                    continue;
+                }
+                if !is_container_kind(&sym.kind) {
+                    continue;
+                }
+
+                seen.insert(sym.id);
+                siblings.push(DirectorySibling {
+                    symbol: sym,
+                    seed_file_id: 0,
+                    proximity: 0.9,
+                });
+                added += 1;
+            }
+            per_pkg_count.insert(pkg_prefix.clone(), added);
+        }
+
+        siblings.truncate(max_siblings);
+        siblings
+    }
+
     fn collect_seed_paths(
         &self,
         fts_results: &[FtsResult],
@@ -134,6 +246,38 @@ fn is_primary_export(sym: &Symbol) -> bool {
             | SymbolKind::Interface
             | SymbolKind::Function
     )
+}
+
+fn is_container_kind(kind: &SymbolKind) -> bool {
+    matches!(
+        kind,
+        SymbolKind::Struct
+            | SymbolKind::Class
+            | SymbolKind::Enum
+            | SymbolKind::Trait
+            | SymbolKind::Interface
+    )
+}
+
+fn extract_package_prefixes(seed_paths: &[(i64, String)]) -> Vec<String> {
+    let mut prefixes = Vec::new();
+    for (_, path) in seed_paths {
+        let parts: Vec<&str> = path.split('/').collect();
+        if parts.len() >= 2 {
+            prefixes.push(format!("{}/{}", parts[0], parts[1]));
+        }
+    }
+    prefixes.sort();
+    prefixes.dedup();
+    prefixes
+}
+
+fn package_base_name(pkg_path: &str) -> &str {
+    let name = pkg_path
+        .rsplit_once('/')
+        .map(|(_, n)| n)
+        .unwrap_or(pkg_path);
+    name.rsplit_once('-').map(|(_, rest)| rest).unwrap_or(name)
 }
 
 #[derive(Debug, Clone)]

@@ -312,7 +312,7 @@ pub fn decomposed_search(
 
         let file_paths = load_file_paths(db);
         let reranker = Reranker::new(db, debug).for_query(&sq_str);
-        let results = reranker.rerank(&fts_results, &[], &file_paths, 20);
+        let results = reranker.rerank(&fts_results, &[], &[], &file_paths, 20);
 
         for r in results {
             let sid = r.symbol.id;

@@ -344,6 +344,25 @@ impl GraphDb {
         }
     }
 
+    pub fn distinct_path_prefixes(&self, depth: usize) -> Result<Vec<String>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT DISTINCT path FROM files ORDER BY path")?;
+        let rows: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .flatten()
+            .collect();
+        let mut prefixes = std::collections::HashSet::new();
+        for path in &rows {
+            let parts: Vec<&str> = path.split('/').collect();
+            if parts.len() >= depth {
+                let prefix = parts[..depth].join("/");
+                prefixes.insert(prefix);
+            }
+        }
+        Ok(prefixes.into_iter().collect())
+    }
+
     pub fn symbols_by_name(&self, name: &str) -> Result<Vec<Symbol>, DbError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, file_id, name, qualified_name, kind, line_start, line_end,
