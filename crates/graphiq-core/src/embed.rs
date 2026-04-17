@@ -9,8 +9,8 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::AddBos;
 use llama_cpp_2::model::LlamaModel;
 
-const GGUF_MODEL: &str = "https://huggingface.co/second-state/jina-embeddings-v2-base-code-GGUF/resolve/main/jina-embeddings-v2-base-code-Q5_K_M.gguf";
-const MODEL_FILENAME: &str = "jina-embeddings-v2-base-code-Q5_K_M.gguf";
+const GGUF_MODEL: &str = "https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q8_0.gguf";
+const MODEL_FILENAME: &str = "nomic-embed-text-v1.5.Q8_0.gguf";
 const DIM: usize = 768;
 
 #[derive(Debug, thiserror::Error)]
@@ -77,6 +77,12 @@ impl Embedder {
         self.encode_with(&mut ctx, text)
     }
 
+    pub fn embed_query(&self, query: &str) -> Result<Vec<f32>, EmbedError> {
+        let prefixed = format!("search_query: {}", query);
+        let mut ctx = self.create_context()?;
+        self.encode_with(&mut ctx, &prefixed)
+    }
+
     pub fn embed_batch(&self, texts: &[String]) -> Vec<Result<Vec<f32>, EmbedError>> {
         let mut ctx = match self.create_context() {
             Ok(c) => c,
@@ -91,11 +97,12 @@ impl Embedder {
         texts
             .iter()
             .map(|text| {
-                let text = text.trim();
-                if text.is_empty() {
+                let prefixed = format!("search_document: {}", text);
+                let prefixed = prefixed.trim();
+                if prefixed.is_empty() {
                     return Err(EmbedError::EmptyInput);
                 }
-                self.encode_with(&mut ctx, text)
+                self.encode_with(&mut ctx, prefixed)
             })
             .collect()
     }
@@ -112,10 +119,12 @@ impl Embedder {
     }
 
     fn encode_with(&self, ctx: &mut LlamaContext<'_>, text: &str) -> Result<Vec<f32>, EmbedError> {
-        let tokens = self
+        let mut tokens = self
             .model
             .str_to_token(text, AddBos::Always)
             .map_err(|e| EmbedError::Llama(e.to_string()))?;
+
+        tokens.truncate(512);
 
         let mut batch =
             LlamaBatch::get_one(&tokens).map_err(|e| EmbedError::Llama(e.to_string()))?;
@@ -173,7 +182,7 @@ pub fn build_symbol_text(
     }
     if let Some(ref src) = source {
         if !src.is_empty() {
-            let src_clean: String = src.chars().take(1500).collect();
+            let src_clean: String = src.chars().take(800).collect();
             parts.push(src_clean);
         }
     }

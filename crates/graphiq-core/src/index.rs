@@ -573,23 +573,51 @@ impl<'a> Indexer<'a> {
 
         let embedder = Embedder::new(cache_dir)?;
         let conn = self.db.conn();
-        let mut stmt =
-            conn.prepare("SELECT id, name, signature, doc_comment, source FROM symbols")?;
-        let rows: Vec<(i64, String, Option<String>, Option<String>, Option<String>)> = stmt
+
+        let total_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))
+            .unwrap_or(0);
+
+        let mut stmt = conn.prepare(
+            "SELECT s.id, s.name, s.signature, s.doc_comment, s.source, f.path
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             WHERE s.visibility = 'public'
+               AND s.importance > 0.15
+               AND s.id NOT IN (SELECT symbol_id FROM symbol_embeddings)",
+        )?;
+
+        let rows: Vec<(
+            i64,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            String,
+        )> = stmt
             .query_map([], |row| {
                 Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
                 ))
             })?
             .flatten()
+            .filter(|r| !is_embed_test_path(&r.5))
             .collect();
 
-        let total = rows.len();
-        eprintln!("  embedding {total} symbols ...");
+        let to_embed = rows.len();
+        if to_embed == 0 {
+            eprintln!("  all {total_count} symbols already embedded, nothing to do");
+            return Ok(0);
+        }
+        eprintln!(
+            "  embedding {to_embed}/{total_count} symbols (filtered: public, importance>0.15, non-test, not yet embedded) ..."
+        );
+
         let start = Instant::now();
         let mut embedded = 0;
 
@@ -597,27 +625,49 @@ impl<'a> Indexer<'a> {
         for chunk in rows.chunks(batch_size) {
             let texts: Vec<String> = chunk
                 .iter()
-                .map(|(_, name, sig, doc, src)| build_symbol_text(name, sig, doc, src))
+                .map(|(_, name, sig, doc, src, _)| build_symbol_text(name, sig, doc, src))
                 .collect();
             let results = embedder.embed_batch(&texts);
-            for ((id, _, _, _, _), result) in chunk.iter().zip(results.into_iter()) {
+            for ((id, _, _, _, _, _), result) in chunk.iter().zip(results.into_iter()) {
                 if let Ok(vec) = result {
                     let _ = self
                         .db
-                        .put_embedding(*id, &vec, "jinaai/jina-embeddings-v2-base-code");
+                        .put_embedding(*id, &vec, "nomic-ai/nomic-embed-text-v1.5");
                     embedded += 1;
                 }
             }
-            eprintln!(
-                "  {}/{} ({:.0}ms/ea, ~{:.0}s remaining)",
-                embedded,
-                total,
-                start.elapsed().as_secs_f64() / embedded as f64 * 1000.0,
-                (start.elapsed().as_secs_f64() / embedded as f64) * (total - embedded) as f64
-            );
+            if embedded > 0 {
+                let elapsed = start.elapsed().as_secs_f64();
+                let rate_ms = elapsed / embedded as f64 * 1000.0;
+                let remaining = (elapsed / embedded as f64) * (to_embed - embedded) as f64;
+                eprintln!(
+                    "  {embedded}/{to_embed} ({rate_ms:.0}ms/ea, ~{remaining:.0}s remaining)",
+                );
+            }
         }
         Ok(embedded)
     }
+}
+
+#[cfg(feature = "embed")]
+fn is_embed_test_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let patterns = [
+        "/test",
+        "/tests/",
+        "/__tests__/",
+        "/spec/",
+        "_test.",
+        "_spec.",
+        ".test.",
+        ".spec.",
+        "test_",
+        "/benches/",
+        "/benchmark/",
+        "/fixtures/",
+        "/mocks/",
+    ];
+    patterns.iter().any(|p| lower.contains(p))
 }
 
 fn resolve_symbol(name_map: &HashMap<String, Vec<i64>>, name: &str) -> Option<i64> {

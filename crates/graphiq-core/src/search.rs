@@ -246,6 +246,23 @@ fn is_cross_cutting_query(query: &str) -> bool {
 
 #[cfg(feature = "embed")]
 impl<'a> SearchEngine<'a> {
+    fn looks_like_natural_language(query: &str) -> bool {
+        let tokens: Vec<&str> = query.split_whitespace().collect();
+        if tokens.len() < 3 {
+            return false;
+        }
+        let has_code_pattern = tokens.iter().any(|t| {
+            t.contains('_') && t.len() > 4
+                || t.contains("::")
+                || t.chars().filter(|c| c.is_uppercase()).count() >= 2
+        });
+        if has_code_pattern {
+            return false;
+        }
+        let short_count = tokens.iter().filter(|t| t.len() <= 3).count();
+        (short_count as f64) / (tokens.len() as f64) < 0.5
+    }
+
     fn embed_rerank(&self, query_text: &str, mut results: Vec<ScoredSymbol>) -> Vec<ScoredSymbol> {
         use crate::embed::{cosine_similarity, Embedder};
 
@@ -264,7 +281,7 @@ impl<'a> SearchEngine<'a> {
             Ok(e) => e,
             Err(_) => return results,
         };
-        let query_embedding = match embedder.embed_symbol_text(query_text) {
+        let query_embedding = match embedder.embed_query(query_text) {
             Ok(e) => e,
             Err(_) => return results,
         };
@@ -279,10 +296,28 @@ impl<'a> SearchEngine<'a> {
             return results;
         }
 
+        let alpha = if is_nl { 0.3 } else { 0.15 };
+        let max_score = results.iter().map(|r| r.score).fold(0.0f64, f64::max);
+        if max_score <= 0.0 {
+            return results;
+        }
+
+        for candidate in &mut results {
+            if let Some(emb) = embed_map.get(&candidate.symbol.id) {
+                if !emb.is_empty() {
+                    let sim = cosine_similarity(&query_embedding, emb) as f64;
+                    let embed_component = sim * max_score * alpha;
+                    candidate.score = candidate.score * (1.0 - alpha) + embed_component;
+                }
+            }
+        }
+
         if is_nl {
             let all_embeds = match self.db.all_embeddings() {
                 Ok(e) => e,
                 Err(_) => {
+                    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+                    results.truncate(10);
                     return results;
                 }
             };
@@ -294,7 +329,7 @@ impl<'a> SearchEngine<'a> {
                 .filter(|(id, _)| !existing_ids.contains(id))
                 .filter_map(|(id, emb)| {
                     let sim = cosine_similarity(&query_embedding, emb) as f64;
-                    if sim > 0.55 {
+                    if sim > 0.45 {
                         Some((*id, sim))
                     } else {
                         None
@@ -307,9 +342,10 @@ impl<'a> SearchEngine<'a> {
             for (sym_id, sim) in best_extra.iter().take(5) {
                 if let Ok(Some(sym)) = self.db.get_symbol(*sym_id) {
                     let file_path = file_paths.get(&sym.file_id).cloned();
+                    let embed_component = *sim * max_score * alpha;
                     results.push(ScoredSymbol {
                         symbol: sym,
-                        score: *sim,
+                        score: embed_component,
                         file_path,
                         breakdown: None,
                         is_fts_hit: false,

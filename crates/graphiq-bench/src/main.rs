@@ -127,6 +127,18 @@ fn main() {
         db_stats.files, db_stats.symbols, db_stats.edges
     );
 
+    #[cfg(feature = "embed")]
+    {
+        print!("Embedding symbols ... ");
+        let indexer = Indexer::new(&db);
+        match indexer.embed_symbols(None) {
+            Ok(count) => println!("done ({} symbols embedded)", count),
+            Err(e) => println!("embed failed: {e}"),
+        }
+        let embed_count = db.embedding_count().unwrap_or(0);
+        println!("Embeddings: {} vectors stored\n", embed_count);
+    }
+
     let queries: Vec<BenchQuery> = if let Some(query_file) = args.get(3) {
         let content = std::fs::read_to_string(query_file).unwrap_or_else(|e| {
             eprintln!("error reading query file: {e}");
