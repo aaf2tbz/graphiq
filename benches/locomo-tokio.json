@@ -1,0 +1,36 @@
+[
+  {"query": "Handle", "category": "symbol-exact", "relevance": {"Handle": 3}},
+  {"query": "Enter", "category": "symbol-exact", "relevance": {"enter": 3}},
+  {"query": "Semaphore", "category": "symbol-exact", "relevance": {"Semaphore": 3}},
+  {"query": "Notify", "category": "symbol-exact", "relevance": {"Notify": 3}},
+  {"query": "RwLock", "category": "symbol-exact", "relevance": {"RwLock": 3}},
+  {"query": "Watch", "category": "symbol-exact", "relevance": {"watch": 3}},
+  {"query": "select", "category": "symbol-exact", "relevance": {"select": 3}},
+  {"query": "try_recv", "category": "symbol-exact", "relevance": {"try_recv": 3}},
+
+  {"query": "signal", "category": "symbol-partial", "relevance": {"ctrl_c": 2, "SignalKind": 2, "signal": 3}},
+  {"query": "stream", "category": "symbol-partial", "relevance": {"Stream": 3, "StreamExt": 2, "poll_next": 1}},
+  {"query": "future", "category": "symbol-partial", "relevance": {"Future": 3, "FutureExt": 2, "poll_fn": 1}},
+  {"query": "ready", "category": "symbol-partial", "relevance": {"ready": 3, "Ready": 2}},
+  {"query": "park", "category": "symbol-partial", "relevance": {"Park": 3, "Unpark": 2, "park": 2}},
+  {"query": "drive", "category": "symbol-partial", "relevance": {"driver": 2, "Driver": 3, "io_driver": 2}},
+
+  {"query": "graceful shutdown server connections", "category": "nl-descriptive", "relevance": {"graceful_shutdown": 3, "GracefulShutdown": 2, "Shutdown": 2}},
+  {"query": "read bytes until delimiter", "category": "nl-descriptive", "relevance": {"read_until": 3, "BufReader": 2, "split": 1}},
+  {"query": "run async function on blocking thread", "category": "nl-descriptive", "relevance": {"spawn_blocking": 3, "block_in_place": 2}},
+  {"query": "write all bytes to sink", "category": "nl-descriptive", "relevance": {"write_all": 3, "AsyncWriteExt": 2, "Sink": 1}},
+  {"query": "periodically run task at fixed rate", "category": "nl-descriptive", "relevance": {"Interval": 3, "tick": 2}},
+
+  {"query": "how does tokio handle task cancellation", "category": "nl-abstract", "relevance": {"cancel": 3, "AbortHandle": 2, "JoinHandle": 2}},
+  {"query": "what manages the io driver event loop", "category": "nl-abstract", "relevance": {"driver": 3, "IoDriver": 2, "Driver": 2}},
+  {"query": "how are concurrent tasks collected and joined", "category": "nl-abstract", "relevance": {"JoinSet": 3, "join_all": 2, "FuturesUnordered": 2}},
+
+  {"query": "signal.rs", "category": "file-path", "relevance": {"ctrl_c": 3, "SignalKind": 2}},
+  {"query": "semaphore", "category": "file-path", "relevance": {"Semaphore": 3, "SemaphorePermit": 2}},
+  {"query": "rwlock", "category": "file-path", "relevance": {"RwLock": 3, "RwLockReadGuard": 2, "RwLockWriteGuard": 2}},
+
+  {"query": "failed to create tokio runtime", "category": "error-debug", "relevance": {"Runtime": 3, "Builder": 2, "Error": 2}},
+
+  {"query": "all channel types for message passing", "category": "cross-cutting", "relevance": {"mpsc": 3, "broadcast": 3, "watch": 3, "oneshot": 3}},
+  {"query": "all io reactor driver components", "category": "cross-cutting", "relevance": {"driver": 3, "Driver": 3, "IoDriver": 2, "reactor": 2}}
+]

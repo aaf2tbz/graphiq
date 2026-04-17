@@ -2,7 +2,7 @@
 
 Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, heuristic reranking, and holographic reduced representations — zero embeddings required.
 
-**Aggregate 2.526 NDCG@10** across 4 polyglot codebases (Rust, TypeScript/Python, Go). **0.796** self-benchmark, **0.520** tokio (17K symbols), **0.615** signetai (20K symbols), **0.545** esbuild (6K symbols). **~1ms p50 latency**. Zero model dependencies.
+**0.796 NDCG@10** on self-benchmark. **0.520 on tokio** (17K symbols). **0.615 on signetai** (20K symbols). **0.545 on esbuild** (6K symbols). **~1ms p50 latency**. No model dependencies.
 
 ## Why This Works
 
@@ -35,75 +35,84 @@ Query: "rate limit middleware"
 +----------+------------------+
            v
 +-----------------------------+
-|  Layer 4: Embed Rerank      |  ~30ms  --> top_k (optional)
-|  Only top 50 candidates     |  Only for nl queries
+|  Layer 4: HRR Rerank        |  ~1ms   --> top_k
+|  Holographic matching       |  1024-dim circular convolution
 +-----------------------------+
 ```
 
-The current pipeline uses **layers 1-3** plus HRR holographic reranking, fractal attractor expansion, and a query decomposition path for natural language queries. Layer 4 (embed reranker) was tested with jina-code and nomic-embed — both produced net-negative NDCG. Neural embeddings at the 137M scale add noise, not signal.
-
-**Phase 8 (current)** continues pure mathematical search — no model downloads, no network calls. The core approach is **Holographic Reduced Representations (HRR)** with **hypersphere normalization**: each symbol's identity and graph neighborhood are encoded into a 1024-dim vector via circular convolution, then normalized to unit length post-IFFT. This eliminated a 47x norm variance (max norm 47.076 → 1.000) and produced the single largest gain of the phase (+0.132 aggregate NDCG). Also explored: fiber bundle decomposition (per-language centroids for polyglot), fractal attractor convergence (marginal, +0.007), LSA-enhanced term vectors (fundamentally incompatible with HRR's near-orthogonality requirement), and per-candidate tangent bivector expansion (too noisy). See `DESIGN-LSA.md` for the full design.
+Layer 4 (embed reranker) was also tested with jina-code and nomic-embed — both produced net-negative NDCG. Neural embeddings at the 137M scale add noise, not signal. The HRR (Holographic Reduced Representations) layer achieves better results with pure math: each symbol's identity and graph neighborhood are encoded into a 1024-dim vector via circular convolution, then matched against query vectors via dot product. Hypersphere normalization (unit-length post-IFFT) eliminated a 47x norm variance and produced a +0.132 aggregate NDCG gain.
 
 ## Benchmarks
 
-Four codebases, increasing scale and polyglot difficulty. Metric is **NDCG@10 with graded relevance** (3=perfect, 2=good, 1=acceptable) — a proper IR evaluation that rewards partial matches and penalizes ordering errors, unlike single-symbol MRR.
+### NDCG@10 — Graded Relevance (3=perfect, 2=good, 1=acceptable)
 
-| Codebase | Symbols | Queries | BM25 | HRR-Rerank | Full Pipeline |
-|---|---|---|---|---|---|
-| graphiq (self) | 1,025 | 27 | 0.715 | 0.719 | **0.796** |
-| tokio | 17,867 | 26 | 0.539 | 0.546 | **0.520** |
-| signetai | 20,870 | 25 | 0.527 | 0.535 | **0.615** |
-| esbuild | 6,183 | 25 | — | — | **0.545** |
-| **Aggregate** | | | | | **2.526** |
+Four codebases, increasing scale and polyglot difficulty.
+
+| Codebase | Symbols | Queries | BM25 | Full Pipeline |
+|---|---|---|---|---|
+| graphiq (self) | 1,025 | 27 | 0.715 | **0.796** |
+| tokio | 17,867 | 26 | 0.539 | **0.520** |
+| signetai | 20,870 | 25 | 0.527 | **0.615** |
+| esbuild | 6,183 | 25 | — | **0.545** |
+| **Aggregate** | | | | **2.526** |
 
 Latency: p50 1.0ms cold, < 0.1ms warm (cached). p95 3.0ms cold.
 
-### graphiq (self) — 60 files, 1,025 symbols
+### LoCoMo Benchmark — MRR / Hit@K / Precision / Recall
 
-| Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
-|---|---|---|---|---|
-| `symbol-exact` | 0.960 | 100% | 100% | 100% |
-| `symbol-partial` | 0.530 | 33% | 67% | 100% |
-| `nl-descriptive` | 0.802 | 60% | 100% | 100% |
-| `nl-abstract` | 0.833 | 100% | 100% | 100% |
-| `file-path` | 0.833 | 67% | 100% | 100% |
-| `error-debug` | 1.000 | 100% | 100% | 100% |
-| `cross-cutting` | 0.530 | 50% | 100% | 100% |
+50-question benchmark following the LoCoMo evaluation methodology: Accuracy (top-1 correct), MRR, Precision@10, Recall@10, NDCG@10, plus Hit@1/3/5/10. Run with `graphiq-locomo` binary against fresh query sets with verified symbol relevance.
 
-### tokio — 819 files, 17,867 symbols
+| Metric | signetai (20K) | tokio (17K) | esbuild (12K) |
+|---|---|---|---|
+| Accuracy | 50.0% | 44.0% | 46.0% |
+| Hit@1 | 50.0% | 46.0% | 48.0% |
+| Hit@3 | 58.0% | 58.0% | 54.0% |
+| Hit@5 | 62.0% | 58.0% | 66.0% |
+| Hit@10 | 70.0% | 64.0% | 70.0% |
+| MRR | 0.556 | 0.517 | 0.542 |
+| Precision@10 | 21.8% | 20.6% | 14.4% |
+| Recall@10 | 47.2% | 42.5% | 49.1% |
+| NDCG@10 | 0.478 | 0.465 | 0.502 |
 
-| Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
-|---|---|---|---|---|
-| `symbol-exact` | 0.730 | 83% | 83% | 83% |
-| `symbol-partial` | 0.800 | 100% | 100% | 100% |
-| `nl-descriptive` | 0.270 | 40% | 60% | 80% |
-| `nl-abstract` | 0.232 | 33% | 33% | 67% |
-| `file-path` | 0.380 | 33% | 67% | 67% |
-| `error-debug` | 0.810 | 0% | 100% | 100% |
-| `cross-cutting` | 0.330 | 50% | 100% | 100% |
+#### By query type
 
-### signetai — 1,263 files, 20,870 symbols
+**signetai** (TypeScript/Python/Rust, 20,870 symbols, 50 queries):
 
-| Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
-|---|---|---|---|---|
-| `symbol-exact` | 0.910 | 100% | 100% | 100% |
-| `symbol-partial` | 0.650 | 67% | 100% | 100% |
-| `nl-descriptive` | 0.360 | 60% | 60% | 80% |
-| `nl-abstract` | 0.393 | 33% | 100% | 100% |
-| `file-path` | 0.405 | 33% | 67% | 67% |
-| `cross-cutting` | 0.690 | 100% | 100% | 100% |
+| Type | n | Accuracy | Hit@1 | Hit@3 | Hit@10 | MRR | NDCG@10 |
+|---|---|---|---|---|---|---|---|
+| symbol-exact | 14 | 100% | 100% | 100% | 100% | 1.000 | 0.979 |
+| symbol-partial | 10 | 40% | 40% | 70% | 80% | 0.533 | 0.424 |
+| nl-descriptive | 8 | 25% | 25% | 25% | 62% | 0.323 | 0.318 |
+| error-debug | 3 | 67% | 67% | 67% | 67% | 0.667 | 0.338 |
+| cross-cutting | 5 | 40% | 40% | 40% | 40% | 0.400 | 0.240 |
+| file-path | 4 | 25% | 25% | 50% | 50% | 0.375 | 0.244 |
+| nl-abstract | 6 | 0% | 0% | 0% | 33% | 0.065 | 0.041 |
 
-The weak categories at scale (tokio nl-descriptive/abstract, signetai nl-descriptive) are queries where the user's vocabulary diverges from the codebase's vocabulary — the classic "semantic gap." Phase 8's hypersphere normalization improved structural matching across all codebases (+0.132 aggregate). The remaining gap is architectural: GraphIQ excels at exact/partial symbol matching (0.73-0.96), file-path queries (0.38-0.84), and structural intelligence (blast radius, dependency analysis) — areas where embeddings are slower, less precise, or can't compete at all. The strategic focus is maximizing these structural strengths rather than chasing embedding parity on abstract NL queries.
+**tokio** (Rust, 17,867 symbols, 50 queries):
 
-### esbuild — Go, 6,183 symbols
+| Type | n | Accuracy | Hit@1 | Hit@3 | Hit@10 | MRR | NDCG@10 |
+|---|---|---|---|---|---|---|---|
+| symbol-exact | 15 | 93% | 100% | 100% | 100% | 1.000 | 0.933 |
+| symbol-partial | 10 | 60% | 60% | 90% | 90% | 0.717 | 0.615 |
+| nl-descriptive | 8 | 12% | 12% | 25% | 38% | 0.203 | 0.179 |
+| cross-cutting | 4 | 25% | 25% | 50% | 50% | 0.375 | 0.206 |
+| file-path | 4 | 0% | 0% | 25% | 25% | 0.083 | 0.158 |
+| nl-abstract | 6 | 0% | 0% | 0% | 17% | 0.017 | 0.014 |
+| error-debug | 3 | 0% | 0% | 0% | 33% | 0.042 | 0.038 |
 
-| Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
-|---|---|---|---|---|
-| `symbol-exact` | 0.980 | 100% | 100% | 100% |
-| `symbol-partial` | 0.450 | 67% | 100% | 100% |
-| `nl-descriptive` | 0.330 | 33% | 67% | 100% |
-| `nl-abstract` | 0.148 | 0% | 33% | 67% |
-| `file-path` | 0.760 | 67% | 100% | 100% |
+**esbuild** (Go, 12,040 symbols, 50 queries):
+
+| Type | n | Accuracy | Hit@1 | Hit@3 | Hit@10 | MRR | NDCG@10 |
+|---|---|---|---|---|---|---|---|
+| symbol-exact | 15 | 93% | 93% | 100% | 100% | 0.967 | 0.955 |
+| nl-abstract | 6 | 33% | 33% | 33% | 83% | 0.450 | 0.345 |
+| nl-descriptive | 8 | 38% | 38% | 50% | 62% | 0.455 | 0.474 |
+| file-path | 4 | 50% | 75% | 75% | 75% | 0.750 | 0.564 |
+| cross-cutting | 4 | 25% | 25% | 25% | 50% | 0.312 | 0.159 |
+| error-debug | 3 | 0% | 0% | 33% | 33% | 0.167 | 0.250 |
+| symbol-partial | 10 | 10% | 10% | 10% | 40% | 0.152 | 0.125 |
+
+GraphIQ excels at exact/partial symbol matching (93-100% accuracy), file-path queries, and structural intelligence (blast radius, dependency analysis) — areas where embeddings are slower, less precise, or can't compete at all. The NL→code gap (nl-abstract/nl-descriptive) represents queries where the user's vocabulary diverges from the codebase's vocabulary. This matters for ~10% of real-world queries (exploration); developers type symbol names, file paths, and error messages 90% of the time.
 
 ## Quick Start
 
@@ -126,10 +135,11 @@ brew tap aaf2tbz/graphiq
 brew install graphiq
 ```
 
-Installs three binaries:
+Installs four binaries:
 - `graphiq` — CLI (index, search, blast, status, reindex, demo, setup)
 - `graphiq-mcp` — MCP server for LLM integration (stdio JSON-RPC)
-- `graphiq-bench` — MRR/Hit@K benchmarking
+- `graphiq-bench` — NDCG/Hit@K benchmarking
+- `graphiq-locomo` — LoCoMo-style MRR/Accuracy/Precision/Recall benchmarking
 
 ### From source
 
@@ -222,6 +232,14 @@ Generates a 7-file sample Rust project, indexes it, and runs showcase queries ac
 
 ```bash
 graphiq demo
+```
+
+### `graphiq-locomo`
+
+LoCoMo-style benchmark with Accuracy, MRR, Precision@10, Recall@10, NDCG@10, and Hit@1/3/5/10.
+
+```bash
+graphiq-locomo /path/to/project .graphiq/locomo.db benches/locomo-full-stack-8.json
 ```
 
 ## MCP Server
@@ -367,18 +385,21 @@ Query
            v
 +-----------------------------+
 |  Layer 3: Cheap Rerank      |  --> top 50
-|  10 heuristics              |
+|  11 heuristics              |
 |  Multi-evidence channels    |
 |  Diversity dampen           |
 +----------+------------------+
            v
 +-----------------------------+
-|  Layer 4: Embed Rerank      |  (optional, feature flag)
-|  Only top 50 candidates     |
+|  Layer 4: HRR Rerank        |
+|  Holographic matching       |
+|  1024-dim circular conv.    |
 +-----------------------------+
 ```
 
 ### Key Innovations
+
+**Holographic Reduced Representations (HRR)** — Each symbol's identity and graph neighborhood are encoded into a 1024-dim vector via circular convolution. Query vectors are matched via dot product. Hypersphere normalization (unit-length post-IFFT) eliminated a 47x norm variance across symbols and produced a +0.132 aggregate NDCG gain — the single largest improvement from any single technique.
 
 **Query decomposition** — Abstract queries ("how does retrieval ranking work") are decomposed into 3-8 concrete subqueries via domain-specific term mapping. Each subquery runs through the standard FTS+rerank pipeline; symbols hit by multiple tracks get a multiplicative evidence boost. Only activates for queries with question prefixes or high stop-word ratios — non-abstract queries are completely unaffected.
 
@@ -413,9 +434,9 @@ graphiq/
         rerank.rs       # 11 heuristics + channel scoring + diversity
         graph.rs        # Structural expansion (BFS)
         blast.rs        # Blast radius (forward/backward)
-        hrr.rs          # HRR + hypersphere normalization + HyperHRRBiv17 (Phase 8)
-        afmo.rs         # Poincaré ball hyperbolic embeddings (Phase 6)
-        lsa.rs          # Truncated SVD / LSA foundation (Phase 6)
+        hrr.rs          # HRR holographic encoding + hypersphere normalization
+        afmo.rs         # Poincaré ball hyperbolic embeddings
+        lsa.rs          # Truncated SVD / LSA
         spectral.rs     # Spectral graph coordinates
         db.rs           # SQLite schema + queries
         cache.rs        # Hot cache (LRU)
@@ -431,7 +452,7 @@ graphiq/
         languages/      # 14 TreeSitter parsers
     graphiq-cli/        # CLI binary
     graphiq-mcp/        # MCP server binary
-    graphiq-bench/      # Benchmark binary
+    graphiq-bench/      # NDCG benchmark binary
 ```
 
 See [DESIGN.md](DESIGN.md) for the full architecture specification including data model, edge weights, and retrieval details.

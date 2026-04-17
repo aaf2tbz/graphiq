@@ -1,0 +1,34 @@
+[
+  {"query": "Indexer", "category": "symbol-exact", "relevance": {"Indexer": 3}},
+  {"query": "StructuralExpander", "category": "symbol-exact", "relevance": {"StructuralExpander": 3}},
+  {"query": "SearchEngine", "category": "symbol-exact", "relevance": {"SearchEngine": 3}},
+  {"query": "Reranker", "category": "symbol-exact", "relevance": {"Reranker": 3}},
+  {"query": "Token", "category": "symbol-exact", "relevance": {"Token": 3}},
+  {"query": "LanguageChunker", "category": "symbol-exact", "relevance": {"LanguageChunker": 3}},
+  {"query": "decompose_identifier", "category": "symbol-exact", "relevance": {"decompose_identifier": 3}},
+  {"query": "compute_blast_radius", "category": "symbol-exact", "relevance": {"compute_blast_radius": 3}},
+
+  {"query": "index", "category": "symbol-partial", "relevance": {"Indexer": 3, "index_project": 2, "reindex": 1}},
+  {"query": "expand", "category": "symbol-partial", "relevance": {"StructuralExpander": 3, "expand": 2, "bounded_bfs": 2}},
+  {"query": "score", "category": "symbol-partial", "relevance": {"score": 3, "Reranker": 2, "SearchEngine": 1}},
+  {"query": "parse", "category": "symbol-partial", "relevance": {"parse": 3, "parse_edge_kind_json": 2}},
+  {"query": "query", "category": "symbol-partial", "relevance": {"SearchQuery": 3, "SearchEngine": 2}},
+  {"query": "tree", "category": "symbol-partial", "relevance": {"TreeSitter": 2, "parse": 2, "chunk": 1}},
+
+  {"query": "index a project and extract all symbols", "category": "nl-descriptive", "relevance": {"Indexer": 3, "index_project": 3, "Symbol": 2}},
+  {"query": "expand search results with graph neighbors", "category": "nl-descriptive", "relevance": {"StructuralExpander": 3, "expand": 2, "bounded_bfs": 2}},
+  {"query": "decompose camelCase identifier into tokens", "category": "nl-descriptive", "relevance": {"decompose_identifier": 3, "tokenize": 2}},
+  {"query": "rerank candidates by heuristic scoring", "category": "nl-descriptive", "relevance": {"Reranker": 3, "rerank": 2}},
+  {"query": "compute forward blast radius for a symbol", "category": "nl-descriptive", "relevance": {"compute_blast_radius": 3, "BlastRadius": 2}},
+
+  {"query": "how does the search engine combine multiple retrieval layers", "category": "nl-abstract", "relevance": {"SearchEngine": 3, "SearchQuery": 2, "StructuralExpander": 1}},
+  {"query": "what determines the ranking order of search results", "category": "nl-abstract", "relevance": {"Reranker": 3, "rerank": 2, "score": 2}},
+  {"query": "how are different programming languages parsed", "category": "nl-abstract", "relevance": {"LanguageChunker": 3, "TreeSitter": 2, "parse": 2}},
+
+  {"query": "index.rs", "category": "file-path", "relevance": {"Indexer": 3, "index_project": 2}},
+  {"query": "search.rs", "category": "file-path", "relevance": {"SearchEngine": 3, "SearchQuery": 2}},
+  {"query": "blast.rs", "category": "file-path", "relevance": {"compute_blast_radius": 3, "BlastRadius": 2}},
+
+  {"query": "all symbol kinds in the type system", "category": "cross-cutting", "relevance": {"SymbolKind": 3, "Symbol": 3}},
+  {"query": "all edge kinds in the graph model", "category": "cross-cutting", "relevance": {"EdgeKind": 3, "Edge": 3}}
+]

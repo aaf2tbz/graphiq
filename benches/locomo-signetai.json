@@ -1,0 +1,34 @@
+[
+  {"query": "MemoryStore", "category": "symbol-exact", "relevance": {"MemoryStore": 3}},
+  {"query": "SessionManager", "category": "symbol-exact", "relevance": {"SessionManager": 3}},
+  {"query": "extract_memories", "category": "symbol-exact", "relevance": {"extract_memories": 3}},
+  {"query": "ScoredId", "category": "symbol-exact", "relevance": {"ScoredId": 3}},
+  {"query": "HybridSearchResult", "category": "symbol-exact", "relevance": {"HybridSearchResult": 3}},
+  {"query": "graph_search", "category": "symbol-exact", "relevance": {"graph_search": 3}},
+  {"query": "parseTranscript", "category": "symbol-exact", "relevance": {"parseTranscript": 3}},
+  {"query": "NeonEdge", "category": "symbol-exact", "relevance": {"NeonEdge": 3}},
+
+  {"query": "session", "category": "symbol-partial", "relevance": {"SessionManager": 3, "session": 3, "createSession": 2, "getSession": 2, "endSession": 2}},
+  {"query": "search", "category": "symbol-partial", "relevance": {"hybrid_search": 3, "search": 3, "graph_search": 2, "fts_search": 2, "HybridSearchResult": 2}},
+  {"query": "graph", "category": "symbol-partial", "relevance": {"graph_search": 3, "NeonEdge": 2, "NeonNode": 2, "build_knn_edges": 2, "graph": 3}},
+  {"query": "extract", "category": "symbol-partial", "relevance": {"extract_memories": 3, "extract": 3, "extractEntities": 2, "extractAspects": 2}},
+  {"query": "config", "category": "symbol-partial", "relevance": {"loadConfig": 3, "Config": 2, "config": 2, "getConfig": 1}},
+  {"query": "router", "category": "symbol-partial", "relevance": {"mountRoutes": 3, "Router": 2, "router": 2}},
+
+  {"query": "store and retrieve persistent memories", "category": "nl-descriptive", "relevance": {"MemoryStore": 3, "memory_store": 2, "store_memory": 2, "recall_memory": 2}},
+  {"query": "parse conversation transcript into sessions", "category": "nl-descriptive", "relevance": {"parseTranscript": 3, "SessionManager": 2, "parse": 2}},
+  {"query": "compute nearest neighbor graph edges", "category": "nl-descriptive", "relevance": {"build_knn_edges": 3, "insertNearestNeighbor": 2, "NeonEdge": 1}},
+  {"query": "configure signet workspace and agent settings", "category": "nl-descriptive", "relevance": {"loadConfig": 3, "Config": 2, "config": 2}},
+  {"query": "register HTTP API routes for the daemon", "category": "nl-descriptive", "relevance": {"mountRoutes": 3, "Router": 2, "registerRoutes": 2}},
+
+  {"query": "how does the memory extraction pipeline process conversations", "category": "nl-abstract", "relevance": {"extract_memories": 3, "parseTranscript": 2, "SessionManager": 2}},
+  {"query": "what determines memory importance and decay", "category": "nl-abstract", "relevance": {"ScoredId": 3, "predict_importance": 2, "decay": 2}},
+  {"query": "how does hybrid search combine graph and text signals", "category": "nl-abstract", "relevance": {"HybridSearchResult": 3, "hybrid_search": 3, "merge_hybrid_scores": 2}},
+
+  {"query": "memory.rs", "category": "file-path", "relevance": {"MemoryStore": 3, "store_memory": 2, "recall_memory": 2}},
+  {"query": "session.ts", "category": "file-path", "relevance": {"SessionManager": 3, "createSession": 2, "endSession": 2}},
+  {"query": "graph.ts", "category": "file-path", "relevance": {"graph_search": 3, "NeonEdge": 2, "NeonNode": 2}},
+
+  {"query": "all memory storage backends", "category": "cross-cutting", "relevance": {"MemoryStore": 3, "store_memory": 3, "recall_memory": 3}},
+  {"query": "all HTTP route handlers", "category": "cross-cutting", "relevance": {"mountRoutes": 3, "Router": 3, "registerRoutes": 2}}
+]

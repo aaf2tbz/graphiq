@@ -7,6 +7,10 @@ edition = "2021"
 name = "graphiq-bench"
 path = "src/main.rs"
 
+[[bin]]
+name = "graphiq-locomo"
+path = "src/locomo.rs"
+
 [features]
 default = []
 embed = ["graphiq-core/embed"]

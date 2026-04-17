@@ -1,0 +1,34 @@
+[
+  {"query": "Parser", "category": "symbol-exact", "relevance": {"Parser": 3, "Parse": 2}},
+  {"query": "Lexer", "category": "symbol-exact", "relevance": {"Lexer": 3}},
+  {"query": "Printer", "category": "symbol-exact", "relevance": {"Printer": 3}},
+  {"query": "FS", "category": "symbol-exact", "relevance": {"FS": 3}},
+  {"query": "Ref", "category": "symbol-exact", "relevance": {"Ref": 3}},
+  {"query": "Stmt", "category": "symbol-exact", "relevance": {"Stmt": 3}},
+  {"query": "Expr", "category": "symbol-exact", "relevance": {"Expr": 3}},
+  {"query": "Loader", "category": "symbol-exact", "relevance": {"Loader": 3}},
+
+  {"query": "import", "category": "symbol-partial", "relevance": {"ImportRecord": 3, "ImportClause": 2}},
+  {"query": "export", "category": "symbol-partial", "relevance": {"ExportRecord": 2, "ExportClause": 2}},
+  {"query": "ast", "category": "symbol-partial", "relevance": {"AST": 3, "Stmt": 2, "Expr": 2}},
+  {"query": "bundle", "category": "symbol-partial", "relevance": {"Linker": 3, "MakeChunkBuilder": 2}},
+  {"query": "plugin", "category": "symbol-partial", "relevance": {"Plugin": 3, "OnResolve": 2, "OnLoad": 2}},
+  {"query": "hash", "category": "symbol-partial", "relevance": {"hash": 3, "Hash": 2}},
+
+  {"query": "resolve npm package path to file", "category": "nl-descriptive", "relevance": {"Resolver": 3, "IsPackagePath": 2, "resolve": 2}},
+  {"query": "convert AST to printable JavaScript output", "category": "nl-descriptive", "relevance": {"Printer": 3, "Print": 2, "renamer": 2}},
+  {"query": "load file contents from virtual filesystem", "category": "nl-descriptive", "relevance": {"FS": 3, "Loader": 2, "readFile": 2}},
+  {"query": "track symbol usage across module boundaries", "category": "nl-descriptive", "relevance": {"Symbol": 3, "SymbolUse": 2, "Ref": 2}},
+  {"query": "register build plugin for custom transforms", "category": "nl-descriptive", "relevance": {"Plugin": 3, "OnResolve": 2, "OnLoad": 2}},
+
+  {"query": "how does esbuild parallelize parsing and linking", "category": "nl-abstract", "relevance": {"Parser": 2, "Linker": 3, "MakeChunkBuilder": 2}},
+  {"query": "what determines if a symbol is tree-shaken", "category": "nl-abstract", "relevance": {"Symbol": 3, "Linker": 2, "Ref": 1}},
+  {"query": "how are CSS rules represented and transformed", "category": "nl-abstract", "relevance": {"Stmt": 2, "Expr": 2, "AST": 3, "parseGradient": 1}},
+
+  {"query": "printer.go", "category": "file-path", "relevance": {"Printer": 3, "Print": 2}},
+  {"query": "linker.go", "category": "file-path", "relevance": {"Linker": 3, "MakeChunkBuilder": 2}},
+  {"query": "lexer.go", "category": "file-path", "relevance": {"Lexer": 3, "Token": 2}},
+
+  {"query": "all import and export handling", "category": "cross-cutting", "relevance": {"ImportRecord": 3, "ExportRecord": 3, "Resolver": 2}},
+  {"query": "all cross-platform file system operations", "category": "cross-cutting", "relevance": {"FS": 3, "readFile": 2, "writeFile": 2}}
+]
