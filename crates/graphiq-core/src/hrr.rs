@@ -10,6 +10,7 @@ pub struct HrrIndex {
     pub symbol_names: Vec<String>,
     pub holograms: Vec<Vec<f64>>,
     term_vectors: HashMap<String, Vec<f64>>,
+    term_idf: HashMap<String, f64>,
     dim: usize,
 }
 
@@ -131,10 +132,21 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
     let dim = HRR_DIM;
 
     let mut stmt = conn
-        .prepare("SELECT id, name FROM symbols ORDER BY id")
+        .prepare(
+            "SELECT s.id, s.name, s.qualified_name, f.path \
+             FROM symbols s LEFT JOIN files f ON s.file_id = f.id \
+             ORDER BY s.id",
+        )
         .map_err(|e| e.to_string())?;
-    let symbols: Vec<(i64, String)> = stmt
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+    let symbols: Vec<(i64, String, Option<String>, Option<String>)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
         .map_err(|e| e.to_string())?
         .flatten()
         .collect();
@@ -143,10 +155,19 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
     eprintln!("  [hrr] {} symbols, dim={}", n, dim);
 
     let mut all_terms: HashSet<String> = HashSet::new();
-    for (_, name) in &symbols {
+    let mut term_doc_count: HashMap<String, usize> = HashMap::new();
+    let mut symbol_term_sets: Vec<HashSet<String>> = Vec::with_capacity(n);
+
+    for (_, name, _, _) in &symbols {
+        let mut terms_for_symbol = HashSet::new();
         for t in extract_terms(name) {
-            all_terms.insert(t);
+            all_terms.insert(t.clone());
+            terms_for_symbol.insert(t);
         }
+        for t in &terms_for_symbol {
+            *term_doc_count.entry(t.clone()).or_insert(0) += 1;
+        }
+        symbol_term_sets.push(terms_for_symbol);
     }
 
     let mut term_vectors: HashMap<String, Vec<f64>> = HashMap::new();
@@ -177,8 +198,8 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         }
     }
 
-    let symbol_ids: Vec<i64> = symbols.iter().map(|(id, _)| *id).collect();
-    let symbol_names: Vec<String> = symbols.iter().map(|(_, name)| name.clone()).collect();
+    let symbol_ids: Vec<i64> = symbols.iter().map(|(id, _, _, _)| *id).collect();
+    let symbol_names: Vec<String> = symbols.iter().map(|(_, name, _, _)| name.clone()).collect();
     let id_to_idx: HashMap<i64, usize> = symbol_ids
         .iter()
         .enumerate()
@@ -186,10 +207,9 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         .collect();
 
     let mut freq_identities: Vec<(Vec<f64>, Vec<f64>)> = Vec::with_capacity(n);
-    for (_, name) in &symbols {
-        let terms = extract_terms(name);
+    for term_set in &symbol_term_sets {
         let mut identity = vec![0.0; dim];
-        for t in &terms {
+        for t in term_set {
             if let Some(tv) = term_vectors.get(t) {
                 for j in 0..dim {
                     identity[j] += tv[j];
@@ -231,6 +251,40 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
     let n_edges: usize = outgoing.iter().map(|e| e.len()).sum();
     eprintln!("  [hrr] {} edges", n_edges);
 
+    let two_hop_types: HashSet<&str> = HashSet::from(["Calls", "Contains"]);
+    let mut freq_two_hop: HashMap<(String, String), (Vec<f64>, Vec<f64>)> = HashMap::new();
+    for r1 in &relation_types {
+        for r2 in &relation_types {
+            if !two_hop_types.contains(r1) && !two_hop_types.contains(r2) {
+                continue;
+            }
+            let (r1_re, r1_im) = freq_relations.get(*r1).unwrap();
+            let (r2_re, r2_im) = freq_relations.get(*r2).unwrap();
+            let mut prod_re = vec![0.0; dim];
+            let mut prod_im = vec![0.0; dim];
+            for j in 0..dim {
+                prod_re[j] = r1_re[j] * r2_re[j] - r1_im[j] * r2_im[j];
+                prod_im[j] = r1_re[j] * r2_im[j] + r1_im[j] * r2_re[j];
+            }
+            freq_two_hop.insert((r1.to_string(), r2.to_string()), (prod_re, prod_im));
+
+            let r1_inv = format!("{}_inv", r1);
+            let r2_inv = format!("{}_inv", r2);
+            let (r1i_re, r1i_im) = freq_relations.get(&r1_inv).unwrap();
+            let (r2i_re, r2i_im) = freq_relations.get(&r2_inv).unwrap();
+            let mut pi_re = vec![0.0; dim];
+            let mut pi_im = vec![0.0; dim];
+            for j in 0..dim {
+                pi_re[j] = r1i_re[j] * r2i_re[j] - r1i_im[j] * r2i_im[j];
+                pi_im[j] = r1i_re[j] * r2i_im[j] + r1i_im[j] * r2i_re[j];
+            }
+            freq_two_hop.insert((r1_inv, r2_inv), (pi_re, pi_im));
+        }
+    }
+
+    let two_hop_decay = 0.3f64;
+    let max_2hop_neighbors = 15usize;
+
     let mut holograms: Vec<Vec<f64>> = Vec::with_capacity(n);
     for i in 0..n {
         let mut h_re = freq_identities[i].0.clone();
@@ -242,6 +296,26 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
                 .unwrap_or_else(|| freq_relations.get("Unknown").unwrap());
             let (nr, ni_im) = &freq_identities[*ni];
             complex_add_mul(&mut h_re, &mut h_im, rr, ri, nr, ni_im, *w);
+
+            if outgoing[*ni].len() <= max_2hop_neighbors {
+                for (nj, kind2, w2) in &outgoing[*ni] {
+                    if *nj == i {
+                        continue;
+                    }
+                    if let Some((cr, ci)) = freq_two_hop.get(&(kind.clone(), kind2.clone())) {
+                        let (njr, nji) = &freq_identities[*nj];
+                        complex_add_mul(
+                            &mut h_re,
+                            &mut h_im,
+                            cr,
+                            ci,
+                            njr,
+                            nji,
+                            two_hop_decay * w * w2,
+                        );
+                    }
+                }
+            }
         }
 
         for (ni, kind, w) in &incoming[i] {
@@ -251,6 +325,27 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
                 .unwrap_or_else(|| freq_relations.get("Unknown_inv").unwrap());
             let (nr, ni_im) = &freq_identities[*ni];
             complex_add_mul(&mut h_re, &mut h_im, rr, ri, nr, ni_im, *w);
+
+            if incoming[*ni].len() <= max_2hop_neighbors {
+                for (nj, kind2, w2) in &incoming[*ni] {
+                    if *nj == i {
+                        continue;
+                    }
+                    let inv2 = format!("{}_inv", kind2);
+                    if let Some((cr, ci)) = freq_two_hop.get(&(inv_key.clone(), inv2)) {
+                        let (njr, nji) = &freq_identities[*nj];
+                        complex_add_mul(
+                            &mut h_re,
+                            &mut h_im,
+                            cr,
+                            ci,
+                            njr,
+                            nji,
+                            two_hop_decay * w * w2,
+                        );
+                    }
+                }
+            }
         }
 
         ifft_inplace(&mut h_re, &mut h_im);
@@ -268,16 +363,31 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         avg_norm, max_norm
     );
 
+    let term_idf: HashMap<String, f64> = all_terms
+        .iter()
+        .map(|t| {
+            let df = *term_doc_count.get(t).unwrap_or(&1) as f64;
+            let idf = (1.0 + (n as f64 / df).ln()).max(0.1);
+            (t.clone(), idf)
+        })
+        .collect();
+
     Ok(HrrIndex {
         symbol_ids,
         symbol_names,
         holograms,
         term_vectors,
+        term_idf,
         dim,
     })
 }
 
-fn build_query_vec(query: &str, term_vectors: &HashMap<String, Vec<f64>>, dim: usize) -> Vec<f64> {
+fn build_query_vec(
+    query: &str,
+    term_vectors: &HashMap<String, Vec<f64>>,
+    _term_idf: &HashMap<String, f64>,
+    dim: usize,
+) -> Vec<f64> {
     let terms = extract_terms(query);
     let mut q = vec![0.0; dim];
     for t in &terms {
@@ -297,7 +407,7 @@ fn build_query_vec(query: &str, term_vectors: &HashMap<String, Vec<f64>>, dim: u
 }
 
 pub fn hrr_search(query: &str, index: &HrrIndex, top_k: usize) -> Vec<(i64, f64)> {
-    let q = build_query_vec(query, &index.term_vectors, index.dim);
+    let q = build_query_vec(query, &index.term_vectors, &index.term_idf, index.dim);
     if q.iter().all(|x| x.abs() < 1e-10) {
         return Vec::new();
     }
@@ -329,7 +439,7 @@ pub fn hrr_rerank(
         .map(|(i, &id)| (id, i))
         .collect();
 
-    let q = build_query_vec(query, &index.term_vectors, index.dim);
+    let q = build_query_vec(query, &index.term_vectors, &index.term_idf, index.dim);
     let q_empty = q.iter().all(|x| x.abs() < 1e-10);
 
     let mut scored: Vec<(i64, f64)> = candidate_ids
