@@ -332,8 +332,17 @@ impl<'a> Indexer<'a> {
 
         let conn = self.db.conn();
         let mut stmt = conn
-            .prepare("SELECT id, name, name_decomposed, kind, doc_comment, file_id FROM symbols")?;
-        let symbols: Vec<(i64, String, String, String, Option<String>, i64)> = stmt
+            .prepare("SELECT id, name, name_decomposed, kind, doc_comment, file_id, signature, source FROM symbols")?;
+        let symbols: Vec<(
+            i64,
+            String,
+            String,
+            String,
+            Option<String>,
+            i64,
+            Option<String>,
+            Option<String>,
+        )> = stmt
             .query_map([], |row| {
                 Ok((
                     row.get(0)?,
@@ -342,6 +351,8 @@ impl<'a> Indexer<'a> {
                     row.get(3)?,
                     row.get(4)?,
                     row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
                 ))
             })?
             .flatten()
@@ -349,10 +360,12 @@ impl<'a> Indexer<'a> {
 
         let name_to_decomposed: HashMap<String, String> = symbols
             .iter()
-            .map(|(_, name, decomposed, _, _, _)| (name.clone(), decomposed.clone()))
+            .map(|(_, name, decomposed, _, _, _, _, _)| (name.clone(), decomposed.clone()))
             .collect();
 
-        for (id, _name, name_decomposed, kind_str, doc_comment, file_id) in &symbols {
+        for (id, _name, name_decomposed, kind_str, doc_comment, file_id, signature, source) in
+            &symbols
+        {
             let mut hints = Vec::new();
 
             hints.push(name_decomposed.clone());
@@ -534,6 +547,13 @@ impl<'a> Indexer<'a> {
             let source_terms = extract_source_terms(self.db, *id);
             if !source_terms.is_empty() {
                 hints.push(source_terms);
+            }
+
+            let sig_str = signature.as_deref().unwrap_or("");
+            let src_str = source.as_deref().unwrap_or("");
+            let sig_type_hints = extract_signature_type_hints(sig_str, src_str);
+            if !sig_type_hints.is_empty() {
+                hints.push(sig_type_hints);
             }
 
             let hint_text = hints.join(". ");
@@ -868,6 +888,114 @@ fn morphological_variants(word: &str) -> Option<String> {
         _ => return None,
     };
     Some(variants.join(" "))
+}
+
+fn extract_signature_type_hints(signature: &str, source: &str) -> String {
+    let mut terms = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    let add = |terms: &mut Vec<String>, seen: &mut std::collections::HashSet<String>, s: &str| {
+        let lower = s.to_lowercase();
+        if lower.len() >= 3 && seen.insert(lower.clone()) {
+            let decomp = crate::tokenize::decompose_identifier(&lower);
+            terms.push(decomp);
+        }
+    };
+
+    if source.contains("async fn")
+        || source.contains("async function")
+        || source.contains("Promise<")
+    {
+        for &t in &["async", "await"] {
+            add(&mut terms, &mut seen, t);
+        }
+    }
+
+    let return_type = extract_return_type(signature);
+    if !return_type.is_empty() {
+        let decomp = crate::tokenize::decompose_identifier(&return_type);
+        for word in decomp.split_whitespace() {
+            if word.len() >= 3 {
+                add(&mut terms, &mut seen, word);
+            }
+        }
+    }
+
+    for param_type in extract_param_types(signature) {
+        let decomp = crate::tokenize::decompose_identifier(&param_type);
+        for word in decomp.split_whitespace() {
+            if word.len() >= 3 {
+                add(&mut terms, &mut seen, word);
+            }
+        }
+    }
+
+    terms.join(" ")
+}
+
+fn extract_return_type(signature: &str) -> String {
+    if let Some(pos) = signature.rfind("->") {
+        let after = &signature[pos + 2..].trim();
+        let end = after
+            .find(|c: char| c == '{' || c == '(' || c == ';' || c == '\n')
+            .unwrap_or(after.len());
+        let ty = after[..end].trim().trim_end_matches('+');
+        let clean = ty.trim_start_matches("impl ").trim_start_matches("dyn ");
+        let name_part = clean.split('<').next().unwrap_or("").trim();
+        let name_part = name_part.split('+').next().unwrap_or("").trim();
+        if !name_part.is_empty() && name_part.len() < 60 {
+            return name_part.to_string();
+        }
+    }
+    if let Some(pos) = signature.rfind(':') {
+        let after = &signature[pos + 1..].trim();
+        let end = after
+            .find(|c: char| c == ',' || c == ')' || c == '{' || c == ';')
+            .unwrap_or(after.len());
+        let ty = after[..end].trim();
+        if !ty.is_empty() && ty.len() < 40 {
+            return ty.to_string();
+        }
+    }
+    String::new()
+}
+
+fn extract_param_types(signature: &str) -> Vec<String> {
+    let mut types = Vec::new();
+    let mut depth = 0;
+    let mut start = None;
+
+    for (i, c) in signature.char_indices() {
+        match c {
+            '(' if depth == 0 => {
+                start = Some(i + 1);
+                depth = 1;
+            }
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(s) = start {
+                        let params = &signature[s..i];
+                        for param in params.split(',') {
+                            let param = param.trim();
+                            if let Some(colon_pos) = param.find(':') {
+                                let ty = param[colon_pos + 1..].trim();
+                                let ty = ty.trim_start_matches("impl ").trim_start_matches("dyn ");
+                                let name_part = ty.split('<').next().unwrap_or("").trim();
+                                if !name_part.is_empty() && name_part.len() < 40 {
+                                    types.push(name_part.to_string());
+                                }
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    types
 }
 
 fn extract_source_terms(db: &GraphDb, symbol_id: i64) -> String {
