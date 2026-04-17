@@ -208,17 +208,30 @@ impl<'a> SearchEngine<'a> {
                         .map(|t| t.to_lowercase())
                         .filter(|t| t.len() >= 2)
                         .collect();
-                    if crate::rerank::is_nl_query(&q_tokens)
-                        && hrr_idx.lang_count() >= 2
+                    let is_nl = crate::rerank::is_nl_query(&q_tokens)
                         && !query.query.to_lowercase().starts_with("all ")
-                        && !query.query.to_lowercase().starts_with("every ")
-                    {
+                        && !query.query.to_lowercase().starts_with("every ");
+
+                    if is_nl {
                         let all_seed_ids: Vec<i64> =
                             results.iter().take(20).map(|r| r.symbol.id).collect();
                         let fractal_results =
                             crate::hrr::hrr_fractal_attract(&all_seed_ids, hrr_idx, 3, 30);
                         for (rank, (id, _)) in fractal_results.iter().enumerate() {
-                            *rrf.entry(*id).or_insert(0.0) += 0.5 / (k + rank as f64 + 1.0);
+                            *rrf.entry(*id).or_insert(0.0) += 0.3 / (k + rank as f64 + 1.0);
+                        }
+
+                        let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
+                        if top_score < 5.0 {
+                            let concrete_terms =
+                                crate::decompose::extract_concrete_terms(&query.query);
+                            if !concrete_terms.is_empty() {
+                                let hrr_query = concrete_terms.join(" ");
+                                let hrr_hits = crate::hrr::hrr_search(&hrr_query, hrr_idx, 30);
+                                for (rank, (id, _)) in hrr_hits.iter().enumerate() {
+                                    *rrf.entry(*id).or_insert(0.0) += 0.8 / (k + rank as f64 + 1.0);
+                                }
+                            }
                         }
                     }
 

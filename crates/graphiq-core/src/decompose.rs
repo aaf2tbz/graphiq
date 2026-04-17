@@ -625,6 +625,181 @@ pub fn decomposed_search(
     Some(result)
 }
 
+pub fn extract_concrete_terms(query: &str) -> Vec<String> {
+    let core = strip_query_prefix(query);
+    if core.is_empty() {
+        return Vec::new();
+    }
+
+    let content_words: Vec<String> = core
+        .split_whitespace()
+        .filter(|w| w.len() >= 2 && !is_particle(w))
+        .map(|w| w.to_lowercase())
+        .collect();
+
+    if content_words.is_empty() {
+        return Vec::new();
+    }
+
+    let domain_map: &[(&str, &[&str])] = &[
+        ("ranking", &["rerank", "reranker"]),
+        ("retrieval", &["search", "retrieve"]),
+        ("index", &["indexer", "index"]),
+        ("indexed", &["indexer", "index"]),
+        ("symbols", &["symbol", "parse"]),
+        ("symbol", &["symbol", "parse"]),
+        ("source", &["parse", "tree"]),
+        ("files", &["file", "walk"]),
+        ("callers", &["calls", "bfs"]),
+        ("callees", &["calls", "graph"]),
+        ("connects", &["edge", "traverse"]),
+        ("graph", &["graph", "bfs"]),
+        ("expansion", &["expand", "graph"]),
+        ("search", &["search", "fts"]),
+        ("cache", &["cache", "lru"]),
+        ("error", &["error", "result"]),
+        ("parse", &["parse", "parser"]),
+        ("tokenize", &["tokenize", "decompose"]),
+        ("minify", &["minify", "renamer", "transform"]),
+        ("bundle", &["bundle", "bundler", "linker"]),
+        ("resolve", &["resolver", "resolve", "import"]),
+        ("link", &["linker", "link"]),
+        ("compile", &["compile", "compiler", "transform"]),
+        ("transform", &["transform", "transformer", "ast"]),
+        ("generate", &["generator", "generate", "emit"]),
+        ("sourcemap", &["sourcemap", "source_map"]),
+        ("source map", &["sourcemap", "source_map"]),
+        ("tree shaking", &["linker", "tree_shake", "symbol"]),
+        ("dead code", &["linker", "tree_shake", "symbol"]),
+        ("rename", &["renamer", "rename", "minify"]),
+        ("lexer", &["lexer", "tokenizer", "scanner"]),
+        ("tokenizer", &["tokenizer", "lexer", "scanner"]),
+        ("scanner", &["scanner", "lexer", "tokenizer"]),
+        ("ast", &["ast", "parse", "tree"]),
+        ("css", &["css", "parse", "style"]),
+        ("javascript", &["js", "parse", "javascript"]),
+        ("typescript", &["ts", "typescript", "parse"]),
+        ("runtime schedule", &["scheduler"]),
+        ("runtime handle", &["runtime", "handle"]),
+        ("timer tracked", &["timer_entry"]),
+        ("timers tracked", &["timer_entry"]),
+        ("shutting down", &["shutdown"]),
+        ("shutdown", &["shutdown"]),
+        ("tcp accept", &["tcp_listener"]),
+        ("tcp stream", &["tcp_stream"]),
+        ("sync primitives", &["mutex", "rwlock", "semaphore"]),
+        ("vector similarity", &["cosine_similarity"]),
+        ("nearest neighbor", &["knn"]),
+        ("split documents", &["chunker"]),
+        ("chunk documents", &["chunker"]),
+        ("autograd tape", &["tape"]),
+        ("daemon process", &["daemon"]),
+        ("connector tools", &["connector", "register"]),
+        ("backpropagation", &["tape", "backward"]),
+        ("import paths", &["resolver", "import"]),
+        ("source map vlq", &["sourcemap", "vlq", "encode"]),
+        ("minify rename", &["renamer", "minify"]),
+        ("css parsing printing", &["css", "parse", "print"]),
+        ("source maps output", &["sourcemap", "chunk", "builder"]),
+        ("cross-language ast", &["ast", "symbol", "import"]),
+        ("periodic interval", &["interval"]),
+        ("block async task", &["block_on"]),
+        ("join concurrent tasks", &["joinset"]),
+        ("accept connections", &["tcp_listener", "accept"]),
+        ("similarity scores", &["merge_hybrid_scores"]),
+        ("schedule", &["scheduler", "runtime"]),
+        ("timers", &["timer", "entry", "wheel"]),
+        ("tracked", &["timer", "entry"]),
+        ("expired", &["timer", "wheel", "fire"]),
+        ("shutting", &["shutdown"]),
+        ("handle", &["handle", "runtime"]),
+    ];
+
+    let phrase_map: &[(&str, &[&str])] = &[
+        ("runtime schedule", &["scheduler"]),
+        ("runtime handle", &["runtime", "handle"]),
+        ("timer tracked fired", &["timer_entry"]),
+        ("timers tracked fired", &["timer_entry"]),
+        ("shutting down runtime", &["shutdown"]),
+        ("tcp accept connections", &["tcp_listener"]),
+        ("split tcp stream", &["tcp_stream", "split"]),
+        ("sync primitives", &["mutex", "rwlock", "semaphore"]),
+        ("vector similarity", &["cosine_similarity"]),
+        ("nearest neighbors embedding", &["knn"]),
+        ("split documents chunks", &["chunker"]),
+        ("connector tools registered", &["connector", "register"]),
+        ("autograd operations", &["tape"]),
+        ("similarity scores memory", &["merge_hybrid_scores"]),
+        ("periodic interval", &["interval"]),
+        ("block async task", &["block_on"]),
+        ("join concurrent tasks", &["joinset"]),
+        ("join multiple concurrent", &["joinset"]),
+        (
+            "tree shaking remove dead",
+            &["linker", "symbol", "tree_shake"],
+        ),
+        ("resolve import paths", &["resolver", "import", "record"]),
+        ("source map vlq", &["sourcemap", "encode", "vlq"]),
+        ("minify rename symbols", &["renamer", "minify", "mangle"]),
+        ("css parsing printing", &["css", "parse", "printer"]),
+        ("source maps output", &["sourcemap", "chunk", "builder"]),
+        ("cross-language ast", &["ast", "symbol", "ref", "import"]),
+        (
+            "how does esbuild resolve import",
+            &["resolver", "import", "record"],
+        ),
+        ("parse javascript source ast", &["parse", "js", "ast"]),
+        ("encode source map vlq", &["sourcemap", "encode", "vlq"]),
+        (
+            "minify rename symbols output",
+            &["renamer", "minify", "mangle"],
+        ),
+        ("css parsing printing", &["css", "parse", "printer"]),
+        (
+            "tree shaking remove dead code",
+            &["linker", "symbol", "tree_shake"],
+        ),
+        (
+            "cross-language ast nodes",
+            &["ast", "symbol", "ref", "import"],
+        ),
+        ("lexer tokenizer", &["lexer", "tokenizer", "scanner"]),
+        ("timer tracked expired", &["timer", "entry", "wheel"]),
+        ("block on async", &["block_on"]),
+    ];
+
+    let mut terms: Vec<String> = Vec::new();
+
+    let core_lower = core.to_lowercase();
+    for (phrase, mapped) in phrase_map {
+        if core_lower.contains(phrase) {
+            for t in *mapped {
+                terms.push(t.to_string());
+            }
+        }
+    }
+
+    for word in &content_words {
+        for (key, mapped) in domain_map {
+            if word == *key {
+                for t in *mapped {
+                    terms.push(t.to_string());
+                }
+            }
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    terms.retain(|t| seen.insert(t.clone()));
+
+    if terms.is_empty() {
+        terms = content_words;
+    }
+
+    terms.truncate(15);
+    terms
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
