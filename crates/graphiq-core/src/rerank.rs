@@ -92,6 +92,7 @@ pub struct Reranker {
     debug: bool,
     file_mtimes: HashMap<i64, i64>,
     tested_symbols: Vec<i64>,
+    implements_count: HashMap<i64, usize>,
     query_tokens: Vec<String>,
     file_path_query: bool,
 }
@@ -100,11 +101,13 @@ impl Reranker {
     pub fn new(db: &GraphDb, debug: bool) -> Self {
         let file_mtimes = load_file_mtimes(db);
         let tested_symbols = load_tested_symbols(db);
+        let implements_count = load_implements_count(db);
         Self {
             config: HeuristicConfig::default(),
             debug,
             file_mtimes,
             tested_symbols,
+            implements_count,
             query_tokens: Vec::new(),
             file_path_query: false,
         }
@@ -113,11 +116,13 @@ impl Reranker {
     pub fn with_config(db: &GraphDb, config: HeuristicConfig, debug: bool) -> Self {
         let file_mtimes = load_file_mtimes(db);
         let tested_symbols = load_tested_symbols(db);
+        let implements_count = load_implements_count(db);
         Self {
             config,
             debug,
             file_mtimes,
             tested_symbols,
+            implements_count,
             query_tokens: Vec::new(),
             file_path_query: false,
         }
@@ -259,7 +264,14 @@ impl Reranker {
             let production_boost = if is_nl && !in_test_file { 1.5 } else { 1.0 };
 
             let importance_factor = if self.config.importance {
-                0.5 + 0.5 * sym.importance.min(1.0)
+                let base = 0.5 + 0.5 * sym.importance.min(1.0);
+                if self.query_tokens.len() == 1 {
+                    let impl_cnt = self.implements_count.get(&sym.id).copied().unwrap_or(0);
+                    let interface_bonus = if impl_cnt >= 2 { 1.5 } else { 1.0 };
+                    (1.0 + 2.0 * sym.importance.min(1.0)) * interface_bonus
+                } else {
+                    base
+                }
             } else {
                 1.0
             };
@@ -481,6 +493,25 @@ fn load_tested_symbols(db: &GraphDb) -> Vec<i64> {
     match rows {
         Some(r) => r.flatten().collect(),
         None => Vec::new(),
+    }
+}
+
+fn load_implements_count(db: &GraphDb) -> HashMap<i64, usize> {
+    let conn = db.conn();
+    let mut stmt = match conn.prepare(
+        "SELECT target_id, COUNT(*) as cnt FROM edges WHERE kind = 'implements' GROUP BY target_id",
+    ) {
+        Ok(s) => s,
+        Err(_) => return HashMap::new(),
+    };
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, usize>(1)?))
+        })
+        .ok();
+    match rows {
+        Some(r) => r.flatten().collect(),
+        None => HashMap::new(),
     }
 }
 
