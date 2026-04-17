@@ -280,6 +280,26 @@ impl Reranker {
                 1.0
             };
 
+            let name_coverage = if self.query_tokens.len() <= 2 && !self.query_tokens.is_empty() {
+                let decomp_tokens: Vec<&str> = sym.name_decomposed.split_whitespace().collect();
+                if decomp_tokens.is_empty() {
+                    1.0
+                } else {
+                    let matched = decomp_tokens
+                        .iter()
+                        .filter(|dt| {
+                            self.query_tokens
+                                .iter()
+                                .any(|qt| dt.contains(qt.as_str()) || qt.as_str().contains(**dt))
+                        })
+                        .count();
+                    let coverage = matched as f64 / decomp_tokens.len() as f64;
+                    1.0 + (0.5 * coverage)
+                }
+            } else {
+                1.0
+            };
+
             let module_shadow = if is_container_kind(sym.kind) && !self.query_tokens.is_empty() {
                 0.75
             } else {
@@ -362,6 +382,7 @@ impl Reranker {
                 * importance_factor
                 * recency
                 * name_exact
+                * name_coverage
                 * module_shadow
                 * file_path_boost
                 * full_coverage
@@ -380,6 +401,7 @@ impl Reranker {
                         ("importance", importance_factor),
                         ("recency", recency),
                         ("name_exact", name_exact),
+                        ("name_coverage", name_coverage),
                         ("module_shadow", module_shadow),
                         ("file_path_boost", file_path_boost),
                         ("full_coverage", full_coverage),
