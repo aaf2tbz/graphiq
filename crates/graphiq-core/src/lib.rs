@@ -13,6 +13,7 @@ pub mod embed;
 pub mod files;
 pub mod fts;
 pub mod graph;
+pub mod hrr;
 pub mod index;
 pub mod languages;
 pub mod lsa;

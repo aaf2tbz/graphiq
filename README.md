@@ -1,8 +1,8 @@
 # GraphIQ
 
-Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, and heuristic reranking — zero embeddings required.
+Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, heuristic reranking, and holographic reduced representations — zero embeddings required.
 
-**0.717 NDCG@10** on self-benchmark. **0.540 on tokio** (17K symbols). **0.528 on signetai** (20K symbols). **~1ms p50 latency**. No model dependencies.
+**0.719 NDCG@10** on self-benchmark. **0.546 on tokio** (17K symbols). **0.530 on signetai** (20K symbols). **~1ms p50 latency**. No model dependencies.
 
 ## Why This Works
 
@@ -40,19 +40,22 @@ Query: "rate limit middleware"
 +-----------------------------+
 ```
 
-The current 0.717 NDCG@10 uses **only layers 1-3** plus a query decomposition path for natural language queries and cross-package expansion for monorepo layouts. Layer 4 (embed reranker) was tested with jina-code and nomic-embed — both produced net-negative NDCG. Neural embeddings at the 137M scale add noise, not signal.
+The current 0.719 NDCG@10 uses **only layers 1-3** plus a query decomposition path for natural language queries, cross-package expansion for monorepo layouts, and HRR reranking. Layer 4 (embed reranker) was tested with jina-code and nomic-embed — both produced net-negative NDCG. Neural embeddings at the 137M scale add noise, not signal.
 
-**Phase 6 (in progress)** replaces embeddings with **Latent Semantic Geometry**: truncated SVD on a structurally-augmented term-symbol matrix, with hyperspherical angular distance as the relevance metric. Pure linear algebra — no model downloads, no network calls. Early results show it wins on queries BM25 struggles with ("tcp accept connections": LSA 0.429 vs BM25 0.082). See `DESIGN-LSA.md` for the full design.
+**Phase 6 (in progress)** explores pure mathematical approaches to semantic search — no model downloads, no network calls. The winning approach so far is **Holographic Reduced Representations (HRR)**: each symbol's identity and graph neighborhood are encoded into a fixed-width vector via circular convolution, then matched against query vectors via dot product. This captures structural proximity that BM25 cannot see — symbols related through call/import chains score higher even without shared terms. HRR-Rerank produces +0.014 aggregate NDCG over BM25 across all 3 codebases. Also explored: Poincaré ball hyperbolic embeddings (AFMO), spectral bandpass, and Born-series propagators. See `DESIGN-LSA.md` for the full design.
 
 ## Benchmarks
 
 Three codebases, increasing scale and difficulty. Metric is **NDCG@10 with graded relevance** (3=perfect, 2=good, 1=acceptable) — a proper IR evaluation that rewards partial matches and penalizes ordering errors, unlike single-symbol MRR.
 
-| Codebase | Symbols | Queries | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
-|---|---|---|---|---|---|---|
-| graphiq (self) | 869 | 27 | 0.717 | 70% | 93% | 100% |
-| tokio | 17,867 | 26 | 0.540 | 62% | 77% | 85% |
-| signetai | 20,870 | 25 | 0.528 | 68% | 88% | 92% |
+| Codebase | Symbols | Queries | BM25 | HRR-Rerank | AFMO-Rerank |
+|---|---|---|---|---|---|
+| graphiq (self) | 995 | 27 | 0.715 | **0.719** | 0.705 |
+| tokio | 7,722 | 26 | 0.539 | **0.546** | 0.538 |
+| signetai | 12,881 | 25 | 0.527 | **0.530** | 0.533 |
+| **Aggregate** | | | **1.781** | **1.795** | 1.776 |
+
+HRR-Pure (zero text search, pure structural/identity matching via holographic binding) scores 0.632/0.463/0.414 — ~85% of BM25 performance from graph structure alone.
 
 Latency: p50 1.0ms cold, < 0.1ms warm (cached). p95 3.0ms cold.
 
@@ -401,6 +404,9 @@ graphiq/
         rerank.rs       # 11 heuristics + channel scoring + diversity
         graph.rs        # Structural expansion (BFS)
         blast.rs        # Blast radius (forward/backward)
+        hrr.rs          # Holographic Reduced Representations (Phase 6)
+        afmo.rs         # Poincaré ball hyperbolic embeddings (Phase 6)
+        lsa.rs          # Truncated SVD / LSA foundation (Phase 6)
         db.rs           # SQLite schema + queries
         cache.rs        # Hot cache (LRU)
         decompose.rs    # Abstract query decomposition

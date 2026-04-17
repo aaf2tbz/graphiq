@@ -231,6 +231,22 @@ fn main() {
         }
     };
 
+    print!("Computing HRR (holographic) ... ");
+    let hrr_index = match graphiq_core::hrr::compute_hrr(&db) {
+        Ok(idx) => {
+            println!(
+                "done ({} symbols, {}D)",
+                idx.symbol_ids.len(),
+                idx.holograms.first().map(|h| h.len()).unwrap_or(0)
+            );
+            Some(idx)
+        }
+        Err(e) => {
+            println!("failed: {e}");
+            None
+        }
+    };
+
     let queries: Vec<BenchQuery> = if let Some(query_file) = args.get(3) {
         let content = std::fs::read_to_string(query_file).unwrap_or_else(|e| {
             eprintln!("error reading query file: {e}");
@@ -1101,6 +1117,165 @@ fn main() {
                 bm25.category,
                 ar.map(|r| r.ndcg).unwrap_or(0.0),
                 ap.map(|r| r.ndcg).unwrap_or(0.0),
+                bm25.ndcg,
+            );
+        }
+    }
+
+    if let Some(hrr_idx) = &hrr_index {
+        use graphiq_core::hrr;
+
+        let conn = db.conn();
+
+        let eval_hits_hrr = |hits: &[(i64, f64)], q: &BenchQuery| -> BenchResult {
+            let result_rels: Vec<f64> = hits
+                .iter()
+                .map(|(sym_id, _)| {
+                    let name: String = conn
+                        .query_row("SELECT name FROM symbols WHERE id = ?", [*sym_id], |row| {
+                            row.get(0)
+                        })
+                        .unwrap_or_default();
+                    q.relevance_of(&name) as f64
+                })
+                .collect();
+            let ideal_rels = compute_ideal_rels(&db, q);
+            let ndcg = ndcg_at_k(&result_rels, &ideal_rels, 10);
+            let best_relevance = hits
+                .iter()
+                .map(|(sym_id, _)| {
+                    conn.query_row("SELECT name FROM symbols WHERE id = ?", [*sym_id], |row| {
+                        row.get::<_, String>(0)
+                    })
+                    .unwrap_or_default()
+                })
+                .map(|name| q.relevance_of(&name))
+                .max()
+                .unwrap_or(0);
+            let best_rank = hits
+                .iter()
+                .position(|(sym_id, _)| {
+                    let name: String = conn
+                        .query_row("SELECT name FROM symbols WHERE id = ?", [*sym_id], |row| {
+                            row.get(0)
+                        })
+                        .unwrap_or_default();
+                    q.relevance_of(&name) > 0
+                })
+                .map(|p| p + 1);
+            let hit_at_1 = best_rank.map_or(false, |r| r <= 1) && best_relevance >= 2;
+            let hit_at_3 = best_rank.map_or(false, |r| r <= 3) && best_relevance >= 2;
+            let hit_at_5 = best_rank.map_or(false, |r| r <= 5) && best_relevance >= 1;
+            let hit_at_10 = best_rank.map_or(false, |r| r <= 10) && best_relevance >= 1;
+            BenchResult {
+                query: q.query.clone(),
+                category: q.category.clone(),
+                ndcg,
+                best_relevance,
+                best_rank,
+                hit_at_1,
+                hit_at_3,
+                hit_at_5,
+                hit_at_10,
+                latency_us: 0,
+                warm_latency_us: 0,
+            }
+        };
+
+        let print_summary_hrr = |label: &str, res: &[BenchResult]| {
+            let total = res.len();
+            let ndcg: f64 = res.iter().map(|r| r.ndcg).sum::<f64>() / total as f64;
+            let h1 = res.iter().filter(|r| r.hit_at_1).count();
+            let h3 = res.iter().filter(|r| r.hit_at_3).count();
+            let h10 = res.iter().filter(|r| r.hit_at_10).count();
+            println!("{} NDCG@10: {:.3}", label, ndcg);
+            println!(
+                "{} Hit@1: {}/{} ({:.0}%)",
+                label,
+                h1,
+                total,
+                h1 as f64 / total as f64 * 100.0
+            );
+            println!(
+                "{} Hit@3: {}/{} ({:.0}%)",
+                label,
+                h3,
+                total,
+                h3 as f64 / total as f64 * 100.0
+            );
+            println!(
+                "{} Hit@10: {}/{} ({:.0}%)",
+                label,
+                h10,
+                total,
+                h10 as f64 / total as f64 * 100.0
+            );
+        };
+
+        println!("\n=== HRR Pure (holographic) ===\n");
+        let hrr_pure: Vec<BenchResult> = queries
+            .iter()
+            .map(|q| eval_hits_hrr(&hrr::hrr_search(&q.query, hrr_idx, 10), q))
+            .collect();
+        print_summary_hrr("HRR-Pure", &hrr_pure);
+
+        println!("\n=== HRR Rerank (holographic on BM25 pipeline) ===\n");
+        let hrr_rerank: Vec<BenchResult> = queries
+            .iter()
+            .map(|q| {
+                let pipeline_result = engine.search(&SearchQuery::new(&q.query).top_k(50));
+                let cids: Vec<i64> = pipeline_result
+                    .results
+                    .iter()
+                    .map(|r| r.symbol.id)
+                    .collect();
+                let cscores: Vec<f64> = pipeline_result.results.iter().map(|r| r.score).collect();
+                let reranked = hrr::hrr_rerank(&q.query, &cids, &cscores, hrr_idx);
+                let top10: Vec<(i64, f64)> = reranked.into_iter().take(10).collect();
+                eval_hits_hrr(&top10, q)
+            })
+            .collect();
+        print_summary_hrr("HRR-Rerank", &hrr_rerank);
+
+        if let Some(afmo_idx) = &afmo_index {
+            println!("\n=== HRR+AFMO Combined Rerank ===\n");
+            let combined: Vec<BenchResult> = queries
+                .iter()
+                .map(|q| {
+                    let pipeline_result = engine.search(&SearchQuery::new(&q.query).top_k(50));
+                    let cids: Vec<i64> = pipeline_result
+                        .results
+                        .iter()
+                        .map(|r| r.symbol.id)
+                        .collect();
+                    let cscores: Vec<f64> =
+                        pipeline_result.results.iter().map(|r| r.score).collect();
+                    let hrr_done = hrr::hrr_rerank(&q.query, &cids, &cscores, hrr_idx);
+                    let afmo_ids: Vec<i64> = hrr_done.iter().map(|(id, _)| *id).collect();
+                    let afmo_scores: Vec<f64> = hrr_done.iter().map(|(_, s)| *s).collect();
+                    let reranked = afmo::afmo_rerank(&q.query, &afmo_ids, &afmo_scores, afmo_idx);
+                    let top10: Vec<(i64, f64)> = reranked.into_iter().take(10).collect();
+                    eval_hits_hrr(&top10, q)
+                })
+                .collect();
+            print_summary_hrr("HRR+AFMO", &combined);
+        }
+
+        println!("\n--- Per-Query: HRR-Rerank vs HRR-Pure vs BM25 ---\n");
+        println!(
+            "{:<30} {:<15} {:>8} {:>8} {:>8}",
+            "Query", "Category", "HRR-R", "HRR-P", "BM25"
+        );
+        println!("{}", "-".repeat(100));
+        for (i, bm25) in results.iter().enumerate() {
+            let hr = hrr_rerank.get(i);
+            let hp = hrr_pure.get(i);
+            println!(
+                "{:<30} {:<15} {:>8.3} {:>8.3} {:>8.3}",
+                truncate(&bm25.query, 30),
+                bm25.category,
+                hr.map(|r| r.ndcg).unwrap_or(0.0),
+                hp.map(|r| r.ndcg).unwrap_or(0.0),
                 bm25.ndcg,
             );
         }

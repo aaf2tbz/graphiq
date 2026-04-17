@@ -79,6 +79,56 @@ fn project_query(
     q
 }
 
+fn project_query_bandpass(
+    query: &str,
+    term_index: &HashMap<String, usize>,
+    term_basis: &[Vec<f64>],
+    term_idf: &[f64],
+    sigma: &[f64],
+    dim: usize,
+) -> Vec<f64> {
+    let terms = extract_terms(query);
+    let mut q = vec![0.0f64; dim];
+    let mut total_idf = 0.0f64;
+    let mut n_match = 0usize;
+
+    for t in &terms {
+        if let Some(&idx) = term_index.get(t) {
+            if idx < term_basis.len() {
+                let idf = term_idf.get(idx).copied().unwrap_or(1.0);
+                for j in 0..dim {
+                    q[j] += idf * term_basis[idx][j];
+                }
+                total_idf += idf;
+                n_match += 1;
+            }
+        }
+    }
+
+    if total_idf > 0.0 && sigma.len() >= dim {
+        let sigma_1 = sigma[0].max(0.001);
+        let e = sigma_1 * (1.2 + 0.8 / (1.0 + n_match as f64));
+
+        for j in 0..dim {
+            let s_k = sigma[j].max(0.001);
+            let gap = e - s_k;
+            if gap > 0.01 {
+                q[j] /= gap;
+            } else {
+                q[j] *= 100.0;
+            }
+        }
+
+        let norm = q.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 1e-10 {
+            for x in q.iter_mut() {
+                *x /= norm;
+            }
+        }
+    }
+    q
+}
+
 fn compute_hierarchy(db: &GraphDb, symbol_ids: &[i64]) -> (Vec<f64>, Vec<u64>) {
     let n = symbol_ids.len();
     let id_to_idx: HashMap<i64, usize> = symbol_ids
@@ -561,6 +611,55 @@ pub fn afmo_rerank(
         dim,
     );
 
+    let query_bp = project_query_bandpass(
+        query,
+        &index.term_index,
+        &index.term_basis,
+        &index.term_idf,
+        &index.sigma,
+        dim,
+    );
+
+    let bp_max = candidate_ids
+        .iter()
+        .filter_map(|id| {
+            let idx = id_to_idx.get(id)?;
+            let r_sq: f64 = index.poincare_coords[*idx]
+                .iter()
+                .take(dim)
+                .map(|x| x * x)
+                .sum::<f64>();
+            let r = r_sq.sqrt().max(1e-10);
+            let dot: f64 = query_bp
+                .iter()
+                .zip(index.poincare_coords[*idx].iter())
+                .take(dim)
+                .map(|(a, b)| a * (b / r))
+                .sum();
+            Some(dot)
+        })
+        .fold(0.0f64, |a, b| a.max(b));
+
+    let symbol_bp: HashMap<usize, f64> = candidate_ids
+        .iter()
+        .filter_map(|id| {
+            let idx = id_to_idx.get(id).copied()?;
+            let r_sq: f64 = index.poincare_coords[idx]
+                .iter()
+                .take(dim)
+                .map(|x| x * x)
+                .sum::<f64>();
+            let r = r_sq.sqrt().max(1e-10);
+            let dot: f64 = query_bp
+                .iter()
+                .zip(index.poincare_coords[idx].iter())
+                .take(dim)
+                .map(|(a, b)| a * (b / r))
+                .sum();
+            Some((idx, dot))
+        })
+        .collect();
+
     let mut query_hyper = Vec::with_capacity(index.hyperbolic_dim);
     let sigma_norm: f64 = index
         .sigma
@@ -596,7 +695,25 @@ pub fn afmo_rerank(
     };
 
     let max_radius = 0.95;
-    let query_radius = max_radius * (1.0 - (-(avg_depth.max(0.0).min(4.0)) * 1.0).exp());
+    let base_radius = max_radius * (1.0 - (-(avg_depth.max(0.0).min(4.0)) * 1.0).exp());
+
+    let query_terms = extract_terms(query);
+    let n_match = query_terms
+        .iter()
+        .filter(|t| index.term_index.contains_key(*t))
+        .count();
+    let confidence = (n_match as f64) / (1.0 + n_match as f64);
+    let radius_shrink = 1.0 - 0.15 * confidence;
+    let query_radius = base_radius * radius_shrink;
+    eprintln!(
+        "  [afmo-rerank] q='{}' n_match={} confidence={:.3} radius={:.3}->{:.3}",
+        &query[..query.len().min(25)],
+        n_match,
+        confidence,
+        base_radius,
+        query_radius
+    );
+
     let query_point: Vec<f64> = query_hyper.iter().map(|x| query_radius * x).collect();
 
     let seed_set: HashSet<usize> = top_fts_indices.iter().copied().collect();
@@ -636,6 +753,17 @@ pub fn afmo_rerank(
             let graph_boost = if graph_count > 0 {
                 let avg_w = graph_proximity / graph_count as f64;
                 1.0 + 0.10 * avg_w.min(1.0)
+            } else {
+                1.0
+            };
+
+            let bp_sim = symbol_bp.get(&idx).copied().unwrap_or(0.0);
+            let hyp_boost = if hyp_sim > 0.7 {
+                1.0 + 0.35 * hyp_sim
+            } else if hyp_sim > 0.5 {
+                1.0 + 0.20 * hyp_sim
+            } else if hyp_sim > 0.3 {
+                1.0 + 0.08 * hyp_sim
             } else {
                 1.0
             };
