@@ -2,7 +2,7 @@
 
 Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, and heuristic reranking — zero embeddings required.
 
-**0.847 MRR** on self-benchmark. **0.676 on tokio** (17K symbols). **0.359 on signetai** (20K symbols). **0.9ms p50 latency**. No model dependencies.
+**0.870 MRR** on self-benchmark. **0.683 on tokio** (17K symbols). **0.410 on signetai** (20K symbols). **0.9ms p50 latency**. No model dependencies.
 
 ## Why This Works
 
@@ -40,7 +40,7 @@ Query: "rate limit middleware"
 +-----------------------------+
 ```
 
-The current 0.847 MRR uses **only layers 1-3** plus a query decomposition path for abstract natural language queries. No embeddings needed for core search. The embed reranker exists as a feature flag for future nl-abstract improvements.
+The current 0.870 MRR uses **only layers 1-3** plus a query decomposition path for abstract natural language queries and cross-package expansion for monorepo layouts. No embeddings needed for core search. The embed reranker exists as a feature flag for future nl-abstract improvements.
 
 ## Benchmarks
 
@@ -48,22 +48,22 @@ Three codebases, increasing scale and difficulty:
 
 | Codebase | Symbols | MRR | Hit@1 | Hit@3 | Hit@10 |
 |---|---|---|---|---|---|
-| graphiq (self) | 849 | 0.847 | 74% | 96% | 100% |
-| tokio | 17,867 | 0.676 | 65% | 69% | 77% |
-| signetai | 20,870 | 0.359 | 28% | 44% | 56% |
+| graphiq (self) | 849 | 0.870 | 78% | 93% | 100% |
+| tokio | 17,867 | 0.683 | 65% | 69% | 73% |
+| signetai | 20,870 | 0.410 | 32% | 44% | 60% |
 
-Self-benchmark per-category (47 files, 849 symbols, 27 queries):
+Self-benchmark per-category (48 files, 859 symbols, 27 queries):
 
 | Query Class | MRR | Hit@1 | Hit@3 | Hit@5 | Hit@10 |
 |---|---|---|---|---|---|
 | `symbol-exact` | 1.000 | 100% | 100% | 100% | 100% |
 | `error-debug` | 1.000 | 100% | 100% | 100% | 100% |
-| `nl-descriptive` | 0.867 | 80% | 100% | 100% | 100% |
-| `symbol-partial` | 0.806 | 67% | 100% | 100% | 100% |
+| `nl-descriptive` | 0.900 | 80% | 100% | 100% | 100% |
+| `symbol-partial` | 0.792 | 50% | 83% | 100% | 100% |
 | `file-path` | 0.833 | 67% | 100% | 100% | 100% |
-| `cross-cutting` | 0.600 | 50% | 50% | 100% | 100% |
-| `nl-abstract` | 0.667 | 33% | 100% | 100% | 100% |
-| **Overall** | **0.847** | **74%** | **96%** | **100%** | **100%** |
+| `nl-abstract` | 0.833 | 33% | 100% | 100% | 100% |
+| `cross-cutting` | 0.625 | 50% | 50% | 100% | 100% |
+| **Overall** | **0.870** | **78%** | **93%** | **100%** | **100%** |
 
 Latency: p50 0.9ms cold, < 0.1ms warm (cached). p95 2.6ms cold.
 

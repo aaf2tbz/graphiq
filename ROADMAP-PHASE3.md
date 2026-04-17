@@ -4,32 +4,44 @@ _Phase 2 delivered +0.025 tokio and directory expansion for cross-cutting querie
 Phase 3 targets the remaining structural gaps: ambiguous partials, FTS recall on large
 codebases, and cross-cutting queries in flat package layouts._
 
-## Current State (after Phase 2 + query calibration fix)
+## Phase 3 Results
 
-| Codebase | MRR | Hit@1 | Hit@3 | Hit@10 |
-|---|---|---|---|---|
-| graphiq (self, 849 sym) | 0.847 | 74% | 96% | 100% |
-| tokio (17,867 sym) | 0.676 | 65% | 69% | 77% |
-| signetai (20,870 sym) | 0.359 | 28% | 44% | 56% |
+| Codebase | Phase 2 End | Phase 3 | Delta |
+|---|---|---|---|
+| graphiq (self) | 0.847 | **0.870** | **+0.023** |
+| tokio | 0.676 | **0.683** | **+0.007** |
+| signetai | 0.359 | **0.410** | **+0.051** |
 
-### Per-Category Breakdown (signetai — the hard target)
+### Completed Steps
 
-| Category | MRR | Problem |
+| Step | Description | Self | Tokio | Signetai | Verdict |
+|---|---|---|---|---|---|
+| O | Signature type hints | +0 | +0 | +0.01 | Kept (zero-cost enrichment) |
+| K | Name coverage heuristic | +0.015 | +0 | +0.04 | Kept (biggest single win) |
+| L | In-degree centrality | -0.01 | -0.01 | -0.01 | **Reverted** (redundant with importance) |
+| M | Higher FTS fallback threshold | +0 | +0.003 | +0 | Kept (tokio cross-cutting recovered) |
+| N | Cross-package expansion | +0.008 | +0.004 | +0.011 | Kept (signetai cross-cutting 0→0.083) |
+
+### Key Discoveries
+
+1. **Name coverage is the Phase 3 MVP** — Step K was the single biggest win: signetai nl-abstract jumped 0.114→0.389.
+2. **In-degree centrality is redundant** — It overlaps with the existing `importance` heuristic. Reverted.
+3. **Cross-package expansion works** — For monorepos with `packages/{scope}-*` layouts, finding sibling packages by matching query tokens against directory names brings cross-cutting results from MISS to rank 6.
+4. **Signetai cross-cutting is fundamentally hard** — "all connector implementations" has 7+ connector packages competing for 4 slots. Per-package limit of 1 ensures diversity but OpenCodeConnector still ranks 6th.
+5. **name_coverage threshold 2→3 was a bonus** — Increasing the threshold helped 3-token queries without regressions.
+
+### Remaining Gaps
+
+Signetai is at 0.410 against a target of 0.50. The biggest remaining gaps:
+
+| Category | MRR | Issue |
 |---|---|---|
-| symbol-exact | 1.000 | Solved |
-| nl-descriptive | 0.292 | Correct symbols often not in FTS top 200 |
-| nl-abstract | 0.114 | Decomposition misses domain terms |
-| file-path | 0.222 | "daemon.ts" matches 6 files, wrong one wins |
-| symbol-partial | 0.083 | Single tokens match hundreds in 20K codebase |
-| cross-cutting | 0.000 | Flat package layout defeats directory expansion |
+| symbol-partial | 0.111 | Single tokens match hundreds in 20K codebase |
+| file-path | 0.222 | "daemon.ts" matches multiple files |
+| cross-cutting | 0.083 | Only 1 of 2 queries hits (autograd still MISS) |
+| nl-descriptive | 0.312 | Correct symbols not in FTS top 200 |
 
-## What Phase 2 Taught Us
-
-1. **Production/test boost works** — 1.5x production + 0.5x test penalty is net positive
-2. **FTS weight changes are radioactive** — touching column weights cascades across all query types
-3. **Type-discriminating reranks are too blunt** — Step J's 1.8x type boost caused massive regressions even with guards
-4. **Directory expansion works for deep hierarchies** — tokio's `src/sync/` tree benefits; signetai's flat `packages/connector-*/` does not
-5. **The real bottleneck is FTS recall, not reranking** — most misses happen because the correct symbol isn't in the top 200 candidates at all
+These gaps likely require either embedding reranking (Layer 4) or FTS recall improvements beyond what structural techniques alone can achieve.
 
 ---
 
