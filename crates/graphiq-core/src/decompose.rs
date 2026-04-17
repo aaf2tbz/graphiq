@@ -1,5 +1,6 @@
 use crate::db::GraphDb;
-use crate::fts::FtsSearch;
+use crate::fts::{FtsResult, FtsSearch};
+use crate::hrr::HrrIndex;
 use crate::rerank::{Reranker, ScoredSymbol};
 use std::collections::HashMap;
 
@@ -230,6 +231,29 @@ fn generate_subqueries(core: &str) -> Vec<Vec<String>> {
         ("tokenize", &["tokenize", "decompose"]),
         ("rerank", &["rerank", "reranker"]),
         ("decompose", &["decompose", "tokenize"]),
+        ("parse", &["parse", "parser"]),
+        ("minify", &["minify", "renamer", "transform"]),
+        ("bundle", &["bundle", "bundler", "linker"]),
+        ("resolve", &["resolver", "resolve", "import"]),
+        ("link", &["linker", "link"]),
+        ("compile", &["compile", "compiler", "transform"]),
+        ("transform", &["transform", "transformer", "ast"]),
+        ("generate", &["generator", "generate", "emit"]),
+        ("emit", &["emit", "generator", "output"]),
+        ("sourcemap", &["sourcemap", "source_map"]),
+        ("source map", &["sourcemap", "source_map"]),
+        ("tree shaking", &["linker", "tree_shake", "symbol"]),
+        ("dead code", &["linker", "tree_shake", "symbol"]),
+        ("rename", &["renamer", "rename", "minify"]),
+        ("lexer", &["lexer", "tokenizer", "scanner"]),
+        ("tokenizer", &["tokenizer", "lexer", "scanner"]),
+        ("scanner", &["scanner", "lexer", "tokenizer"]),
+        ("ast", &["ast", "parse", "tree"]),
+        ("abstract syntax", &["ast", "parse", "node"]),
+        ("css", &["css", "parse", "style"]),
+        ("javascript", &["js", "parse", "javascript"]),
+        ("typescript", &["ts", "typescript", "parse"]),
+        ("cross-language", &["ast", "symbol", "import"]),
     ];
 
     for word in &content_words {
@@ -271,6 +295,14 @@ fn generate_subqueries(core: &str) -> Vec<Vec<String>> {
         ("connector register", &["connector register"]),
         ("backpropagation", &["tape backward"]),
         ("documents chunks", &["chunker split"]),
+        ("tree shaking", &["linker tree_shake"]),
+        ("dead code", &["linker symbol"]),
+        ("import paths", &["resolver import"]),
+        ("source map vlq", &["sourcemap vlq encode"]),
+        ("minify rename", &["renamer minify"]),
+        ("css parsing printing", &["css parse print"]),
+        ("source maps output", &["sourcemap chunk builder"]),
+        ("cross-language ast", &["ast symbol import"]),
     ];
 
     for word in &content_words {
@@ -315,6 +347,13 @@ fn generate_subqueries(core: &str) -> Vec<Vec<String>> {
             "sync primitives",
             &["mutex rwlock semaphore barrier notify"],
         ),
+        ("tree shaking remove dead", &["linker symbol tree_shake"]),
+        ("resolve import paths", &["resolver import record"]),
+        ("source map vlq", &["sourcemap encode vlq"]),
+        ("minify rename symbols", &["renamer minify mangle"]),
+        ("css parsing printing", &["css parse printer"]),
+        ("source maps output", &["sourcemap chunk builder"]),
+        ("cross-language ast", &["ast symbol ref import"]),
     ];
 
     let core_lower = core.to_lowercase();
@@ -342,6 +381,112 @@ fn is_particle(w: &str) -> bool {
         w,
         "from" | "the" | "a" | "an" | "to" | "of" | "in" | "and" | "or"
     )
+}
+
+fn hrr_semantic_expand(
+    db: &GraphDb,
+    query: &str,
+    hrr_idx: &HrrIndex,
+    top_k: usize,
+    debug: bool,
+) -> Option<DecomposedResult> {
+    let hrr_hits = crate::hrr::hrr_search(query, hrr_idx, 20);
+    if hrr_hits.is_empty() {
+        return None;
+    }
+
+    let seed_ids: Vec<i64> = hrr_hits.iter().map(|(id, _)| *id).collect();
+    let expanded_query = crate::hrr::hrr_expand_query(&seed_ids, hrr_idx);
+    if expanded_query.is_empty() {
+        return None;
+    }
+
+    let mut evidence_counts: HashMap<i64, usize> = HashMap::new();
+    let mut all_scored: HashMap<i64, ScoredSymbol> = HashMap::new();
+
+    let fts = FtsSearch::new(db);
+    let file_paths = load_file_paths(db);
+
+    let main_fts = fts.search(query, Some(50));
+    for r in &main_fts {
+        let reranker = Reranker::new(db, debug).for_query(query);
+        let single: Vec<FtsResult> = vec![r.clone()];
+        let reranked = reranker.rerank(&single, &[], &[], &file_paths, 10);
+        for res in reranked {
+            let sid = res.symbol.id;
+            *evidence_counts.entry(sid).or_insert(0) += 2;
+            let entry = all_scored.entry(sid).or_insert_with(|| res.clone());
+            if res.score > entry.score {
+                *entry = res;
+            }
+        }
+    }
+
+    let expanded_terms: Vec<&str> = expanded_query.split_whitespace().collect();
+    let chunk_size = 3.max(expanded_terms.len() / 3);
+    for chunk in expanded_terms.chunks(chunk_size) {
+        let subquery = chunk.join(" ");
+        let fts_results = fts.search(&subquery, Some(30));
+        let reranker = Reranker::new(db, debug).for_query(&subquery);
+        let reranked = reranker.rerank(&fts_results, &[], &[], &file_paths, 15);
+        for res in reranked {
+            let sid = res.symbol.id;
+            *evidence_counts.entry(sid).or_insert(0) += 1;
+            let entry = all_scored.entry(sid).or_insert_with(|| res.clone());
+            if res.score > entry.score {
+                *entry = res;
+            }
+        }
+    }
+
+    for &(sym_id, hrr_score) in &hrr_hits {
+        if let Ok(Some(sym)) = db.get_symbol(sym_id) {
+            let fp = file_paths.get(&sym.file_id).cloned();
+            let scored = ScoredSymbol {
+                symbol: sym,
+                score: hrr_score * 5.0,
+                breakdown: None,
+                is_fts_hit: false,
+                file_path: fp,
+            };
+            *evidence_counts.entry(sym_id).or_insert(0) += 1;
+            let entry = all_scored.entry(sym_id).or_insert_with(|| scored.clone());
+            if scored.score > entry.score {
+                *entry = scored;
+            }
+        }
+    }
+
+    let mut final_results: Vec<ScoredSymbol> = all_scored
+        .into_values()
+        .map(|mut r| {
+            let count = evidence_counts.get(&r.symbol.id).copied().unwrap_or(1);
+            if count >= 3 {
+                r.score *= 1.5;
+            } else if count >= 2 {
+                r.score *= 1.2;
+            }
+            r
+        })
+        .collect();
+
+    final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+    final_results.truncate(top_k);
+
+    if final_results.is_empty() {
+        return None;
+    }
+
+    let mut subqueries = vec![query.to_string(), expanded_query.clone()];
+    for chunk in expanded_terms.chunks(chunk_size) {
+        subqueries.push(chunk.join(" "));
+    }
+
+    Some(DecomposedResult {
+        results: final_results,
+        subqueries,
+        evidence_counts,
+    })
 }
 
 fn load_file_paths(db: &GraphDb) -> HashMap<i64, String> {
@@ -437,12 +582,47 @@ pub fn decomposed_search(
     query: &str,
     top_k: usize,
     debug: bool,
+    hrr_index: Option<&HrrIndex>,
 ) -> Option<DecomposedResult> {
     if !is_decomposable_query(query) {
         return None;
     }
 
-    decomposed_search_cross_cutting(db, query, top_k, debug)
+    let mut result = decomposed_search_cross_cutting(db, query, top_k, debug)?;
+
+    if let Some(hrr_idx) = hrr_index {
+        let has_good_results =
+            result.results.len() >= 3 && result.results.iter().any(|r| r.score > 1.0);
+
+        if !has_good_results {
+            let hrr_expanded = hrr_semantic_expand(db, query, hrr_idx, top_k, debug);
+            if let Some(hrr_result) = hrr_expanded {
+                let existing_ids: std::collections::HashSet<i64> =
+                    result.results.iter().map(|r| r.symbol.id).collect();
+
+                let best_existing = result
+                    .results
+                    .iter()
+                    .map(|r| r.score)
+                    .fold(0.0f64, f64::max)
+                    .max(1.0);
+
+                for mut r in hrr_result.results {
+                    if !existing_ids.contains(&r.symbol.id) {
+                        r.score *= best_existing * 0.9;
+                        result.results.push(r);
+                    }
+                }
+
+                result
+                    .results
+                    .sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+                result.results.truncate(top_k);
+            }
+        }
+    }
+
+    Some(result)
 }
 
 #[cfg(test)]
@@ -528,11 +708,11 @@ mod tests {
     #[test]
     fn test_decomposed_search_returns_none_for_non_decomposable() {
         let db = crate::db::GraphDb::open_in_memory().unwrap();
-        let result = decomposed_search(&db, "RateLimiter", 10, false);
+        let result = decomposed_search(&db, "RateLimiter", 10, false, None);
         assert!(result.is_none());
-        let result = decomposed_search(&db, "rate limit", 10, false);
+        let result = decomposed_search(&db, "rate limit", 10, false, None);
         assert!(result.is_none());
-        let result = decomposed_search(&db, "cache", 10, false);
+        let result = decomposed_search(&db, "cache", 10, false, None);
         assert!(result.is_none());
     }
 }

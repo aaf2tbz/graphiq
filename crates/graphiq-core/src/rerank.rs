@@ -548,7 +548,7 @@ fn looks_like_file_path(query: &str) -> bool {
     extensions.iter().any(|ext| lower.contains(ext))
 }
 
-fn is_nl_query(tokens: &[String]) -> bool {
+pub fn is_nl_query(tokens: &[String]) -> bool {
     if tokens.len() < 3 {
         return false;
     }

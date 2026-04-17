@@ -9,6 +9,9 @@ pub struct HrrIndex {
     pub symbol_ids: Vec<i64>,
     pub symbol_names: Vec<String>,
     pub holograms: Vec<Vec<f64>>,
+    shared_holograms: Vec<Vec<f64>>,
+    lang_centroids: HashMap<String, Vec<f64>>,
+    symbol_langs: Vec<String>,
     term_vectors: HashMap<String, Vec<f64>>,
     term_idf: HashMap<String, f64>,
     dim: usize,
@@ -115,6 +118,10 @@ fn dot(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum()
 }
 
+pub fn hrr_dot(a: &[f64], b: &[f64]) -> f64 {
+    dot(a, b)
+}
+
 fn edge_weight(kind: &str) -> f64 {
     match kind {
         "Calls" => 1.0,
@@ -133,18 +140,19 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
 
     let mut stmt = conn
         .prepare(
-            "SELECT s.id, s.name, s.qualified_name, f.path \
+            "SELECT s.id, s.name, s.qualified_name, f.path, s.language \
              FROM symbols s LEFT JOIN files f ON s.file_id = f.id \
              ORDER BY s.id",
         )
         .map_err(|e| e.to_string())?;
-    let symbols: Vec<(i64, String, Option<String>, Option<String>)> = stmt
+    let symbols: Vec<(i64, String, Option<String>, Option<String>, String)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
+                row.get::<_, String>(4)?,
             ))
         })
         .map_err(|e| e.to_string())?
@@ -158,7 +166,7 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
     let mut term_doc_count: HashMap<String, usize> = HashMap::new();
     let mut symbol_term_sets: Vec<HashSet<String>> = Vec::with_capacity(n);
 
-    for (_, name, _, _) in &symbols {
+    for (_, name, _, _, _) in &symbols {
         let mut terms_for_symbol = HashSet::new();
         for t in extract_terms(name) {
             all_terms.insert(t.clone());
@@ -198,8 +206,15 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         }
     }
 
-    let symbol_ids: Vec<i64> = symbols.iter().map(|(id, _, _, _)| *id).collect();
-    let symbol_names: Vec<String> = symbols.iter().map(|(_, name, _, _)| name.clone()).collect();
+    let symbol_ids: Vec<i64> = symbols.iter().map(|(id, _, _, _, _)| *id).collect();
+    let symbol_names: Vec<String> = symbols
+        .iter()
+        .map(|(_, name, _, _, _)| name.clone())
+        .collect();
+    let symbol_langs: Vec<String> = symbols
+        .iter()
+        .map(|(_, _, _, _, lang)| lang.clone())
+        .collect();
     let id_to_idx: HashMap<i64, usize> = symbol_ids
         .iter()
         .enumerate()
@@ -372,14 +387,141 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         })
         .collect();
 
+    let mut lang_groups: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, lang) in symbol_langs.iter().enumerate() {
+        lang_groups.entry(lang.clone()).or_default().push(i);
+    }
+
+    let mut lang_centroids: HashMap<String, Vec<f64>> = HashMap::new();
+    for (lang, indices) in &lang_groups {
+        if indices.len() < 5 {
+            continue;
+        }
+        let mut centroid = vec![0.0; dim];
+        for &idx in indices {
+            for j in 0..dim {
+                centroid[j] += holograms[idx][j];
+            }
+        }
+        let n_lang = indices.len() as f64;
+        for j in 0..dim {
+            centroid[j] /= n_lang;
+        }
+        let cn: f64 = centroid.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if cn > 1e-10 {
+            for x in centroid.iter_mut() {
+                *x /= cn;
+            }
+        }
+        lang_centroids.insert(lang.clone(), centroid);
+    }
+
+    let main_langs: Vec<String> = lang_centroids.keys().cloned().collect();
+    let n_main = main_langs.len();
+    eprintln!(
+        "  [hrr] fiber: {} languages with centroids ({:?})",
+        n_main,
+        main_langs
+            .iter()
+            .map(|l| {
+                let cnt = lang_groups.get(l).map(|v| v.len()).unwrap_or(0);
+                format!("{}:{}", l, cnt)
+            })
+            .collect::<Vec<_>>()
+    );
+
+    let mut shared_basis: Vec<Vec<f64>> = Vec::new();
+    for lang in &main_langs {
+        let centroid = lang_centroids.get(lang).unwrap();
+        let mut v = centroid.clone();
+        for b in &shared_basis {
+            let proj = dot(&v, b);
+            for j in 0..dim {
+                v[j] -= proj * b[j];
+            }
+        }
+        let vn: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if vn > 1e-6 {
+            for x in v.iter_mut() {
+                *x /= vn;
+            }
+            shared_basis.push(v);
+        }
+    }
+    eprintln!(
+        "  [hrr] fiber: {} shared basis vectors (orthogonalized)",
+        shared_basis.len()
+    );
+
+    let shared_holograms: Vec<Vec<f64>> = holograms
+        .iter()
+        .map(|h| {
+            let mut proj = vec![0.0; dim];
+            for b in &shared_basis {
+                let d = dot(h, b);
+                for j in 0..dim {
+                    proj[j] += d * b[j];
+                }
+            }
+            proj
+        })
+        .collect();
+
     Ok(HrrIndex {
         symbol_ids,
         symbol_names,
         holograms,
+        shared_holograms,
+        lang_centroids,
+        symbol_langs,
         term_vectors,
         term_idf,
         dim,
     })
+}
+
+impl HrrIndex {
+    pub fn id_to_idx(&self, id: &i64) -> Option<usize> {
+        self.symbol_ids.iter().position(|s| s == id)
+    }
+
+    pub fn hologram(&self, idx: usize) -> &[f64] {
+        &self.holograms[idx]
+    }
+
+    pub fn shared_hologram(&self, idx: usize) -> &[f64] {
+        &self.shared_holograms[idx]
+    }
+
+    pub fn symbol_lang(&self, idx: usize) -> &str {
+        &self.symbol_langs[idx]
+    }
+
+    pub fn lang_centroid(&self, lang: &str) -> Option<&Vec<f64>> {
+        self.lang_centroids.get(lang)
+    }
+
+    pub fn has_fibers(&self) -> bool {
+        !self.lang_centroids.is_empty()
+    }
+
+    pub fn lang_count(&self) -> usize {
+        self.lang_centroids.len()
+    }
+
+    pub fn query_vec(&self, query: &str) -> Option<Vec<f64>> {
+        let q = build_query_vec(query, &self.term_vectors, &self.term_idf, self.dim);
+        let norm: f64 = q.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm < 1e-10 {
+            None
+        } else {
+            Some(q)
+        }
+    }
+}
+
+pub fn build_query_vec_public(query: &str, index: &HrrIndex) -> Option<Vec<f64>> {
+    index.query_vec(query)
 }
 
 fn build_query_vec(
@@ -463,6 +605,219 @@ pub fn hrr_rerank(
 
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
     scored
+}
+
+pub fn hrr_fiber_rerank(
+    query: &str,
+    candidate_ids: &[i64],
+    candidate_scores: &[f64],
+    index: &HrrIndex,
+) -> Vec<(i64, f64)> {
+    let id_to_idx: HashMap<i64, usize> = index
+        .symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let q = build_query_vec(query, &index.term_vectors, &index.term_idf, index.dim);
+    let q_empty = q.iter().all(|x| x.abs() < 1e-10);
+
+    if !index.has_fibers() || q_empty {
+        return hrr_rerank(query, candidate_ids, candidate_scores, index);
+    }
+
+    let n_langs = index.lang_centroids.len();
+    if n_langs < 2 {
+        return hrr_rerank(query, candidate_ids, candidate_scores, index);
+    }
+
+    let mut q_shared: Vec<f64> = vec![0.0; index.dim];
+    for centroid in index.lang_centroids.values() {
+        let proj = dot(&q, centroid);
+        for j in 0..index.dim {
+            q_shared[j] += proj * centroid[j];
+        }
+    }
+    let qsn: f64 = q_shared.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if qsn > 1e-10 {
+        for x in q_shared.iter_mut() {
+            *x /= qsn;
+        }
+    }
+    let shared_has_signal = qsn > 0.05;
+
+    let alpha = 0.15;
+
+    let mut scored: Vec<(i64, f64)> = candidate_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            let base = candidate_scores.get(i).copied().unwrap_or(0.0);
+            if base <= 0.0 {
+                return (id, base);
+            }
+            if let Some(&idx) = id_to_idx.get(&id) {
+                let hrr_sim = dot(&q, &index.holograms[idx]).max(0.0);
+
+                if shared_has_signal {
+                    let shared_sim = dot(&q_shared, &index.shared_holograms[idx]).max(0.0);
+                    let combined = (1.0 - alpha) * hrr_sim + alpha * shared_sim;
+                    let boost = 1.0 + 0.10 * combined;
+                    (id, base * boost)
+                } else {
+                    let boost = 1.0 + 0.10 * hrr_sim;
+                    (id, base * boost)
+                }
+            } else {
+                (id, base)
+            }
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored
+}
+
+pub fn hrr_fractal_attract(
+    seed_ids: &[i64],
+    index: &HrrIndex,
+    iterations: usize,
+    top_k: usize,
+) -> Vec<(i64, f64)> {
+    let id_to_idx: HashMap<i64, usize> = index
+        .symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let seed_indices: Vec<usize> = seed_ids
+        .iter()
+        .filter_map(|id| id_to_idx.get(id).copied())
+        .collect();
+
+    if seed_indices.is_empty() {
+        return Vec::new();
+    }
+
+    let n_seeds = seed_indices.len() as f64;
+    let mut attractor: Vec<f64> = vec![0.0; index.dim];
+    for &si in &seed_indices {
+        for j in 0..index.dim {
+            attractor[j] += index.holograms[si][j] / n_seeds;
+        }
+    }
+    let an: f64 = attractor.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if an < 1e-10 {
+        return Vec::new();
+    }
+    for x in attractor.iter_mut() {
+        *x /= an;
+    }
+
+    let momentum = 0.6;
+    let expand_k = 15;
+
+    for _iter in 0..iterations {
+        let mut scored: Vec<(usize, f64)> = (0..index.symbol_ids.len())
+            .map(|i| (i, dot(&attractor, &index.holograms[i])))
+            .filter(|(_, s)| *s > 0.01)
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        scored.truncate(expand_k);
+
+        if scored.is_empty() {
+            break;
+        }
+
+        let n_top = scored.len() as f64;
+        let weights: Vec<f64> = scored.iter().map(|(_, s)| s.max(0.01)).collect();
+        let w_sum: f64 = weights.iter().sum();
+
+        let mut centroid: Vec<f64> = vec![0.0; index.dim];
+        for (k, &(idx, _)) in scored.iter().enumerate() {
+            let w = weights[k] / w_sum;
+            for j in 0..index.dim {
+                centroid[j] += w * index.holograms[idx][j];
+            }
+        }
+        let cn: f64 = centroid.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if cn > 1e-10 {
+            for x in centroid.iter_mut() {
+                *x /= cn;
+            }
+        }
+
+        for j in 0..index.dim {
+            attractor[j] = momentum * attractor[j] + (1.0 - momentum) * centroid[j];
+        }
+        let new_norm: f64 = attractor.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if new_norm > 1e-10 {
+            for x in attractor.iter_mut() {
+                *x /= new_norm;
+            }
+        }
+    }
+
+    let mut final_scored: Vec<(usize, f64)> = (0..index.symbol_ids.len())
+        .map(|i| (i, dot(&attractor, &index.holograms[i])))
+        .filter(|(_, s)| *s > 0.01)
+        .collect();
+
+    final_scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    final_scored.truncate(top_k);
+
+    final_scored
+        .into_iter()
+        .map(|(i, s)| (index.symbol_ids[i], s))
+        .collect()
+}
+
+pub fn hrr_fiber_search(query: &str, index: &HrrIndex, top_k: usize) -> Vec<(i64, f64)> {
+    if !index.has_fibers() || index.lang_centroids.len() < 2 {
+        return Vec::new();
+    }
+
+    let q = build_query_vec(query, &index.term_vectors, &index.term_idf, index.dim);
+    if q.iter().all(|x| x.abs() < 1e-10) {
+        return Vec::new();
+    }
+
+    let mut q_shared: Vec<f64> = vec![0.0; index.dim];
+    for centroid in index.lang_centroids.values() {
+        let proj = dot(&q, centroid);
+        for j in 0..index.dim {
+            q_shared[j] += proj * centroid[j];
+        }
+    }
+    let qsn: f64 = q_shared.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if qsn < 0.05 {
+        return Vec::new();
+    }
+    for x in q_shared.iter_mut() {
+        *x /= qsn;
+    }
+
+    let mut scored: Vec<(usize, f64)> = (0..index.symbol_ids.len())
+        .map(|i| {
+            let shared_sim = dot(&q_shared, &index.shared_holograms[i]);
+            let full_sim = dot(&q, &index.holograms[i]).max(0.0);
+            let blended = 0.6 * shared_sim + 0.4 * full_sim;
+            (i, blended)
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+
+    scored
+        .into_iter()
+        .map(|(i, s)| (index.symbol_ids[i], s))
+        .collect()
 }
 
 pub fn hrr_seed_expand(seed_ids: &[i64], index: &HrrIndex, top_k: usize) -> Vec<(i64, f64)> {
@@ -801,4 +1156,100 @@ pub fn hrr_bivector_expand_scored(
         .map(|(i, s)| (index.symbol_ids[i], s))
         .collect();
     (result, coherence)
+}
+
+pub fn hrr_quantum_rerank(
+    query: &str,
+    bm25_ids: &[i64],
+    bm25_scores: &[f64],
+    expanded_ids: &[(i64, f64)],
+    coherence: f64,
+    index: &HrrIndex,
+) -> Vec<(i64, f64)> {
+    let id_to_idx: HashMap<i64, usize> = index
+        .symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let q = build_query_vec(query, &index.term_vectors, &index.term_idf, index.dim);
+    let q_norm_sq: f64 = q.iter().map(|x| x * x).sum();
+    if q_norm_sq < 1e-10 {
+        let mut result: Vec<(i64, f64)> = bm25_ids
+            .iter()
+            .zip(bm25_scores.iter())
+            .map(|(&id, &s)| (id, s))
+            .collect();
+        for &(id, score) in expanded_ids {
+            result.push((id, score));
+        }
+        result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        return result;
+    }
+
+    let bm25_set: HashSet<i64> = bm25_ids.iter().copied().collect();
+
+    let mut candidate_map: HashMap<i64, (f64, bool)> = HashMap::new();
+    for (i, &id) in bm25_ids.iter().enumerate() {
+        let score = bm25_scores.get(i).copied().unwrap_or(0.0);
+        if score > 0.0 {
+            candidate_map.insert(id, (score, true));
+        }
+    }
+    for &(id, raw_score) in expanded_ids {
+        let adj = raw_score * (0.3 + 0.7 * coherence.max(0.0).min(1.0));
+        let entry = candidate_map.entry(id).or_insert((0.0, false));
+        if !entry.1 {
+            entry.0 = entry.0.max(adj);
+        }
+    }
+
+    let scored: Vec<(i64, f64)> = candidate_map
+        .into_iter()
+        .map(|(id, (base_score, is_bm25))| {
+            if base_score <= 0.0 {
+                return (id, 0.0);
+            }
+
+            let idx = match id_to_idx.get(&id) {
+                Some(&i) => i,
+                None => return (id, base_score),
+            };
+            let h = &index.holograms[idx];
+
+            let hrr_sim = dot(&q, h).max(0.0);
+            let h_norm: f64 = h.iter().map(|x| x * x).sum::<f64>().sqrt();
+
+            if is_bm25 {
+                let theta = if h_norm > 1e-10 && hrr_sim > 0.0 {
+                    (hrr_sim / h_norm).min(1.0).acos()
+                } else {
+                    std::f64::consts::FRAC_PI_2
+                };
+
+                let psi_re = base_score.sqrt() + hrr_sim.sqrt() * theta.cos();
+                let psi_im = hrr_sim.sqrt() * theta.sin();
+                let probability = psi_re * psi_re + psi_im * psi_im;
+
+                let classical = base_score * (1.0 + 0.10 * hrr_sim);
+                let blended = 0.5 * classical + 0.5 * probability;
+
+                (id, blended)
+            } else {
+                let classical = base_score * (1.0 + 0.15 * hrr_sim);
+
+                let q_proj = hrr_sim / q_norm_sq.sqrt().max(1e-10);
+                let propagator = (q_proj * coherence).min(1.0);
+                let virtual_boost = 1.0 + 0.3 * propagator;
+
+                (id, classical * virtual_boost)
+            }
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    let mut result = scored;
+    result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    result
 }

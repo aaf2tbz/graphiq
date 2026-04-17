@@ -7,6 +7,7 @@ use crate::directory_expand::DirectoryExpander;
 use crate::edge::{BlastDirection, BlastRadius};
 use crate::fts::FtsSearch;
 use crate::graph::StructuralExpander;
+use crate::hrr::HrrIndex;
 use crate::rerank::{Reranker, ScoredSymbol};
 
 #[derive(Debug, Clone)]
@@ -69,11 +70,21 @@ pub struct SearchResult {
 pub struct SearchEngine<'a> {
     db: &'a GraphDb,
     cache: &'a HotCache,
+    hrr_index: Option<&'a HrrIndex>,
 }
 
 impl<'a> SearchEngine<'a> {
     pub fn new(db: &'a GraphDb, cache: &'a HotCache) -> Self {
-        Self { db, cache }
+        Self {
+            db,
+            cache,
+            hrr_index: None,
+        }
+    }
+
+    pub fn with_hrr(mut self, hrr: &'a HrrIndex) -> Self {
+        self.hrr_index = Some(hrr);
+        self
     }
 
     pub fn search(&self, query: &SearchQuery) -> SearchResult {
@@ -93,9 +104,13 @@ impl<'a> SearchEngine<'a> {
         let mut total_fts: usize;
         let mut total_expanded: usize;
 
-        if let Some(decomposed) =
-            crate::decompose::decomposed_search(self.db, &query.query, query.top_k, query.debug)
-        {
+        if let Some(decomposed) = crate::decompose::decomposed_search(
+            self.db,
+            &query.query,
+            query.top_k,
+            query.debug,
+            self.hrr_index,
+        ) {
             results = if let Some(ref filter) = query.file_filter {
                 let mut r = decomposed.results;
                 r.retain(|res| {
@@ -168,6 +183,71 @@ impl<'a> SearchEngine<'a> {
                     total_expanded = 0;
                 }
             }
+
+            if let Some(hrr_idx) = self.hrr_index {
+                let file_paths = self.load_file_paths();
+                let bm25_ids: Vec<i64> = results.iter().take(5).map(|r| r.symbol.id).collect();
+
+                if bm25_ids.len() >= 2 {
+                    let (biv_expanded, _) =
+                        crate::hrr::hrr_bivector_expand_scored(&bm25_ids, hrr_idx, 50);
+
+                    let mut rrf: std::collections::HashMap<i64, f64> =
+                        std::collections::HashMap::new();
+                    let k = 60.0;
+                    for (rank, &id) in bm25_ids.iter().enumerate() {
+                        *rrf.entry(id).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+                    }
+                    for (rank, (id, _)) in biv_expanded.iter().enumerate() {
+                        *rrf.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+                    }
+
+                    let q_tokens: Vec<String> = query
+                        .query
+                        .split_whitespace()
+                        .map(|t| t.to_lowercase())
+                        .filter(|t| t.len() >= 2)
+                        .collect();
+                    if crate::rerank::is_nl_query(&q_tokens)
+                        && hrr_idx.lang_count() >= 2
+                        && !query.query.to_lowercase().starts_with("all ")
+                        && !query.query.to_lowercase().starts_with("every ")
+                    {
+                        let all_seed_ids: Vec<i64> =
+                            results.iter().take(20).map(|r| r.symbol.id).collect();
+                        let fractal_results =
+                            crate::hrr::hrr_fractal_attract(&all_seed_ids, hrr_idx, 3, 30);
+                        for (rank, (id, _)) in fractal_results.iter().enumerate() {
+                            *rrf.entry(*id).or_insert(0.0) += 0.5 / (k + rank as f64 + 1.0);
+                        }
+                    }
+
+                    let mut merged: Vec<(i64, f64)> = rrf.into_iter().collect();
+                    merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                    let merged_ids: Vec<i64> = merged.iter().take(50).map(|(id, _)| *id).collect();
+                    let merged_scores: Vec<f64> = merged.iter().take(50).map(|(_, s)| *s).collect();
+
+                    let reranked =
+                        crate::hrr::hrr_rerank(&query.query, &merged_ids, &merged_scores, hrr_idx);
+                    let top_n: Vec<(i64, f64)> = reranked.into_iter().take(query.top_k).collect();
+
+                    results = top_n
+                        .into_iter()
+                        .filter_map(|(id, score)| {
+                            let sym = self.db.get_symbol(id).ok()??;
+                            let fp = file_paths.get(&sym.file_id).cloned();
+                            Some(ScoredSymbol {
+                                symbol: sym,
+                                score,
+                                breakdown: None,
+                                is_fts_hit: false,
+                                file_path: fp,
+                            })
+                        })
+                        .collect();
+                    total_expanded += biv_expanded.len();
+                }
+            }
         }
 
         if let Some(ref filter) = query.file_filter {
@@ -231,6 +311,60 @@ impl<'a> SearchEngine<'a> {
             Some(r) => r.flatten().collect(),
             None => HashMap::new(),
         }
+    }
+
+    fn structural_prf(&self, seed_ids: &[i64], _query: &str, top_k: usize) -> Vec<(i64, f64)> {
+        if seed_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let seed_set: std::collections::HashSet<i64> = seed_ids.iter().copied().collect();
+        let mut vote_count: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+
+        for &seed_id in seed_ids {
+            if let Ok(edges) = self.db.edges_from(seed_id) {
+                for edge in &edges {
+                    if seed_set.contains(&edge.target_id) {
+                        continue;
+                    }
+                    let weight = match edge.kind.as_str() {
+                        "Calls" => 2.0,
+                        "Contains" => 1.5,
+                        "References" => 1.0,
+                        "Imports" => 1.0,
+                        _ => 0.5,
+                    };
+                    *vote_count.entry(edge.target_id).or_insert(0.0) += weight;
+                }
+            }
+            if let Ok(edges) = self.db.edges_to(seed_id) {
+                for edge in &edges {
+                    if seed_set.contains(&edge.source_id) {
+                        continue;
+                    }
+                    let weight = match edge.kind.as_str() {
+                        "Calls" => 2.0,
+                        "Contains" => 1.5,
+                        "References" => 1.0,
+                        "Imports" => 1.0,
+                        _ => 0.5,
+                    };
+                    *vote_count.entry(edge.source_id).or_insert(0.0) += weight;
+                }
+            }
+        }
+
+        let max_votes = vote_count.values().cloned().fold(0.0f64, f64::max).max(1.0);
+
+        let mut scored: Vec<(i64, f64)> = vote_count
+            .into_iter()
+            .filter(|(_, v)| *v >= 2.0)
+            .map(|(id, v)| (id, v / max_votes))
+            .collect();
+
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        scored.truncate(top_k);
+        scored
     }
 }
 

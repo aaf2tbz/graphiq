@@ -260,7 +260,11 @@ fn main() {
         build_default_queries()
     };
     let cache = HotCache::with_defaults();
-    let engine = SearchEngine::new(&db, &cache);
+    let engine = if let Some(ref hrr_idx) = hrr_index {
+        SearchEngine::new(&db, &cache).with_hrr(hrr_idx)
+    } else {
+        SearchEngine::new(&db, &cache)
+    };
 
     println!("Running {} benchmark queries ...\n", queries.len());
 
