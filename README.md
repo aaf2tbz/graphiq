@@ -2,7 +2,7 @@
 
 Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, and heuristic reranking — zero embeddings required.
 
-**0.870 MRR** on self-benchmark. **0.683 on tokio** (17K symbols). **0.410 on signetai** (20K symbols). **0.9ms p50 latency**. No model dependencies.
+**0.717 NDCG@10** on self-benchmark. **0.540 on tokio** (17K symbols). **0.528 on signetai** (20K symbols). **~1ms p50 latency**. No model dependencies.
 
 ## Why This Works
 
@@ -40,34 +40,56 @@ Query: "rate limit middleware"
 +-----------------------------+
 ```
 
-The current 0.870 MRR uses **only layers 1-3** plus a query decomposition path for abstract natural language queries and cross-package expansion for monorepo layouts. No embeddings needed for core search. The embed reranker exists as a feature flag for future nl-abstract improvements.
+The current 0.717 NDCG@10 uses **only layers 1-3** plus a query decomposition path for natural language queries and cross-package expansion for monorepo layouts. No embeddings needed for core search. The embed reranker exists as a feature flag for future nl-abstract improvements.
 
 ## Benchmarks
 
-Three codebases, increasing scale and difficulty:
+Three codebases, increasing scale and difficulty. Metric is **NDCG@10 with graded relevance** (3=perfect, 2=good, 1=acceptable) — a proper IR evaluation that rewards partial matches and penalizes ordering errors, unlike single-symbol MRR.
 
-| Codebase | Symbols | MRR | Hit@1 | Hit@3 | Hit@10 |
-|---|---|---|---|---|---|
-| graphiq (self) | 849 | 0.870 | 78% | 93% | 100% |
-| tokio | 17,867 | 0.683 | 65% | 69% | 73% |
-| signetai | 20,870 | 0.410 | 32% | 44% | 60% |
+| Codebase | Symbols | Queries | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
+|---|---|---|---|---|---|---|
+| graphiq (self) | 869 | 27 | 0.717 | 70% | 93% | 100% |
+| tokio | 17,867 | 26 | 0.540 | 62% | 77% | 85% |
+| signetai | 20,870 | 25 | 0.528 | 68% | 88% | 92% |
 
-Self-benchmark per-category (48 files, 859 symbols, 27 queries):
+Latency: p50 1.0ms cold, < 0.1ms warm (cached). p95 3.0ms cold.
 
-| Query Class | MRR | Hit@1 | Hit@3 | Hit@5 | Hit@10 |
-|---|---|---|---|---|---|
-| `symbol-exact` | 1.000 | 100% | 100% | 100% | 100% |
-| `error-debug` | 1.000 | 100% | 100% | 100% | 100% |
-| `nl-descriptive` | 0.900 | 80% | 100% | 100% | 100% |
-| `symbol-partial` | 0.792 | 50% | 83% | 100% | 100% |
-| `file-path` | 0.833 | 67% | 100% | 100% | 100% |
-| `nl-abstract` | 0.833 | 33% | 100% | 100% | 100% |
-| `cross-cutting` | 0.625 | 50% | 50% | 100% | 100% |
-| **Overall** | **0.870** | **78%** | **93%** | **100%** | **100%** |
+### graphiq (self) — 49 files, 869 symbols
 
-Latency: p50 0.9ms cold, < 0.1ms warm (cached). p95 2.6ms cold.
+| Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
+|---|---|---|---|---|
+| `symbol-exact` | 0.781 | 100% | 100% | 100% |
+| `symbol-partial` | 0.530 | 33% | 67% | 100% |
+| `nl-descriptive` | 0.802 | 60% | 100% | 100% |
+| `nl-abstract` | 0.833 | 100% | 100% | 100% |
+| `file-path` | 0.833 | 67% | 100% | 100% |
+| `error-debug` | 1.000 | 100% | 100% | 100% |
+| `cross-cutting` | 0.345 | 50% | 100% | 100% |
 
-For context, academic baselines on CodeSearchNet: BM25 alone ~0.35-0.45, CodeBERT ~0.65-0.75, UniXcoder ~0.75-0.80, CodeT5+ ~0.80-0.85. GraphIQ matches CodeT5+ on self-benchmark with sub-millisecond latency, zero model dependency, and a ~1.4MB index. External validation at scale (tokio, signetai) shows the gap that structural techniques alone haven't closed — see [ROADMAP-PHASE3.md](ROADMAP-PHASE3.md).
+### tokio — 819 files, 17,867 symbols
+
+| Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
+|---|---|---|---|---|
+| `symbol-exact` | 0.762 | 83% | 83% | 83% |
+| `symbol-partial` | 0.875 | 100% | 100% | 100% |
+| `nl-descriptive` | 0.269 | 40% | 60% | 80% |
+| `nl-abstract` | 0.232 | 33% | 33% | 67% |
+| `file-path` | 0.235 | 33% | 67% | 67% |
+| `error-debug` | 0.810 | 0% | 100% | 100% |
+| `cross-cutting` | 0.330 | 50% | 100% | 100% |
+
+### signetai — 1,263 files, 20,870 symbols
+
+| Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
+|---|---|---|---|---|
+| `symbol-exact` | 0.757 | 100% | 100% | 100% |
+| `symbol-partial` | 0.533 | 67% | 100% | 100% |
+| `nl-descriptive` | 0.361 | 60% | 60% | 80% |
+| `nl-abstract` | 0.393 | 33% | 100% | 100% |
+| `file-path` | 0.405 | 33% | 67% | 67% |
+| `cross-cutting` | 0.625 | 100% | 100% | 100% |
+
+The weak categories at scale (tokio nl-descriptive/abstract, signetai nl-descriptive) are queries where the user's vocabulary diverges from the codebase's vocabulary — the classic "semantic gap" that structural techniques alone can't fully close. Embeddings as a reranker (Layer 4) would address these.
 
 ## Quick Start
 
