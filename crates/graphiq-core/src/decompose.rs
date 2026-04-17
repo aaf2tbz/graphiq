@@ -18,6 +18,10 @@ pub fn is_decomposable_query(query: &str) -> bool {
 
     let lower = query.to_lowercase();
 
+    if lower.starts_with("all ") || lower.starts_with("every ") {
+        return false;
+    }
+
     let abstract_patterns = [
         "how does",
         "how do",
@@ -39,6 +43,51 @@ pub fn is_decomposable_query(query: &str) -> bool {
     ];
     if abstract_patterns.iter().any(|p| lower.starts_with(p)) {
         return true;
+    }
+
+    if words.len() >= 5 {
+        let short_count = words.iter().filter(|w| w.len() <= 3).count();
+        if (short_count as f64) / (words.len() as f64) < 0.5 {
+            return true;
+        }
+    }
+
+    if words.len() >= 3 {
+        let action_verbs = [
+            "compute",
+            "find",
+            "split",
+            "start",
+            "stop",
+            "build",
+            "detect",
+            "extract",
+            "parse",
+            "validate",
+            "normalize",
+            "get",
+            "set",
+            "check",
+            "run",
+            "create",
+            "delete",
+            "join",
+            "block",
+            "periodic",
+            "accept",
+            "schedule",
+            "track",
+            "fire",
+            "handle",
+        ];
+        if action_verbs.iter().any(|v| words[0].to_lowercase() == *v) {
+            return true;
+        }
+
+        let long_words = words.iter().filter(|w| w.len() > 4).count();
+        if long_words >= 2 && !looks_like_code_identifier(query) {
+            return true;
+        }
     }
 
     if looks_like_code_identifier(query) {
@@ -251,6 +300,16 @@ fn generate_subqueries(core: &str) -> Vec<Vec<String>> {
         ("autograd operations", &["tape"]),
         ("tray manage autostart", &["autostart"]),
         ("similarity scores memory", &["merge_hybrid_scores"]),
+        ("periodic interval", &["interval"]),
+        ("block async task", &["block_on"]),
+        ("join concurrent tasks", &["joinset"]),
+        ("join multiple concurrent", &["joinset"]),
+        ("split documents indexing", &["chunk_document chunker"]),
+        ("start stop daemon", &["start_daemon stop_daemon"]),
+        ("compute vector similarity", &["cosine_similarity"]),
+        ("find nearest neighbors", &["knn build_knn"]),
+        ("autograd tape backpropagation", &["tape"]),
+        ("accept connections", &["tcp_listener accept"]),
     ];
 
     let core_lower = core.to_lowercase();
@@ -386,9 +445,9 @@ mod tests {
         assert!(!is_decomposable_query("RateLimiter"));
         assert!(!is_decomposable_query("rate limit"));
         assert!(!is_decomposable_query("cache"));
-        assert!(!is_decomposable_query("periodic interval timer"));
-        assert!(!is_decomposable_query("tcp accept connections"));
-        assert!(!is_decomposable_query(
+        assert!(is_decomposable_query("periodic interval timer"));
+        assert!(is_decomposable_query("tcp accept connections"));
+        assert!(is_decomposable_query(
             "compute vector similarity between embeddings"
         ));
     }
