@@ -40,7 +40,9 @@ Query: "rate limit middleware"
 +-----------------------------+
 ```
 
-The current 0.717 NDCG@10 uses **only layers 1-3** plus a query decomposition path for natural language queries and cross-package expansion for monorepo layouts. No embeddings needed for core search. The embed reranker exists as a feature flag for future nl-abstract improvements.
+The current 0.717 NDCG@10 uses **only layers 1-3** plus a query decomposition path for natural language queries and cross-package expansion for monorepo layouts. Layer 4 (embed reranker) was tested with jina-code and nomic-embed — both produced net-negative NDCG. Neural embeddings at the 137M scale add noise, not signal.
+
+**Phase 6 (in progress)** replaces embeddings with **Latent Semantic Geometry**: truncated SVD on a structurally-augmented term-symbol matrix, with hyperspherical angular distance as the relevance metric. Pure linear algebra — no model downloads, no network calls. Early results show it wins on queries BM25 struggles with ("tcp accept connections": LSA 0.429 vs BM25 0.082). See `DESIGN-LSA.md` for the full design.
 
 ## Benchmarks
 
@@ -89,7 +91,7 @@ Latency: p50 1.0ms cold, < 0.1ms warm (cached). p95 3.0ms cold.
 | `file-path` | 0.405 | 33% | 67% | 67% |
 | `cross-cutting` | 0.625 | 100% | 100% | 100% |
 
-The weak categories at scale (tokio nl-descriptive/abstract, signetai nl-descriptive) are queries where the user's vocabulary diverges from the codebase's vocabulary — the classic "semantic gap" that structural techniques alone can't fully close. Embeddings as a reranker (Layer 4) would address these.
+The weak categories at scale (tokio nl-descriptive/abstract, signetai nl-descriptive) are queries where the user's vocabulary diverges from the codebase's vocabulary — the classic "semantic gap." Phase 6's LSA approach addresses this by discovering latent semantic relationships through matrix factorization — terms that co-occur in structurally similar contexts become angular neighbors on the hypersphere, even if they never appear in the same symbol.
 
 ## Quick Start
 

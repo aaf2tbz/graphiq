@@ -4,6 +4,7 @@ use std::time::Instant;
 use graphiq_core::cache::HotCache;
 use graphiq_core::db::GraphDb;
 use graphiq_core::index::Indexer;
+use graphiq_core::lsa;
 use graphiq_core::search::{SearchEngine, SearchQuery};
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -139,6 +140,37 @@ fn main() {
         println!("Embeddings: {} vectors stored\n", embed_count);
     }
 
+    print!("Computing LSA ... ");
+    let lsa_index = match lsa::compute_lsa(&db) {
+        Ok(idx) => {
+            let n_syms = idx.symbol_ids.len();
+            let n_terms = idx.term_index.len();
+            let dim = idx.symbol_vecs.first().map(|v| v.len()).unwrap_or(0);
+            let sym_id_to_idx: std::collections::HashMap<i64, usize> = idx
+                .symbol_ids
+                .iter()
+                .enumerate()
+                .map(|(i, &id)| (id, i))
+                .collect();
+
+            match lsa::store_lsa_vectors(&db, &idx.symbol_ids, &idx.symbol_vecs) {
+                Ok(c) => eprintln!("  stored {} latent vectors", c),
+                Err(e) => eprintln!("  store failed: {e}"),
+            }
+            match lsa::store_lsa_basis(&db, &idx.term_basis, &idx.term_index) {
+                Ok(()) => {}
+                Err(e) => eprintln!("  basis store failed: {e}"),
+            }
+
+            println!("done ({} terms × {} symbols, dim={})", n_terms, n_syms, dim);
+            Some((idx, sym_id_to_idx))
+        }
+        Err(e) => {
+            println!("failed: {e}");
+            None
+        }
+    };
+
     let queries: Vec<BenchQuery> = if let Some(query_file) = args.get(3) {
         let content = std::fs::read_to_string(query_file).unwrap_or_else(|e| {
             eprintln!("error reading query file: {e}");
@@ -208,6 +240,136 @@ fn main() {
             latency_us: cold_latency,
             warm_latency_us: warm_latency,
         });
+    }
+
+    if let Some((ref lsa_idx, ref sym_map)) = lsa_index {
+        println!("\n=== Pure LSA Evaluation (angular distance on hypersphere) ===\n");
+        let conn = db.conn();
+        let mut lsa_results: Vec<BenchResult> = Vec::new();
+
+        for q in &queries {
+            let query_vec = lsa::project_query(
+                &q.query,
+                &lsa_idx.term_index,
+                &lsa_idx.term_basis,
+                lsa_idx.term_index.len(),
+            );
+
+            let mut scored: Vec<(usize, f64)> = lsa_idx
+                .symbol_vecs
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i, lsa::angular_distance(&query_vec, v)))
+                .collect();
+            scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
+            scored.truncate(10);
+
+            let result_rels: Vec<f64> = scored
+                .iter()
+                .map(|(idx, _)| {
+                    let sym_id = lsa_idx.symbol_ids.get(*idx).copied().unwrap_or(0);
+                    let name: String = conn
+                        .query_row("SELECT name FROM symbols WHERE id = ?", [sym_id], |row| {
+                            row.get(0)
+                        })
+                        .unwrap_or_default();
+                    q.relevance_of(&name) as f64
+                })
+                .collect();
+
+            let ideal_rels = compute_ideal_rels(&db, q);
+            let ndcg = ndcg_at_k(&result_rels, &ideal_rels, 10);
+
+            let best_relevance = scored
+                .iter()
+                .map(|(idx, _)| {
+                    let sym_id = lsa_idx.symbol_ids.get(*idx).copied().unwrap_or(0);
+                    let name: String = conn
+                        .query_row("SELECT name FROM symbols WHERE id = ?", [sym_id], |row| {
+                            row.get(0)
+                        })
+                        .unwrap_or_default();
+                    q.relevance_of(&name)
+                })
+                .max()
+                .unwrap_or(0);
+
+            let best_rank = scored
+                .iter()
+                .position(|(idx, _)| {
+                    let sym_id = lsa_idx.symbol_ids.get(*idx).copied().unwrap_or(0);
+                    let name: String = conn
+                        .query_row("SELECT name FROM symbols WHERE id = ?", [sym_id], |row| {
+                            row.get(0)
+                        })
+                        .unwrap_or_default();
+                    q.relevance_of(&name) > 0
+                })
+                .map(|p| p + 1);
+
+            let hit_at_1 = best_rank.map_or(false, |r| r <= 1) && best_relevance >= 2;
+            let hit_at_3 = best_rank.map_or(false, |r| r <= 3) && best_relevance >= 2;
+            let hit_at_5 = best_rank.map_or(false, |r| r <= 5) && best_relevance >= 1;
+            let hit_at_10 = best_rank.map_or(false, |r| r <= 10) && best_relevance >= 1;
+
+            lsa_results.push(BenchResult {
+                query: q.query.clone(),
+                category: q.category.clone(),
+                ndcg,
+                best_relevance,
+                best_rank,
+                hit_at_1,
+                hit_at_3,
+                hit_at_5,
+                hit_at_10,
+                latency_us: 0,
+                warm_latency_us: 0,
+            });
+        }
+
+        let total = lsa_results.len();
+        let avg_ndcg: f64 = lsa_results.iter().map(|r| r.ndcg).sum::<f64>() / total as f64;
+        let hits_1 = lsa_results.iter().filter(|r| r.hit_at_1).count();
+        let hits_3 = lsa_results.iter().filter(|r| r.hit_at_3).count();
+        let hits_10 = lsa_results.iter().filter(|r| r.hit_at_10).count();
+
+        println!("LSA NDCG@10: {:.3}", avg_ndcg);
+        println!(
+            "LSA Hit@1: {}/{} ({:.0}%)",
+            hits_1,
+            total,
+            hits_1 as f64 / total as f64 * 100.0
+        );
+        println!(
+            "LSA Hit@3: {}/{} ({:.0}%)",
+            hits_3,
+            total,
+            hits_3 as f64 / total as f64 * 100.0
+        );
+        println!(
+            "LSA Hit@10: {}/{} ({:.0}%)",
+            hits_10,
+            total,
+            hits_10 as f64 / total as f64 * 100.0
+        );
+
+        println!("\n--- Per-Query LSA vs BM25 ---\n");
+        println!(
+            "{:<30} {:<15} {:>8} {:>8} {:>6} {:>6}",
+            "Query", "Category", "LSA", "BM25", "L@1", "B@1"
+        );
+        println!("{}", "-".repeat(100));
+        for (bm25, lsa) in results.iter().zip(lsa_results.iter()) {
+            println!(
+                "{:<30} {:<15} {:>8.3} {:>8.3} {:>6} {:>6}",
+                truncate(&bm25.query, 30),
+                bm25.category,
+                lsa.ndcg,
+                bm25.ndcg,
+                if lsa.hit_at_1 { "Y" } else { "N" },
+                if bm25.hit_at_1 { "Y" } else { "N" },
+            );
+        }
     }
 
     let total = results.len();
