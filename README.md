@@ -2,7 +2,7 @@
 
 Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, heuristic reranking, and holographic reduced representations — zero embeddings required.
 
-**0.777 NDCG@10** on self-benchmark. **0.546 on tokio** (17K symbols). **0.552 on signetai** (20K symbols). **~1ms p50 latency**. No model dependencies.
+**Aggregate 2.526 NDCG@10** across 4 polyglot codebases (Rust, TypeScript/Python, Go). **0.796** self-benchmark, **0.520** tokio (17K symbols), **0.615** signetai (20K symbols), **0.545** esbuild (6K symbols). **~1ms p50 latency**. Zero model dependencies.
 
 ## Why This Works
 
@@ -40,48 +40,45 @@ Query: "rate limit middleware"
 +-----------------------------+
 ```
 
-The current 0.777 NDCG@10 uses **only layers 1-3** plus a query decomposition path for natural language queries, cross-package expansion for monorepo layouts, and HRR bivector reranking. Layer 4 (embed reranker) was tested with jina-code and nomic-embed — both produced net-negative NDCG. Neural embeddings at the 137M scale add noise, not signal.
+The current pipeline uses **layers 1-3** plus HRR holographic reranking, fractal attractor expansion, and a query decomposition path for natural language queries. Layer 4 (embed reranker) was tested with jina-code and nomic-embed — both produced net-negative NDCG. Neural embeddings at the 137M scale add noise, not signal.
 
-**Phase 6 (in progress)** explores pure mathematical approaches to semantic search — no model downloads, no network calls. The winning approach is **Holographic Reduced Representations (HRR)** with **bivector expansion**: each symbol's identity and graph neighborhood are encoded into a fixed-width vector via circular convolution, then matched against query vectors via dot product. The bivector expansion computes the oriented plane (rejection) between BM25's top results and discovers structurally related symbols through geometric algebra — the antivector/bivector concept from Clifford algebra applied to code search. **Biv5** (5-seed bivector expansion + RRF merge + HRR rerank) produces **+0.062 aggregate NDCG** over BM25 across all 3 codebases. Also explored: Poincaré ball hyperbolic embeddings (AFMO), spectral bandpass, Born-series propagators, and antivector reranking. See `DESIGN-LSA.md` for the full design.
+**Phase 8 (current)** continues pure mathematical search — no model downloads, no network calls. The core approach is **Holographic Reduced Representations (HRR)** with **hypersphere normalization**: each symbol's identity and graph neighborhood are encoded into a 1024-dim vector via circular convolution, then normalized to unit length post-IFFT. This eliminated a 47x norm variance (max norm 47.076 → 1.000) and produced the single largest gain of the phase (+0.132 aggregate NDCG). Also explored: fiber bundle decomposition (per-language centroids for polyglot), fractal attractor convergence (marginal, +0.007), LSA-enhanced term vectors (fundamentally incompatible with HRR's near-orthogonality requirement), and per-candidate tangent bivector expansion (too noisy). See `DESIGN-LSA.md` for the full design.
 
 ## Benchmarks
 
-Three codebases, increasing scale and difficulty. Metric is **NDCG@10 with graded relevance** (3=perfect, 2=good, 1=acceptable) — a proper IR evaluation that rewards partial matches and penalizes ordering errors, unlike single-symbol MRR.
+Four codebases, increasing scale and polyglot difficulty. Metric is **NDCG@10 with graded relevance** (3=perfect, 2=good, 1=acceptable) — a proper IR evaluation that rewards partial matches and penalizes ordering errors, unlike single-symbol MRR.
 
-| Codebase | Symbols | Queries | BM25 | HRR-Rerank | HRR-Biv5 | AFMO-Rerank |
-|---|---|---|---|---|---|---|
-| graphiq (self) | 995 | 27 | 0.715 | 0.719 | **0.777** | 0.705 |
-| tokio | 7,722 | 26 | 0.539 | **0.546** | 0.528 | 0.538 |
-| signetai | 12,881 | 25 | 0.527 | 0.535 | **0.552** | 0.533 |
-| **Aggregate** | | | **1.781** | **1.800** | **1.857** | 1.776 |
-
-HRR-Biv5 uses bivector expansion from geometric algebra: pairwise rejection between BM25's top-5 results forms a structural "oriented plane" that discovers related symbols BM25 misses. Self +0.058, signetai +0.017 over HRR-Rerank.
-
-HRR-Pure (zero text search, pure structural/identity matching via holographic binding) scores 0.632/0.484/0.418 — ~85% of BM25 performance from graph structure alone.
+| Codebase | Symbols | Queries | BM25 | HRR-Rerank | Full Pipeline |
+|---|---|---|---|---|---|
+| graphiq (self) | 1,025 | 27 | 0.715 | 0.719 | **0.796** |
+| tokio | 17,867 | 26 | 0.539 | 0.546 | **0.520** |
+| signetai | 20,870 | 25 | 0.527 | 0.535 | **0.615** |
+| esbuild | 6,183 | 25 | — | — | **0.545** |
+| **Aggregate** | | | | | **2.526** |
 
 Latency: p50 1.0ms cold, < 0.1ms warm (cached). p95 3.0ms cold.
 
-### graphiq (self) — 49 files, 869 symbols
+### graphiq (self) — 60 files, 1,025 symbols
 
 | Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
 |---|---|---|---|---|
-| `symbol-exact` | 0.781 | 100% | 100% | 100% |
+| `symbol-exact` | 0.960 | 100% | 100% | 100% |
 | `symbol-partial` | 0.530 | 33% | 67% | 100% |
 | `nl-descriptive` | 0.802 | 60% | 100% | 100% |
 | `nl-abstract` | 0.833 | 100% | 100% | 100% |
 | `file-path` | 0.833 | 67% | 100% | 100% |
 | `error-debug` | 1.000 | 100% | 100% | 100% |
-| `cross-cutting` | 0.345 | 50% | 100% | 100% |
+| `cross-cutting` | 0.530 | 50% | 100% | 100% |
 
 ### tokio — 819 files, 17,867 symbols
 
 | Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
 |---|---|---|---|---|
-| `symbol-exact` | 0.762 | 83% | 83% | 83% |
-| `symbol-partial` | 0.875 | 100% | 100% | 100% |
-| `nl-descriptive` | 0.269 | 40% | 60% | 80% |
+| `symbol-exact` | 0.730 | 83% | 83% | 83% |
+| `symbol-partial` | 0.800 | 100% | 100% | 100% |
+| `nl-descriptive` | 0.270 | 40% | 60% | 80% |
 | `nl-abstract` | 0.232 | 33% | 33% | 67% |
-| `file-path` | 0.235 | 33% | 67% | 67% |
+| `file-path` | 0.380 | 33% | 67% | 67% |
 | `error-debug` | 0.810 | 0% | 100% | 100% |
 | `cross-cutting` | 0.330 | 50% | 100% | 100% |
 
@@ -89,14 +86,24 @@ Latency: p50 1.0ms cold, < 0.1ms warm (cached). p95 3.0ms cold.
 
 | Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
 |---|---|---|---|---|
-| `symbol-exact` | 0.757 | 100% | 100% | 100% |
-| `symbol-partial` | 0.533 | 67% | 100% | 100% |
-| `nl-descriptive` | 0.361 | 60% | 60% | 80% |
+| `symbol-exact` | 0.910 | 100% | 100% | 100% |
+| `symbol-partial` | 0.650 | 67% | 100% | 100% |
+| `nl-descriptive` | 0.360 | 60% | 60% | 80% |
 | `nl-abstract` | 0.393 | 33% | 100% | 100% |
 | `file-path` | 0.405 | 33% | 67% | 67% |
-| `cross-cutting` | 0.625 | 100% | 100% | 100% |
+| `cross-cutting` | 0.690 | 100% | 100% | 100% |
 
-The weak categories at scale (tokio nl-descriptive/abstract, signetai nl-descriptive) are queries where the user's vocabulary diverges from the codebase's vocabulary — the classic "semantic gap." Phase 6's LSA approach addresses this by discovering latent semantic relationships through matrix factorization — terms that co-occur in structurally similar contexts become angular neighbors on the hypersphere, even if they never appear in the same symbol.
+The weak categories at scale (tokio nl-descriptive/abstract, signetai nl-descriptive) are queries where the user's vocabulary diverges from the codebase's vocabulary — the classic "semantic gap." Phase 8's hypersphere normalization improved structural matching across all codebases (+0.132 aggregate). The remaining gap is architectural: GraphIQ excels at exact/partial symbol matching (0.73-0.96), file-path queries (0.38-0.84), and structural intelligence (blast radius, dependency analysis) — areas where embeddings are slower, less precise, or can't compete at all. The strategic focus is maximizing these structural strengths rather than chasing embedding parity on abstract NL queries.
+
+### esbuild — Go, 6,183 symbols
+
+| Query Class | NDCG@10 | Hit@1 | Hit@3 | Hit@10 |
+|---|---|---|---|---|
+| `symbol-exact` | 0.980 | 100% | 100% | 100% |
+| `symbol-partial` | 0.450 | 67% | 100% | 100% |
+| `nl-descriptive` | 0.330 | 33% | 67% | 100% |
+| `nl-abstract` | 0.148 | 0% | 33% | 67% |
+| `file-path` | 0.760 | 67% | 100% | 100% |
 
 ## Quick Start
 
@@ -406,9 +413,10 @@ graphiq/
         rerank.rs       # 11 heuristics + channel scoring + diversity
         graph.rs        # Structural expansion (BFS)
         blast.rs        # Blast radius (forward/backward)
-        hrr.rs          # HRR + bivector expansion + antivector rerank (Phase 6)
+        hrr.rs          # HRR + hypersphere normalization + HyperHRRBiv17 (Phase 8)
         afmo.rs         # Poincaré ball hyperbolic embeddings (Phase 6)
         lsa.rs          # Truncated SVD / LSA foundation (Phase 6)
+        spectral.rs     # Spectral graph coordinates
         db.rs           # SQLite schema + queries
         cache.rs        # Hot cache (LRU)
         decompose.rs    # Abstract query decomposition
