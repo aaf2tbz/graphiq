@@ -170,11 +170,6 @@ impl<'a> SearchEngine<'a> {
             }
         }
 
-        #[cfg(feature = "embed")]
-        {
-            results = self.embed_rerank(&query.query, results);
-        }
-
         if let Some(ref filter) = query.file_filter {
             results.retain(|r| {
                 r.file_path
@@ -242,122 +237,6 @@ impl<'a> SearchEngine<'a> {
 fn is_cross_cutting_query(query: &str) -> bool {
     let lower = query.to_lowercase();
     lower.starts_with("all ") || lower.starts_with("every ")
-}
-
-#[cfg(feature = "embed")]
-impl<'a> SearchEngine<'a> {
-    fn looks_like_natural_language(query: &str) -> bool {
-        let tokens: Vec<&str> = query.split_whitespace().collect();
-        if tokens.len() < 3 {
-            return false;
-        }
-        let has_code_pattern = tokens.iter().any(|t| {
-            t.contains('_') && t.len() > 4
-                || t.contains("::")
-                || t.chars().filter(|c| c.is_uppercase()).count() >= 2
-        });
-        if has_code_pattern {
-            return false;
-        }
-        let short_count = tokens.iter().filter(|t| t.len() <= 3).count();
-        (short_count as f64) / (tokens.len() as f64) < 0.5
-    }
-
-    fn embed_rerank(&self, query_text: &str, mut results: Vec<ScoredSymbol>) -> Vec<ScoredSymbol> {
-        use crate::embed::{cosine_similarity, Embedder};
-
-        if results.is_empty() {
-            return results;
-        }
-
-        let is_nl = Self::looks_like_natural_language(query_text);
-        if !is_nl {
-            if results[0].score >= 3.0 {
-                return results;
-            }
-        }
-
-        let embedder = match Embedder::new(None) {
-            Ok(e) => e,
-            Err(_) => return results,
-        };
-        let query_embedding = match embedder.embed_query(query_text) {
-            Ok(e) => e,
-            Err(_) => return results,
-        };
-
-        let symbol_ids: Vec<i64> = results.iter().map(|r| r.symbol.id).collect();
-        let stored = match self.db.get_embeddings_batch(&symbol_ids) {
-            Ok(e) => e,
-            Err(_) => return results,
-        };
-        let embed_map: std::collections::HashMap<i64, Vec<f32>> = stored.into_iter().collect();
-        if !embed_map.values().any(|v| !v.is_empty()) {
-            return results;
-        }
-
-        let alpha = if is_nl { 0.3 } else { 0.15 };
-        let max_score = results.iter().map(|r| r.score).fold(0.0f64, f64::max);
-        if max_score <= 0.0 {
-            return results;
-        }
-
-        for candidate in &mut results {
-            if let Some(emb) = embed_map.get(&candidate.symbol.id) {
-                if !emb.is_empty() {
-                    let sim = cosine_similarity(&query_embedding, emb) as f64;
-                    let embed_component = sim * max_score * alpha;
-                    candidate.score = candidate.score * (1.0 - alpha) + embed_component;
-                }
-            }
-        }
-
-        if is_nl {
-            let all_embeds = match self.db.all_embeddings() {
-                Ok(e) => e,
-                Err(_) => {
-                    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-                    results.truncate(10);
-                    return results;
-                }
-            };
-            let existing_ids: std::collections::HashSet<i64> =
-                results.iter().map(|r| r.symbol.id).collect();
-
-            let mut best_extra: Vec<(i64, f64)> = all_embeds
-                .iter()
-                .filter(|(id, _)| !existing_ids.contains(id))
-                .filter_map(|(id, emb)| {
-                    let sim = cosine_similarity(&query_embedding, emb) as f64;
-                    if sim > 0.45 {
-                        Some((*id, sim))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            best_extra.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-
-            let file_paths = self.load_file_paths();
-            for (sym_id, sim) in best_extra.iter().take(5) {
-                if let Ok(Some(sym)) = self.db.get_symbol(*sym_id) {
-                    let file_path = file_paths.get(&sym.file_id).cloned();
-                    let embed_component = *sim * max_score * alpha;
-                    results.push(ScoredSymbol {
-                        symbol: sym,
-                        score: embed_component,
-                        file_path,
-                        breakdown: None,
-                        is_fts_hit: false,
-                    });
-                }
-            }
-        }
-
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        results.truncate(10);
-        results
-    }
 }
 
 #[cfg(test)]

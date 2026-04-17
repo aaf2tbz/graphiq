@@ -5,7 +5,7 @@ use rusqlite::params;
 use crate::db::GraphDb;
 use crate::tokenize::decompose_identifier;
 
-const LSA_DIM: usize = 128;
+const LSA_DIM: usize = 96;
 const POWER_ITERS: usize = 3;
 const OVERSAMPLING: usize = 16;
 
@@ -15,6 +15,7 @@ pub struct LsaIndex {
     pub symbol_ids: Vec<i64>,
     pub symbol_vecs: Vec<Vec<f64>>,
     pub singular_values: Vec<f64>,
+    pub term_idf: Vec<f64>,
 }
 
 struct SparseMat {
@@ -51,7 +52,7 @@ impl SparseMat {
     }
 }
 
-fn extract_terms(text: &str) -> Vec<String> {
+pub fn extract_terms(text: &str) -> Vec<String> {
     let lower = text.to_lowercase();
     let mut terms: Vec<String> = lower
         .split_whitespace()
@@ -210,7 +211,7 @@ fn is_lsa_stop(t: &str) -> bool {
     )
 }
 
-pub fn build_tfidf_matrix(db: &GraphDb) -> (SparseMat, HashMap<String, usize>, Vec<i64>) {
+pub fn build_tfidf_matrix(db: &GraphDb) -> (SparseMat, HashMap<String, usize>, Vec<i64>, Vec<f64>) {
     let conn = db.conn();
     let mut stmt = conn
         .prepare(
@@ -237,7 +238,6 @@ pub fn build_tfidf_matrix(db: &GraphDb) -> (SparseMat, HashMap<String, usize>, V
     let n_symbols = rows.len();
 
     let mut term_counts: HashMap<String, usize> = HashMap::new();
-    let mut symbol_terms: Vec<Vec<(usize, f64)>> = Vec::with_capacity(n_symbols);
 
     let mut term_freqs: Vec<HashMap<String, f64>> = Vec::with_capacity(n_symbols);
 
@@ -261,8 +261,57 @@ pub fn build_tfidf_matrix(db: &GraphDb) -> (SparseMat, HashMap<String, usize>, V
         term_freqs.push(tf);
     }
 
+    let sym_id_to_col: HashMap<i64, usize> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, (id, _, _, _, _, _))| (*id, i))
+        .collect();
+
+    let structural_kinds = ["calls", "imports", "extends", "implements"];
+    let mix_weight: f64 = 0.25;
+
+    let mut aug_freqs: Vec<HashMap<String, f64>> = term_freqs.clone();
+
+    for kind in &structural_kinds {
+        let mut edge_stmt = conn
+            .prepare("SELECT source_id, target_id FROM edges WHERE kind = ?1")
+            .unwrap();
+        let edge_rows: Vec<(i64, i64)> = edge_stmt
+            .query_map([kind], |row: &rusqlite::Row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })
+            .unwrap()
+            .flatten()
+            .collect();
+
+        for (source_id, target_id) in &edge_rows {
+            if let (Some(&src_col), Some(&tgt_col)) =
+                (sym_id_to_col.get(source_id), sym_id_to_col.get(target_id))
+            {
+                if src_col == tgt_col {
+                    continue;
+                }
+                let neighbor_tf = &term_freqs[tgt_col];
+                for (term, &freq) in neighbor_tf {
+                    *aug_freqs[src_col].entry(term.clone()).or_default() += freq * mix_weight;
+                }
+                let source_tf = &term_freqs[src_col];
+                for (term, &freq) in source_tf {
+                    *aug_freqs[tgt_col].entry(term.clone()).or_default() += freq * mix_weight;
+                }
+            }
+        }
+    }
+
+    let mut final_term_counts: HashMap<String, usize> = HashMap::new();
+    for tf in &aug_freqs {
+        for t in tf.keys() {
+            *final_term_counts.entry(t.clone()).or_insert(0) += 1;
+        }
+    }
+
     let n_docs_f = n_symbols as f64;
-    let idf: HashMap<String, f64> = term_counts
+    let idf: HashMap<String, f64> = final_term_counts
         .iter()
         .map(|(t, df)| {
             let idf_val = (1.0 + n_docs_f / (*df as f64 + 1.0)).ln();
@@ -281,7 +330,7 @@ pub fn build_tfidf_matrix(db: &GraphDb) -> (SparseMat, HashMap<String, usize>, V
 
     let mut col_data: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n_symbols];
 
-    for (col, tf) in term_freqs.iter().enumerate() {
+    for (col, tf) in aug_freqs.iter().enumerate() {
         for (t, tf_val) in tf {
             if let Some(&row) = term_index.get(t) {
                 let idf_val = idf[t];
@@ -292,6 +341,13 @@ pub fn build_tfidf_matrix(db: &GraphDb) -> (SparseMat, HashMap<String, usize>, V
 
     let symbol_ids: Vec<i64> = rows.iter().map(|(id, _, _, _, _, _)| *id).collect();
 
+    let mut idf_vec = vec![0.0f64; n_terms];
+    for (t, &idx) in &term_index {
+        if let Some(&val) = idf.get(t) {
+            idf_vec[idx] = val;
+        }
+    }
+
     (
         SparseMat {
             rows: n_terms,
@@ -300,6 +356,7 @@ pub fn build_tfidf_matrix(db: &GraphDb) -> (SparseMat, HashMap<String, usize>, V
         },
         term_index,
         symbol_ids,
+        idf_vec,
     )
 }
 
@@ -365,7 +422,7 @@ pub fn project_query(
     query: &str,
     term_index: &HashMap<String, usize>,
     term_basis: &[Vec<f64>],
-    n_terms: usize,
+    _n_terms: usize,
 ) -> Vec<f64> {
     let terms = extract_terms(query);
     let k = if term_basis.is_empty() {
@@ -403,9 +460,223 @@ pub fn project_query(
     query_vec
 }
 
+pub fn spherical_cap_search(
+    query: &str,
+    term_index: &HashMap<String, usize>,
+    term_basis: &[Vec<f64>],
+    term_idf: &[f64],
+    symbol_vecs: &[Vec<f64>],
+    symbol_ids: &[i64],
+    top_k: usize,
+) -> Vec<(i64, f64)> {
+    let terms = extract_terms(query);
+    let k = if term_basis.is_empty() {
+        return Vec::new();
+    } else {
+        term_basis[0].len()
+    };
+
+    let mut term_projections: Vec<(usize, f64, Vec<f64>)> = Vec::new();
+    for t in &terms {
+        if let Some(&idx) = term_index.get(t) {
+            if idx < term_basis.len() {
+                let idf = term_idf.get(idx).copied().unwrap_or(1.0);
+                let norm: f64 = term_basis[idx].iter().map(|x| x * x).sum::<f64>().sqrt();
+                if norm > 1e-10 {
+                    let mut v = term_basis[idx].clone();
+                    for x in v.iter_mut() {
+                        *x /= norm;
+                    }
+                    term_projections.push((idx, idf, v));
+                }
+            }
+        }
+    }
+
+    if term_projections.is_empty() {
+        return Vec::new();
+    }
+
+    let mut weighted_centroid = vec![0.0f64; k];
+    let mut total_idf = 0.0f64;
+    for (_term_idx, idf, ref term_vec) in &term_projections {
+        for j in 0..k {
+            weighted_centroid[j] += idf * term_vec[j];
+        }
+        total_idf += idf;
+    }
+    if total_idf > 0.0 {
+        for x in weighted_centroid.iter_mut() {
+            *x /= total_idf;
+        }
+    }
+    let norm: f64 = weighted_centroid.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if norm > 1e-10 {
+        for x in weighted_centroid.iter_mut() {
+            *x /= norm;
+        }
+    }
+
+    let n_symbols = symbol_vecs.len();
+    let mut scores: Vec<f64> = vec![0.0; n_symbols];
+
+    for i in 0..n_symbols {
+        let centroid_angle = angular_distance(&weighted_centroid, &symbol_vecs[i]);
+        let centroid_relevance = 1.0 - centroid_angle / std::f64::consts::PI;
+
+        let mut cap_votes = 0usize;
+        let theta = std::f64::consts::FRAC_PI_3;
+        let mut min_angle = std::f64::consts::PI;
+        for (_term_idx, _idf, ref term_vec) in &term_projections {
+            let angle = angular_distance(term_vec, &symbol_vecs[i]);
+            if angle < min_angle {
+                min_angle = angle;
+            }
+            if angle < theta {
+                cap_votes += 1;
+            }
+        }
+
+        let vote_bonus = if term_projections.len() > 1 {
+            (cap_votes as f64 / term_projections.len() as f64).sqrt()
+        } else {
+            1.0
+        };
+
+        scores[i] = centroid_relevance * vote_bonus;
+
+        if cap_votes > 0 {
+            let nearest_relevance = 1.0 - min_angle / std::f64::consts::PI;
+            scores[i] = scores[i].max(nearest_relevance * vote_bonus);
+        }
+    }
+
+    let mut indexed: Vec<(usize, f64)> = scores
+        .iter()
+        .enumerate()
+        .filter(|(_, &s)| s > 0.0)
+        .map(|(i, &s)| (i, s))
+        .collect();
+    indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    indexed.truncate(top_k);
+
+    indexed
+        .into_iter()
+        .map(|(i, score)| (symbol_ids[i], score))
+        .collect()
+}
+
+pub fn blade_search(
+    query: &str,
+    term_index: &HashMap<String, usize>,
+    term_basis: &[Vec<f64>],
+    term_idf: &[f64],
+    symbol_vecs: &[Vec<f64>],
+    symbol_ids: &[i64],
+    top_k: usize,
+) -> Vec<(i64, f64)> {
+    let terms = extract_terms(query);
+    let dim = if term_basis.is_empty() {
+        return Vec::new();
+    } else {
+        term_basis[0].len()
+    };
+
+    let mut term_vecs: Vec<(f64, Vec<f64>)> = Vec::new();
+    for t in &terms {
+        if let Some(&idx) = term_index.get(t) {
+            if idx < term_basis.len() {
+                let idf = term_idf.get(idx).copied().unwrap_or(1.0);
+                let norm: f64 = term_basis[idx].iter().map(|x| x * x).sum::<f64>().sqrt();
+                if norm > 1e-10 {
+                    let mut v = term_basis[idx].clone();
+                    for x in v.iter_mut() {
+                        *x /= norm;
+                    }
+                    term_vecs.push((idf, v));
+                }
+            }
+        }
+    }
+
+    if term_vecs.is_empty() {
+        return Vec::new();
+    }
+
+    let mut Q: Vec<Vec<f64>> = Vec::new();
+    for (_, ref v) in &term_vecs {
+        let mut u = v.clone();
+        for q in &Q {
+            let dot: f64 = u.iter().zip(q.iter()).map(|(a, b)| a * b).sum();
+            for j in 0..dim {
+                u[j] -= dot * q[j];
+            }
+        }
+        let norm: f64 = u.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 1e-10 {
+            for x in u.iter_mut() {
+                *x /= norm;
+            }
+            Q.push(u);
+        }
+    }
+
+    if Q.is_empty() {
+        return Vec::new();
+    }
+
+    let grade = Q.len();
+    let idf_sum: f64 = term_vecs.iter().map(|(idf, _)| *idf).sum();
+
+    let n_symbols = symbol_vecs.len();
+    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(n_symbols);
+
+    for i in 0..n_symbols {
+        let s = &symbol_vecs[i];
+
+        let mut proj = vec![0.0f64; dim];
+        for q in &Q {
+            let dot: f64 = s.iter().zip(q.iter()).map(|(a, b)| a * b).sum();
+            for j in 0..dim {
+                proj[j] += dot * q[j];
+            }
+        }
+
+        let mut rejection_sq = 0.0f64;
+        for j in 0..dim {
+            let r = s[j] - proj[j];
+            rejection_sq += r * r;
+        }
+
+        let inner_sum: f64 = s.iter().zip(proj.iter()).map(|(a, b)| a * b).sum();
+
+        let blade_relevance = if grade == 1 {
+            inner_sum.max(0.0)
+        } else {
+            let grade_bonus = 1.0 + 0.15 * (grade as f64 - 1.0);
+            inner_sum.max(0.0) * grade_bonus / (1.0 + rejection_sq * 5.0)
+        };
+
+        let idf_boost = idf_sum / term_vecs.len() as f64;
+        let score = blade_relevance * idf_boost;
+
+        if score > 0.0 {
+            scored.push((i, score));
+        }
+    }
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+
+    scored
+        .into_iter()
+        .map(|(i, score)| (symbol_ids[i], score))
+        .collect()
+}
+
 pub fn compute_lsa(db: &GraphDb) -> Result<LsaIndex, String> {
     eprintln!("  building TF-IDF matrix...");
-    let (matrix, term_index, symbol_ids) = build_tfidf_matrix(db);
+    let (matrix, term_index, symbol_ids, term_idf) = build_tfidf_matrix(db);
     eprintln!("  matrix: {} terms × {} symbols", matrix.rows, matrix.cols);
 
     eprintln!("  computing randomized SVD (k={})...", LSA_DIM);
@@ -429,6 +700,7 @@ pub fn compute_lsa(db: &GraphDb) -> Result<LsaIndex, String> {
         symbol_ids,
         symbol_vecs,
         singular_values,
+        term_idf,
     })
 }
 
@@ -674,6 +946,7 @@ pub fn store_lsa_basis(
     db: &GraphDb,
     term_basis: &[Vec<f64>],
     term_index: &HashMap<String, usize>,
+    term_idf: &[f64],
 ) -> Result<(), String> {
     let conn = db.conn();
     conn.execute(
@@ -682,7 +955,8 @@ pub fn store_lsa_basis(
             term TEXT NOT NULL,
             term_idx INTEGER NOT NULL,
             basis_vec BLOB NOT NULL,
-            dim INTEGER NOT NULL
+            dim INTEGER NOT NULL,
+            idf REAL NOT NULL DEFAULT 0.0
         )",
         [],
     )
@@ -700,7 +974,7 @@ pub fn store_lsa_basis(
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
     {
         let mut stmt = tx
-            .prepare("INSERT INTO lsa_basis (id, term, term_idx, basis_vec, dim) VALUES (?1, ?2, ?3, ?4, ?5)")
+            .prepare("INSERT INTO lsa_basis (id, term, term_idx, basis_vec, dim, idf) VALUES (?1, ?2, ?3, ?4, ?5, ?6)")
             .map_err(|e| e.to_string())?;
 
         for (term, &idx) in term_index {
@@ -711,13 +985,63 @@ pub fn store_lsa_basis(
                 .iter()
                 .flat_map(|f| f.to_le_bytes())
                 .collect();
-            stmt.execute(params![idx as i64, term, idx as i64, bytes, dim as i64])
-                .map_err(|e| e.to_string())?;
+            let idf_val = term_idf.get(idx).copied().unwrap_or(0.0);
+            stmt.execute(params![
+                idx as i64, term, idx as i64, bytes, dim as i64, idf_val
+            ])
+            .map_err(|e| e.to_string())?;
         }
     }
     tx.commit().map_err(|e| e.to_string())?;
 
     Ok(())
+}
+
+pub fn store_lsa_sigma(db: &GraphDb, sigma: &[f64]) -> Result<(), String> {
+    let conn = db.conn();
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS lsa_sigma (
+            id INTEGER PRIMARY KEY,
+            sigma BLOB NOT NULL,
+            dim INTEGER NOT NULL
+        )",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute("DELETE FROM lsa_sigma", [])
+        .map_err(|e| e.to_string())?;
+
+    let bytes: Vec<u8> = sigma.iter().flat_map(|f| f.to_le_bytes()).collect();
+    conn.execute(
+        "INSERT INTO lsa_sigma (id, sigma, dim) VALUES (1, ?1, ?2)",
+        params![bytes, sigma.len() as i64],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+pub fn load_lsa_sigma(db: &GraphDb) -> Result<Vec<f64>, String> {
+    let conn = db.conn();
+    let row: Option<(Vec<u8>, i64)> = conn
+        .query_row("SELECT sigma, dim FROM lsa_sigma WHERE id = 1", [], |row| {
+            let bytes: Vec<u8> = row.get(0).unwrap_or_default();
+            let dim: i64 = row.get(1).unwrap_or(0);
+            Ok((bytes, dim))
+        })
+        .ok();
+
+    match row {
+        Some((bytes, dim)) if dim > 0 && bytes.len() == dim as usize * 8 => {
+            let sigma: Vec<f64> = bytes
+                .chunks_exact(8)
+                .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
+                .collect();
+            Ok(sigma)
+        }
+        _ => Err("no singular values stored".into()),
+    }
 }
 
 pub fn load_latent_vectors(db: &GraphDb) -> Result<HashMap<i64, Vec<f64>>, String> {
@@ -738,12 +1062,16 @@ pub fn load_latent_vectors(db: &GraphDb) -> Result<HashMap<i64, Vec<f64>>, Strin
 
     let mut result = HashMap::new();
     for (sym_id, bytes, dim) in rows {
-        if dim == 0 || bytes.len() != dim * 4 {
+        if dim == 0 || bytes.len() != dim * 8 {
             continue;
         }
         let vec: Vec<f64> = bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64)
+            .chunks_exact(8)
+            .map(|chunk| {
+                f64::from_le_bytes([
+                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+                ])
+            })
             .collect();
         result.insert(sym_id, vec);
     }
@@ -751,44 +1079,53 @@ pub fn load_latent_vectors(db: &GraphDb) -> Result<HashMap<i64, Vec<f64>>, Strin
     Ok(result)
 }
 
-pub fn load_lsa_basis(db: &GraphDb) -> Result<(Vec<Vec<f64>>, HashMap<String, usize>), String> {
+pub fn load_lsa_basis(
+    db: &GraphDb,
+) -> Result<(Vec<Vec<f64>>, HashMap<String, usize>, Vec<f64>), String> {
     let conn = db.conn();
     let mut stmt = conn
-        .prepare("SELECT term, term_idx, basis_vec, dim FROM lsa_basis ORDER BY term_idx")
+        .prepare("SELECT term, term_idx, basis_vec, dim, COALESCE(idf, 0.0) FROM lsa_basis ORDER BY term_idx")
         .map_err(|e| e.to_string())?;
 
-    let rows: Vec<(String, usize, Vec<u8>, usize)> = stmt
+    let rows: Vec<(String, usize, Vec<u8>, usize, f64)> = stmt
         .query_map([], |row| {
             let term: String = row.get(0)?;
             let idx: i64 = row.get(1)?;
             let bytes: Vec<u8> = row.get(2).unwrap_or_default();
             let dim: i64 = row.get(3).unwrap_or(0);
-            Ok((term, idx as usize, bytes, dim as usize))
+            let idf: f64 = row.get(4)?;
+            Ok((term, idx as usize, bytes, dim as usize, idf))
         })
         .map_err(|e| e.to_string())?
         .flatten()
         .collect();
 
     if rows.is_empty() {
-        return Ok((Vec::new(), HashMap::new()));
+        return Ok((Vec::new(), HashMap::new(), Vec::new()));
     }
 
     let dim = rows[0].3;
-    let max_idx = rows.iter().map(|(_, idx, _, _)| *idx).max().unwrap_or(0);
+    let max_idx = rows.iter().map(|(_, idx, _, _, _)| *idx).max().unwrap_or(0);
     let mut basis = vec![vec![0.0f64; dim]; max_idx + 1];
     let mut term_index = HashMap::new();
+    let mut idf_vec = vec![0.0f64; max_idx + 1];
 
-    for (term, idx, bytes, d) in &rows {
-        if *d != dim || bytes.len() != dim * 4 {
+    for (term, idx, bytes, d, idf) in &rows {
+        if *d != dim || bytes.len() != dim * 8 {
             continue;
         }
         let vec: Vec<f64> = bytes
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]) as f64)
+            .chunks_exact(8)
+            .map(|chunk| {
+                f64::from_le_bytes([
+                    chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+                ])
+            })
             .collect();
         basis[*idx] = vec;
+        idf_vec[*idx] = *idf;
         term_index.insert(term.clone(), *idx);
     }
 
-    Ok((basis, term_index))
+    Ok((basis, term_index, idf_vec))
 }

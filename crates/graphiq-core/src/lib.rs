@@ -1,3 +1,5 @@
+pub mod af26;
+pub mod afmo;
 pub mod blast;
 pub mod cache;
 pub mod calls;
@@ -18,5 +20,6 @@ pub mod motifs;
 pub mod rerank;
 pub mod roles;
 pub mod search;
+pub mod spectral;
 pub mod symbol;
 pub mod tokenize;
