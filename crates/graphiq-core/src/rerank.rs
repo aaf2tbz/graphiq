@@ -231,6 +231,14 @@ impl Reranker {
                 1.0
             };
 
+            let is_nl = is_nl_query(&self.query_tokens);
+            let path = c.file_path.as_deref().unwrap_or("");
+            let in_test_file = is_test_file(path);
+
+            let test_file_penalty = if is_nl && in_test_file { 0.5 } else { 1.0 };
+
+            let production_boost = if is_nl && !in_test_file { 1.5 } else { 1.0 };
+
             let importance_factor = if self.config.importance {
                 0.5 + 0.5 * sym.importance.min(1.0)
             } else {
@@ -349,6 +357,8 @@ impl Reranker {
                 * entry_boost
                 * export_boost
                 * test_boost
+                * test_file_penalty
+                * production_boost
                 * importance_factor
                 * recency
                 * name_exact
@@ -365,6 +375,8 @@ impl Reranker {
                         ("entry", entry_boost),
                         ("export", export_boost),
                         ("test_prox", test_boost),
+                        ("test_penalty", test_file_penalty),
+                        ("prod_boost", production_boost),
                         ("importance", importance_factor),
                         ("recency", recency),
                         ("name_exact", name_exact),
@@ -462,6 +474,40 @@ fn looks_like_file_path(query: &str) -> bool {
     ];
     let lower = query.to_lowercase();
     extensions.iter().any(|ext| lower.contains(ext))
+}
+
+fn is_nl_query(tokens: &[String]) -> bool {
+    if tokens.len() < 3 {
+        return false;
+    }
+    let has_code_pattern = tokens.iter().any(|t| {
+        t.contains('_') && t.len() > 4
+            || t.contains("::")
+            || t.chars().filter(|c| c.is_uppercase()).count() >= 2
+    });
+    if has_code_pattern {
+        return false;
+    }
+    let short_count = tokens.iter().filter(|t| t.len() <= 3).count();
+    (short_count as f64) / (tokens.len() as f64) < 0.5
+}
+
+fn is_test_file(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    let patterns = [
+        "/test",
+        "/tests/",
+        "/__tests__/",
+        "/spec/",
+        "_test.",
+        "_spec.",
+        ".test.",
+        ".spec.",
+        "test_",
+        "/benches/",
+        "/benchmark/",
+    ];
+    patterns.iter().any(|p| lower.contains(p))
 }
 
 fn is_query_stop_word(token: &str) -> bool {

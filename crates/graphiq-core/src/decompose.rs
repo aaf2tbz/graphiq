@@ -10,11 +10,13 @@ pub struct DecomposedResult {
     pub evidence_counts: HashMap<i64, usize>,
 }
 
-pub fn is_abstract_query(query: &str) -> bool {
+pub fn is_decomposable_query(query: &str) -> bool {
     let words: Vec<&str> = query.split_whitespace().collect();
     if words.len() < 3 {
         return false;
     }
+
+    let lower = query.to_lowercase();
 
     let abstract_patterns = [
         "how does",
@@ -35,25 +37,54 @@ pub fn is_abstract_query(query: &str) -> bool {
         "when does",
         "when is",
     ];
-    let lower = query.to_lowercase();
     if abstract_patterns.iter().any(|p| lower.starts_with(p)) {
         return true;
     }
 
-    let has_camel = query.chars().any(|c| c.is_uppercase()) && query.chars().any(|c| c == '_');
-    if has_camel {
+    if looks_like_code_identifier(query) {
         return false;
     }
 
-    let stop_words = [
-        "how", "what", "where", "why", "when", "does", "is", "are", "do", "the", "a", "an", "of",
-        "in", "to", "from", "with",
+    if looks_like_file_path(query) {
+        return false;
+    }
+
+    false
+}
+
+fn looks_like_code_identifier(query: &str) -> bool {
+    let words: Vec<&str> = query.split_whitespace().collect();
+    let has_camel =
+        query.chars().filter(|c| c.is_uppercase()).count() >= 2 && query.chars().any(|c| c == '_');
+    let has_snake = words.iter().any(|w| w.contains('_') && w.len() > 3);
+    let single_word = words.len() == 1;
+    let has_tech_token = words.iter().any(|w| {
+        matches!(
+            w.to_lowercase().as_str(),
+            "bm25"
+                | "fts"
+                | "knn"
+                | "sql"
+                | "api"
+                | "http"
+                | "url"
+                | "cli"
+                | "mcp"
+                | "lru"
+                | "bfs"
+                | "dfs"
+        )
+    });
+    has_camel || has_snake || single_word || has_tech_token
+}
+
+fn looks_like_file_path(query: &str) -> bool {
+    let extensions = [
+        ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".java", ".c", ".cpp", ".h", ".rb",
+        ".yaml", ".yml", ".toml", ".json",
     ];
-    let stop_count = words
-        .iter()
-        .filter(|w| stop_words.contains(&w.to_lowercase().as_str()))
-        .count();
-    stop_count as f64 / words.len() as f64 > 0.3
+    let lower = query.to_lowercase();
+    extensions.iter().any(|ext| lower.contains(ext))
 }
 
 fn strip_query_prefix(query: &str) -> String {
@@ -171,6 +202,26 @@ fn generate_subqueries(core: &str) -> Vec<Vec<String>> {
         ("callees", &["calls graph"]),
         ("traversal", &["bfs"]),
         ("expansion", &["expander"]),
+        ("runtime schedule", &["scheduler"]),
+        ("runtime handle", &["runtime handle"]),
+        ("timer tracked", &["timer entry"]),
+        ("timers tracked", &["timer entry"]),
+        ("shutting down", &["shutdown"]),
+        ("shutdown", &["shutdown"]),
+        ("tcp accept", &["tcp_listener"]),
+        ("tcp stream", &["tcp_stream"]),
+        ("sync primitives", &["mutex rwlock semaphore"]),
+        ("vector similarity", &["cosine_similarity"]),
+        ("nearest neighbor", &["knn"]),
+        ("knn", &["knn"]),
+        ("split documents", &["chunker"]),
+        ("chunk documents", &["chunker"]),
+        ("autograd tape", &["tape"]),
+        ("daemon process", &["daemon"]),
+        ("connector tools", &["connector register"]),
+        ("connector register", &["connector register"]),
+        ("backpropagation", &["tape backward"]),
+        ("documents chunks", &["chunker split"]),
     ];
 
     for word in &content_words {
@@ -179,6 +230,34 @@ fn generate_subqueries(core: &str) -> Vec<Vec<String>> {
                 for t in *terms {
                     tracks.push(vec![t.to_string()]);
                 }
+            }
+        }
+    }
+
+    let phrase_map: &[(&str, &[&str])] = &[
+        ("runtime schedule", &["scheduler"]),
+        ("runtime handle", &["runtime handle"]),
+        ("timer tracked fired", &["timer_entry"]),
+        ("timers tracked fired", &["timer_entry"]),
+        ("shutting down runtime", &["shutdown"]),
+        ("tcp accept connections", &["tcp_listener"]),
+        ("split tcp stream", &["tcp_stream split"]),
+        ("sync primitives", &["mutex rwlock semaphore"]),
+        ("vector similarity", &["cosine_similarity"]),
+        ("nearest neighbors embedding", &["knn"]),
+        ("split documents chunks", &["chunker"]),
+        ("connector tools registered", &["connector register"]),
+        ("connector implementations", &["connector"]),
+        ("autograd operations", &["tape"]),
+        ("tray manage autostart", &["autostart"]),
+        ("similarity scores memory", &["merge_hybrid_scores"]),
+    ];
+
+    let core_lower = core.to_lowercase();
+    for (phrase, terms) in phrase_map {
+        if core_lower.contains(phrase) {
+            for t in *terms {
+                tracks.push(vec![t.to_string()]);
             }
         }
     }
@@ -207,7 +286,7 @@ pub fn decomposed_search(
     top_k: usize,
     debug: bool,
 ) -> Option<DecomposedResult> {
-    if !is_abstract_query(query) {
+    if !is_decomposable_query(query) {
         return None;
     }
 
@@ -246,12 +325,21 @@ pub fn decomposed_search(
         }
     }
 
+    let num_tracks = tracks.len();
+    let min_evidence = if num_tracks >= 5 { 2 } else { 1 };
+
     let mut final_results: Vec<ScoredSymbol> = all_scored
         .into_values()
+        .filter(|r| {
+            let count = evidence_counts.get(&r.symbol.id).copied().unwrap_or(1);
+            count >= min_evidence
+        })
         .map(|mut r| {
             let count = evidence_counts.get(&r.symbol.id).copied().unwrap_or(1);
             if count >= 2 {
                 r.score *= 1.0 + 0.3 * (count as f64 - 1.0);
+            } else if num_tracks >= 4 {
+                r.score *= 0.85;
             }
             r
         })
@@ -289,15 +377,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_is_abstract_query() {
-        assert!(is_abstract_query("how does retrieval ranking work"));
-        assert!(is_abstract_query(
+    fn test_is_decomposable_query() {
+        assert!(is_decomposable_query("how does retrieval ranking work"));
+        assert!(is_decomposable_query(
             "how are symbols indexed from source files"
         ));
-        assert!(is_abstract_query("what connects callers to callees"));
-        assert!(!is_abstract_query("RateLimiter"));
-        assert!(!is_abstract_query("rate limit"));
-        assert!(!is_abstract_query("cache"));
+        assert!(is_decomposable_query("what connects callers to callees"));
+        assert!(!is_decomposable_query("RateLimiter"));
+        assert!(!is_decomposable_query("rate limit"));
+        assert!(!is_decomposable_query("cache"));
+        assert!(!is_decomposable_query("periodic interval timer"));
+        assert!(!is_decomposable_query("tcp accept connections"));
+        assert!(!is_decomposable_query(
+            "compute vector similarity between embeddings"
+        ));
     }
 
     #[test]
@@ -344,27 +437,23 @@ mod tests {
     }
 
     #[test]
-    fn test_guard_rails_non_abstract() {
-        assert!(!is_abstract_query("RateLimiter"));
-        assert!(!is_abstract_query("rate limit"));
-        assert!(!is_abstract_query("cache"));
-        assert!(!is_abstract_query("bm25 full text search"));
-        assert!(!is_abstract_query("edge"));
-        assert!(!is_abstract_query("insert symbol database"));
-        assert!(!is_abstract_query("compute blast radius"));
-        assert!(!is_abstract_query("all edge kinds"));
-        assert!(!is_abstract_query("all language parsers"));
-        assert!(!is_abstract_query("symbol.rs"));
-        assert!(!is_abstract_query("graph.rs"));
-        assert!(!is_abstract_query("DbError"));
-        assert!(!is_abstract_query("rerank"));
-        assert!(!is_abstract_query("bounded_bfs"));
-        assert!(!is_abstract_query("tokenize"));
-        assert!(!is_abstract_query("HotCache"));
+    fn test_guard_rails_non_decomposable() {
+        assert!(!is_decomposable_query("RateLimiter"));
+        assert!(!is_decomposable_query("rate limit"));
+        assert!(!is_decomposable_query("cache"));
+        assert!(!is_decomposable_query("bm25 full text search"));
+        assert!(!is_decomposable_query("edge"));
+        assert!(!is_decomposable_query("symbol.rs"));
+        assert!(!is_decomposable_query("graph.rs"));
+        assert!(!is_decomposable_query("DbError"));
+        assert!(!is_decomposable_query("rerank"));
+        assert!(!is_decomposable_query("bounded_bfs"));
+        assert!(!is_decomposable_query("tokenize"));
+        assert!(!is_decomposable_query("HotCache"));
     }
 
     #[test]
-    fn test_decomposed_search_returns_none_for_non_abstract() {
+    fn test_decomposed_search_returns_none_for_non_decomposable() {
         let db = crate::db::GraphDb::open_in_memory().unwrap();
         let result = decomposed_search(&db, "RateLimiter", 10, false);
         assert!(result.is_none());

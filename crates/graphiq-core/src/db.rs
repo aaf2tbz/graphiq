@@ -308,6 +308,42 @@ impl GraphDb {
             .map_err(DbError::from)
     }
 
+    pub fn symbols_by_path_prefix(
+        &self,
+        path_prefix: &str,
+        max_results: usize,
+    ) -> Result<Vec<Symbol>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.id, s.file_id, s.name, s.qualified_name, s.kind, s.line_start, s.line_end,
+                    s.signature, s.visibility, s.doc_comment, s.source, s.name_decomposed,
+                    s.content_hash, s.language, s.metadata, s.importance, s.search_hints
+             FROM symbols s
+             JOIN files f ON f.id = s.file_id
+             WHERE f.path LIKE ?1
+             AND s.visibility = 'public'
+             AND s.kind IN ('struct', 'class', 'enum', 'trait', 'interface', 'function')
+             ORDER BY s.importance DESC
+             LIMIT ?2",
+        )?;
+        let pattern = format!("{}%", path_prefix);
+        let symbols = stmt.query_map(params![pattern, max_results as i64], |row| {
+            row_to_symbol(row)
+        })?;
+        symbols
+            .collect::<SqlResult<Vec<_>>>()
+            .map_err(DbError::from)
+    }
+
+    pub fn file_path_for_id(&self, file_id: i64) -> Result<Option<String>, DbError> {
+        let mut stmt = self.conn.prepare("SELECT path FROM files WHERE id = ?1")?;
+        let result = stmt.query_row(params![file_id], |row| row.get::<_, String>(0));
+        match result {
+            Ok(p) => Ok(Some(p)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DbError::from(e)),
+        }
+    }
+
     pub fn symbols_by_name(&self, name: &str) -> Result<Vec<Symbol>, DbError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, file_id, name, qualified_name, kind, line_start, line_end,

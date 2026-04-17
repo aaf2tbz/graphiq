@@ -4,6 +4,7 @@ pub mod calls;
 pub mod chunker;
 pub mod db;
 pub mod decompose;
+pub mod directory_expand;
 pub mod edge;
 #[cfg(feature = "embed")]
 pub mod embed;

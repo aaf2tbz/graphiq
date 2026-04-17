@@ -2,7 +2,7 @@
 
 Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, and heuristic reranking — zero embeddings required.
 
-**0.846 MRR** across 7 query classes. **100% Hit@3**. **0.8ms p50 latency**. No model dependencies.
+**0.847 MRR** on self-benchmark. **0.676 on tokio** (17K symbols). **0.359 on signetai** (20K symbols). **0.9ms p50 latency**. No model dependencies.
 
 ## Why This Works
 
@@ -40,11 +40,19 @@ Query: "rate limit middleware"
 +-----------------------------+
 ```
 
-The current 0.846 MRR uses **only layers 1-3** plus a query decomposition path for abstract natural language queries. No embeddings needed for core search. The embed reranker exists as a feature flag for future nl-abstract improvements.
+The current 0.847 MRR uses **only layers 1-3** plus a query decomposition path for abstract natural language queries. No embeddings needed for core search. The embed reranker exists as a feature flag for future nl-abstract improvements.
 
 ## Benchmarks
 
-Self-benchmarked against the graphiq codebase (43 files, ~824 symbols, 27 queries):
+Three codebases, increasing scale and difficulty:
+
+| Codebase | Symbols | MRR | Hit@1 | Hit@3 | Hit@10 |
+|---|---|---|---|---|---|
+| graphiq (self) | 849 | 0.847 | 74% | 96% | 100% |
+| tokio | 17,867 | 0.676 | 65% | 69% | 77% |
+| signetai | 20,870 | 0.359 | 28% | 44% | 56% |
+
+Self-benchmark per-category (47 files, 849 symbols, 27 queries):
 
 | Query Class | MRR | Hit@1 | Hit@3 | Hit@5 | Hit@10 |
 |---|---|---|---|---|---|
@@ -53,13 +61,13 @@ Self-benchmarked against the graphiq codebase (43 files, ~824 symbols, 27 querie
 | `nl-descriptive` | 0.867 | 80% | 100% | 100% | 100% |
 | `symbol-partial` | 0.806 | 67% | 100% | 100% | 100% |
 | `file-path` | 0.833 | 67% | 100% | 100% | 100% |
-| `cross-cutting` | 0.667 | 50% | 100% | 100% | 100% |
-| `nl-abstract` | 0.611 | 33% | 100% | 100% | 100% |
-| **Overall** | **0.846** | **74%** | **100%** | **100%** | **100%** |
+| `cross-cutting` | 0.600 | 50% | 50% | 100% | 100% |
+| `nl-abstract` | 0.667 | 33% | 100% | 100% | 100% |
+| **Overall** | **0.847** | **74%** | **96%** | **100%** | **100%** |
 
-Latency: p50 0.8ms cold, < 0.1ms warm (cached).
+Latency: p50 0.9ms cold, < 0.1ms warm (cached). p95 2.6ms cold.
 
-For context, academic baselines on CodeSearchNet: BM25 alone ~0.35-0.45, CodeBERT ~0.65-0.75, UniXcoder ~0.75-0.80, CodeT5+ ~0.80-0.85. GraphIQ exceeds CodeT5+ with sub-millisecond latency, zero model dependency, and a ~1.4MB index.
+For context, academic baselines on CodeSearchNet: BM25 alone ~0.35-0.45, CodeBERT ~0.65-0.75, UniXcoder ~0.75-0.80, CodeT5+ ~0.80-0.85. GraphIQ matches CodeT5+ on self-benchmark with sub-millisecond latency, zero model dependency, and a ~1.4MB index. External validation at scale (tokio, signetai) shows the gap that structural techniques alone haven't closed — see [ROADMAP-PHASE3.md](ROADMAP-PHASE3.md).
 
 ## Quick Start
 

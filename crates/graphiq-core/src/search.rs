@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::blast;
 use crate::cache::HotCache;
 use crate::db::GraphDb;
+use crate::directory_expand::DirectoryExpander;
 use crate::edge::{BlastDirection, BlastRadius};
 use crate::fts::FtsSearch;
 use crate::graph::StructuralExpander;
@@ -88,10 +89,14 @@ impl<'a> SearchEngine<'a> {
             };
         }
 
+        let mut results: Vec<ScoredSymbol>;
+        let total_fts: usize;
+        let total_expanded: usize;
+
         if let Some(decomposed) =
             crate::decompose::decomposed_search(self.db, &query.query, query.top_k, query.debug)
         {
-            let results = if let Some(ref filter) = query.file_filter {
+            results = if let Some(ref filter) = query.file_filter {
                 let mut r = decomposed.results;
                 r.retain(|res| {
                     res.file_path
@@ -103,34 +108,52 @@ impl<'a> SearchEngine<'a> {
             } else {
                 decomposed.results
             };
+            total_fts = decomposed.subqueries.len();
+            total_expanded = 0;
+        } else {
+            let fts = FtsSearch::new(self.db);
+            let fts_results = fts.search(&query.query, Some(200));
+            total_fts = fts_results.len();
 
-            self.cache.put_results(query_hash, results.clone());
+            let expander = StructuralExpander::new(self.db);
+            let expanded = expander.expand(
+                &fts_results,
+                query.expansion_seeds,
+                query.max_expansion_depth,
+            );
+            total_expanded = expanded.len();
 
-            return SearchResult {
-                results,
-                blast_radius: None,
-                total_fts_candidates: decomposed.subqueries.len(),
-                total_expanded: 0,
-                from_cache: false,
-            };
+            let file_paths = self.load_file_paths();
+
+            let reranker = Reranker::new(self.db, query.debug).for_query(&query.query);
+            results = reranker.rerank(&fts_results, &expanded, &file_paths, query.top_k);
+
+            if is_cross_cutting_query(&query.query) {
+                let existing_ids: std::collections::HashSet<i64> =
+                    results.iter().map(|r| r.symbol.id).collect();
+                let dir_expander = DirectoryExpander::new(self.db);
+                let siblings = dir_expander.expand(&fts_results, &existing_ids, 30, &query.query);
+                if !siblings.is_empty() {
+                    let best_fts_score = fts_results
+                        .iter()
+                        .map(|r| r.bm25_score)
+                        .fold(0.0f64, f64::max);
+                    for sib in &siblings {
+                        let fp = file_paths.get(&sib.symbol.file_id).cloned();
+                        let score = best_fts_score * 0.8 * sib.proximity;
+                        results.push(ScoredSymbol {
+                            symbol: sib.symbol.clone(),
+                            score,
+                            breakdown: None,
+                            is_fts_hit: false,
+                            file_path: fp,
+                        });
+                    }
+                    results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+                    results.truncate(query.top_k);
+                }
+            }
         }
-
-        let fts = FtsSearch::new(self.db);
-        let fts_results = fts.search(&query.query, Some(200));
-        let total_fts = fts_results.len();
-
-        let expander = StructuralExpander::new(self.db);
-        let expanded = expander.expand(
-            &fts_results,
-            query.expansion_seeds,
-            query.max_expansion_depth,
-        );
-        let total_expanded = expanded.len();
-
-        let file_paths = self.load_file_paths();
-
-        let reranker = Reranker::new(self.db, query.debug).for_query(&query.query);
-        let mut results = reranker.rerank(&fts_results, &expanded, &file_paths, query.top_k);
 
         #[cfg(feature = "embed")]
         {
@@ -199,8 +222,15 @@ impl<'a> SearchEngine<'a> {
             None => HashMap::new(),
         }
     }
+}
 
-    #[cfg(feature = "embed")]
+fn is_cross_cutting_query(query: &str) -> bool {
+    let lower = query.to_lowercase();
+    lower.starts_with("all ") || lower.starts_with("every ")
+}
+
+#[cfg(feature = "embed")]
+impl<'a> SearchEngine<'a> {
     fn embed_rerank(&self, query_text: &str, mut results: Vec<ScoredSymbol>) -> Vec<ScoredSymbol> {
         use crate::embed::{cosine_similarity, Embedder};
 
