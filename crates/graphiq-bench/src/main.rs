@@ -9,21 +9,75 @@ use graphiq_core::search::{SearchEngine, SearchQuery};
 #[derive(Debug, Clone, serde::Deserialize)]
 struct BenchQuery {
     query: String,
-    expected_symbol: String,
     category: String,
+    #[serde(default)]
+    expected_symbol: Option<String>,
+    #[serde(default)]
+    relevance: std::collections::HashMap<String, u32>,
+}
+
+impl BenchQuery {
+    fn relevance_of(&self, symbol_name: &str) -> u32 {
+        if let Some(rel) = self.relevance.get(symbol_name) {
+            return *rel;
+        }
+        if let Some(exp) = &self.expected_symbol {
+            if symbol_name == exp {
+                return 3;
+            }
+        }
+        0
+    }
+
+    fn max_relevance(&self) -> u32 {
+        let from_map = self.relevance.values().copied().max().unwrap_or(0);
+        let from_expected = if self.expected_symbol.is_some() { 3 } else { 0 };
+        from_map.max(from_expected)
+    }
+
+    fn has_relevance(&self) -> bool {
+        !self.relevance.is_empty() || self.expected_symbol.is_some()
+    }
+}
+
+fn dcg_at_k(relevances: &[f64], k: usize) -> f64 {
+    relevances
+        .iter()
+        .take(k)
+        .enumerate()
+        .map(|(i, rel)| {
+            if i == 0 {
+                *rel
+            } else {
+                *rel / ((i + 1) as f64).log2()
+            }
+        })
+        .sum()
+}
+
+fn ndcg_at_k(results: &[f64], ideal: &[f64], k: usize) -> f64 {
+    let dcg = dcg_at_k(results, k);
+    let idcg = dcg_at_k(ideal, k);
+    if idcg == 0.0 {
+        0.0
+    } else {
+        dcg / idcg
+    }
 }
 
 #[derive(Debug)]
 struct BenchResult {
     query: String,
     category: String,
-    found_rank: Option<usize>,
+    ndcg: f64,
+    best_relevance: u32,
+    best_rank: Option<usize>,
     hit_at_1: bool,
     hit_at_3: bool,
     hit_at_5: bool,
     hit_at_10: bool,
     latency_us: u128,
-    cached_latency_us: u128,
+    warm_latency_us: u128,
 }
 
 fn main() {
@@ -73,7 +127,7 @@ fn main() {
         db_stats.files, db_stats.symbols, db_stats.edges
     );
 
-    let queries = if let Some(query_file) = args.get(3) {
+    let queries: Vec<BenchQuery> = if let Some(query_file) = args.get(3) {
         let content = std::fs::read_to_string(query_file).unwrap_or_else(|e| {
             eprintln!("error reading query file: {e}");
             std::process::exit(1);
@@ -101,50 +155,65 @@ fn main() {
         let _ = engine.search(&SearchQuery::new(&q.query).top_k(10));
         let warm_latency = start.elapsed().as_micros();
 
-        let found_rank = result
+        let result_rels: Vec<f64> = result
             .results
             .iter()
-            .position(|r| {
-                r.symbol.name == q.expected_symbol || r.symbol.name.contains(&q.expected_symbol)
-            })
+            .map(|r| q.relevance_of(&r.symbol.name) as f64)
+            .collect();
+
+        let ideal_rels = compute_ideal_rels(&db, q);
+
+        let ndcg = ndcg_at_k(&result_rels, &ideal_rels, 10);
+
+        let best_relevance = result
+            .results
+            .iter()
+            .map(|r| q.relevance_of(&r.symbol.name))
+            .max()
+            .unwrap_or(0);
+
+        let best_rank = result
+            .results
+            .iter()
+            .position(|r| q.relevance_of(&r.symbol.name) > 0)
             .map(|p| p + 1);
+
+        let hit_at_1 = best_rank.map_or(false, |r| r <= 1) && best_relevance >= 2;
+        let hit_at_3 = best_rank.map_or(false, |r| r <= 3) && best_relevance >= 2;
+        let hit_at_5 = best_rank.map_or(false, |r| r <= 5) && best_relevance >= 1;
+        let hit_at_10 = best_rank.map_or(false, |r| r <= 10) && best_relevance >= 1;
 
         results.push(BenchResult {
             query: q.query.clone(),
             category: q.category.clone(),
-            hit_at_1: found_rank.map_or(false, |r| r <= 1),
-            hit_at_3: found_rank.map_or(false, |r| r <= 3),
-            hit_at_5: found_rank.map_or(false, |r| r <= 5),
-            hit_at_10: found_rank.map_or(false, |r| r <= 10),
-            found_rank,
+            ndcg,
+            best_relevance,
+            best_rank,
+            hit_at_1,
+            hit_at_3,
+            hit_at_5,
+            hit_at_10,
             latency_us: cold_latency,
-            cached_latency_us: warm_latency,
+            warm_latency_us: warm_latency,
         });
     }
 
     let total = results.len();
+    let avg_ndcg: f64 = results.iter().map(|r| r.ndcg).sum::<f64>() / total as f64;
     let hits_1 = results.iter().filter(|r| r.hit_at_1).count();
     let hits_3 = results.iter().filter(|r| r.hit_at_3).count();
     let hits_5 = results.iter().filter(|r| r.hit_at_5).count();
     let hits_10 = results.iter().filter(|r| r.hit_at_10).count();
 
-    let mrr: f64 = results
-        .iter()
-        .filter_map(|r| r.found_rank.map(|rank| 1.0 / rank as f64))
-        .sum::<f64>()
-        / total as f64;
-
     let cold_latencies: Vec<u128> = results.iter().map(|r| r.latency_us).collect();
-    let warm_latencies: Vec<u128> = results.iter().map(|r| r.cached_latency_us).collect();
-
-    let mut sorted_cold = cold_latencies.clone();
+    let mut sorted_cold = cold_latencies;
     sorted_cold.sort();
     let p50_cold = sorted_cold[sorted_cold.len() / 2];
     let p95_idx = ((sorted_cold.len() as f64) * 0.95) as usize;
     let p95_cold = sorted_cold[p95_idx.min(sorted_cold.len() - 1)];
 
     println!("=== Results ===\n");
-    println!("MRR:      {:.3}", mrr);
+    println!("NDCG@10:  {:.3}", avg_ndcg);
     println!(
         "Hit@1:    {}/{} ({:.0}%)",
         hits_1,
@@ -176,31 +245,42 @@ fn main() {
         p95_cold as f64 / 1000.0
     );
 
-    let mut sorted_warm = warm_latencies.clone();
+    let warm_latencies: Vec<u128> = results.iter().map(|r| r.warm_latency_us).collect();
+    let mut sorted_warm = warm_latencies;
     sorted_warm.sort();
     let p50_warm = sorted_warm[sorted_warm.len() / 2];
     println!("Latency (warm):  p50={:.1}ms", p50_warm as f64 / 1000.0);
 
     println!("\n=== Per-Query Detail ===\n");
     println!(
-        "{:<30} {:<15} {:>6} {:>6} {:>8} {:>8}",
-        "Query", "Category", "Rank", "Hit@5", "Cold", "Warm"
+        "{:<30} {:<15} {:>6} {:>6} {:>8} {:>8} {:>8}",
+        "Query", "Category", "NDCG", "Best", "Rank", "Cold", "Warm"
     );
-    println!("{}", "-".repeat(80));
+    println!("{}", "-".repeat(95));
 
     for r in &results {
         let rank_str = r
-            .found_rank
-            .map(|rank| rank.to_string())
+            .best_rank
+            .map(|rank| format!("{}", rank))
             .unwrap_or_else(|| "MISS".into());
+        let best_str = if r.best_relevance >= 3 {
+            "###".to_string()
+        } else if r.best_relevance >= 2 {
+            "##".to_string()
+        } else if r.best_relevance >= 1 {
+            "#".to_string()
+        } else {
+            "-".to_string()
+        };
         println!(
-            "{:<30} {:<15} {:>6} {:>6} {:>6.1}ms {:>6.1}ms",
+            "{:<30} {:<15} {:>6.2} {:>6} {:>6} {:>6.1}ms {:>6.1}ms",
             truncate(&r.query, 30),
             r.category,
+            r.ndcg,
+            best_str,
             rank_str,
-            if r.hit_at_5 { "yes" } else { "no" },
             r.latency_us as f64 / 1000.0,
-            r.cached_latency_us as f64 / 1000.0
+            r.warm_latency_us as f64 / 1000.0
         );
     }
 
@@ -216,30 +296,60 @@ fn main() {
     for cat in &categories {
         let cat_results: Vec<_> = results.iter().filter(|r| &r.category == cat).collect();
         let cat_total = cat_results.len();
-        let cat_mrr: f64 = cat_results
-            .iter()
-            .filter_map(|r| r.found_rank.map(|rank| 1.0 / rank as f64))
-            .sum::<f64>()
-            / cat_total as f64;
+        let cat_ndcg: f64 = cat_results.iter().map(|r| r.ndcg).sum::<f64>() / cat_total as f64;
+        let cat_hit1 = cat_results.iter().filter(|r| r.hit_at_1).count();
         let cat_hit3 = cat_results.iter().filter(|r| r.hit_at_3).count();
         let cat_hit5 = cat_results.iter().filter(|r| r.hit_at_5).count();
         let cat_hit10 = cat_results.iter().filter(|r| r.hit_at_10).count();
 
         println!(
-            "{:<20} MRR={:.3}  Hit@3={}/{} ({:.0}%)  Hit@5={}/{} ({:.0}%)  Hit@10={}/{} ({:.0}%)",
+            "{:<20} NDCG={:.3}  H@1={}/{}  H@3={}/{}  H@5={}/{}  H@10={}/{}",
             cat,
-            cat_mrr,
+            cat_ndcg,
+            cat_hit1,
+            cat_total,
             cat_hit3,
             cat_total,
-            cat_hit3 as f64 / cat_total as f64 * 100.0,
             cat_hit5,
             cat_total,
-            cat_hit5 as f64 / cat_total as f64 * 100.0,
             cat_hit10,
             cat_total,
-            cat_hit10 as f64 / cat_total as f64 * 100.0
         );
     }
+}
+
+fn compute_ideal_rels(db: &GraphDb, q: &BenchQuery) -> Vec<f64> {
+    let conn = db.conn();
+    let mut ideal: Vec<f64> = Vec::new();
+
+    if !q.relevance.is_empty() {
+        for (name, grade) in &q.relevance {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM symbols WHERE name = ?",
+                    [&name],
+                    |row| row.get(0),
+                )
+                .unwrap_or(0);
+            for _ in 0..count {
+                ideal.push(*grade as f64);
+            }
+        }
+    } else if let Some(exp) = &q.expected_symbol {
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM symbols WHERE name = ?",
+                [&exp],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        for _ in 0..count.max(1) {
+            ideal.push(3.0);
+        }
+    }
+
+    ideal.sort_by(|a, b| b.partial_cmp(a).unwrap());
+    ideal
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -251,141 +361,67 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn build_default_queries() -> Vec<BenchQuery> {
-    vec![
-        BenchQuery {
-            query: "SymbolKind".into(),
-            expected_symbol: "SymbolKind".into(),
-            category: "symbol-exact".into(),
-        },
-        BenchQuery {
-            query: "bounded_bfs".into(),
-            expected_symbol: "bounded_bfs".into(),
-            category: "symbol-exact".into(),
-        },
-        BenchQuery {
-            query: "EdgeKind".into(),
-            expected_symbol: "EdgeKind".into(),
-            category: "symbol-exact".into(),
-        },
-        BenchQuery {
-            query: "GraphDb".into(),
-            expected_symbol: "GraphDb".into(),
-            category: "symbol-exact".into(),
-        },
-        BenchQuery {
-            query: "HotCache".into(),
-            expected_symbol: "HotCache".into(),
-            category: "symbol-exact".into(),
-        },
-        BenchQuery {
-            query: "parse_edge_kind_json".into(),
-            expected_symbol: "parse_edge_kind_json".into(),
-            category: "symbol-exact".into(),
-        },
-        BenchQuery {
-            query: "SearchQuery".into(),
-            expected_symbol: "SearchQuery".into(),
-            category: "symbol-exact".into(),
-        },
-        BenchQuery {
-            query: "sym kind".into(),
-            expected_symbol: "SymbolKind".into(),
-            category: "symbol-partial".into(),
-        },
-        BenchQuery {
-            query: "edge".into(),
-            expected_symbol: "Edge".into(),
-            category: "symbol-partial".into(),
-        },
-        BenchQuery {
-            query: "cache".into(),
-            expected_symbol: "HotCache".into(),
-            category: "symbol-partial".into(),
-        },
-        BenchQuery {
-            query: "blast".into(),
-            expected_symbol: "blast".into(),
-            category: "symbol-partial".into(),
-        },
-        BenchQuery {
-            query: "token".into(),
-            expected_symbol: "tokenize".into(),
-            category: "symbol-partial".into(),
-        },
-        BenchQuery {
-            query: "rerank".into(),
-            expected_symbol: "Reranker".into(),
-            category: "symbol-partial".into(),
-        },
-        BenchQuery {
-            query: "bm25 full text search".into(),
-            expected_symbol: "search".into(),
-            category: "nl-descriptive".into(),
-        },
-        BenchQuery {
-            query: "structural graph expansion".into(),
-            expected_symbol: "StructuralExpander".into(),
-            category: "nl-descriptive".into(),
-        },
-        BenchQuery {
-            query: "identifier decomposition tokenize".into(),
-            expected_symbol: "decompose_identifier".into(),
-            category: "nl-descriptive".into(),
-        },
-        BenchQuery {
-            query: "compute blast radius".into(),
-            expected_symbol: "compute_blast_radius".into(),
-            category: "nl-descriptive".into(),
-        },
-        BenchQuery {
-            query: "insert symbol database".into(),
-            expected_symbol: "insert_symbol".into(),
-            category: "nl-descriptive".into(),
-        },
-        BenchQuery {
-            query: "how does retrieval ranking work".into(),
-            expected_symbol: "Reranker".into(),
-            category: "nl-abstract".into(),
-        },
-        BenchQuery {
-            query: "how are symbols indexed from source files".into(),
-            expected_symbol: "Indexer".into(),
-            category: "nl-abstract".into(),
-        },
-        BenchQuery {
-            query: "what connects callers to callees".into(),
-            expected_symbol: "bounded_bfs".into(),
-            category: "nl-abstract".into(),
-        },
-        BenchQuery {
-            query: "symbol.rs".into(),
-            expected_symbol: "Symbol".into(),
-            category: "file-path".into(),
-        },
-        BenchQuery {
-            query: "graph.rs".into(),
-            expected_symbol: "TraverseDirection".into(),
-            category: "file-path".into(),
-        },
-        BenchQuery {
-            query: "rerank".into(),
-            expected_symbol: "Reranker".into(),
-            category: "file-path".into(),
-        },
-        BenchQuery {
-            query: "DbError".into(),
-            expected_symbol: "DbError".into(),
-            category: "error-debug".into(),
-        },
-        BenchQuery {
-            query: "all edge kinds".into(),
-            expected_symbol: "EdgeKind".into(),
-            category: "cross-cutting".into(),
-        },
-        BenchQuery {
-            query: "all language parsers".into(),
-            expected_symbol: "LanguageChunker".into(),
-            category: "cross-cutting".into(),
-        },
-    ]
+    let pairs = vec![
+        ("SymbolKind", "SymbolKind", "symbol-exact"),
+        ("bounded_bfs", "bounded_bfs", "symbol-exact"),
+        ("EdgeKind", "EdgeKind", "symbol-exact"),
+        ("GraphDb", "GraphDb", "symbol-exact"),
+        ("HotCache", "HotCache", "symbol-exact"),
+        (
+            "parse_edge_kind_json",
+            "parse_edge_kind_json",
+            "symbol-exact",
+        ),
+        ("SearchQuery", "SearchQuery", "symbol-exact"),
+        ("sym kind", "SymbolKind", "symbol-partial"),
+        ("edge", "Edge", "symbol-partial"),
+        ("cache", "HotCache", "symbol-partial"),
+        ("blast", "blast", "symbol-partial"),
+        ("token", "tokenize", "symbol-partial"),
+        ("rerank", "Reranker", "symbol-partial"),
+        ("bm25 full text search", "search", "nl-descriptive"),
+        (
+            "structural graph expansion",
+            "StructuralExpander",
+            "nl-descriptive",
+        ),
+        (
+            "identifier decomposition tokenize",
+            "decompose_identifier",
+            "nl-descriptive",
+        ),
+        (
+            "compute blast radius",
+            "compute_blast_radius",
+            "nl-descriptive",
+        ),
+        ("insert symbol database", "insert_symbol", "nl-descriptive"),
+        ("how does retrieval ranking work", "Reranker", "nl-abstract"),
+        (
+            "how are symbols indexed from source files",
+            "Indexer",
+            "nl-abstract",
+        ),
+        (
+            "what connects callers to callees",
+            "bounded_bfs",
+            "nl-abstract",
+        ),
+        ("symbol.rs", "Symbol", "file-path"),
+        ("graph.rs", "TraverseDirection", "file-path"),
+        ("rerank", "Reranker", "file-path"),
+        ("DbError", "DbError", "error-debug"),
+        ("all edge kinds", "EdgeKind", "cross-cutting"),
+        ("all language parsers", "LanguageChunker", "cross-cutting"),
+    ];
+
+    pairs
+        .into_iter()
+        .map(|(query, expected, category)| BenchQuery {
+            query: query.into(),
+            category: category.into(),
+            expected_symbol: Some(expected.into()),
+            relevance: std::collections::HashMap::new(),
+        })
+        .collect()
 }

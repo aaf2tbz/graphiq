@@ -1,27 +1,250 @@
 [
-  {"query": "EmbeddingProvider", "expected_symbol": "EmbeddingProvider", "category": "symbol-exact"},
-  {"query": "OpenCodeConnector", "expected_symbol": "OpenCodeConnector", "category": "symbol-exact"},
-  {"query": "cosine_similarity", "expected_symbol": "cosine_similarity", "category": "symbol-exact"},
-  {"query": "build_knn_edges", "expected_symbol": "build_knn_edges", "category": "symbol-exact"},
-  {"query": "Tape", "expected_symbol": "Tape", "category": "symbol-exact"},
-  {"query": "ScoredId", "expected_symbol": "ScoredId", "category": "symbol-exact"},
-  {"query": "connector", "expected_symbol": "Connector", "category": "symbol-partial"},
-  {"query": "embed", "expected_symbol": "embed_row", "category": "symbol-partial"},
-  {"query": "vector", "expected_symbol": "vector_to_blob", "category": "symbol-partial"},
-  {"query": "tray", "expected_symbol": "buildTrayUpdate", "category": "symbol-partial"},
-  {"query": "normalize", "expected_symbol": "normalize_content_for_storage", "category": "symbol-partial"},
-  {"query": "daemon", "expected_symbol": "registerDaemonCommands", "category": "symbol-partial"},
-  {"query": "compute vector similarity between embeddings", "expected_symbol": "cosine_similarity", "category": "nl-descriptive"},
-  {"query": "split documents into chunks for indexing", "expected_symbol": "chunkDocument", "category": "nl-descriptive"},
-  {"query": "find nearest neighbors in embedding space", "expected_symbol": "build_knn_edges", "category": "nl-descriptive"},
-  {"query": "autograd tape for backpropagation", "expected_symbol": "Tape", "category": "nl-descriptive"},
-  {"query": "start and stop the signet daemon process", "expected_symbol": "doStart", "category": "nl-descriptive"},
-  {"query": "how are connector tools registered for different harnesses", "expected_symbol": "registerConnector", "category": "nl-abstract"},
-  {"query": "what computes similarity scores for memory recall", "expected_symbol": "merge_hybrid_scores", "category": "nl-abstract"},
-  {"query": "how does the tray manage autostart", "expected_symbol": "ensure_autostart", "category": "nl-abstract"},
-  {"query": "knn.rs", "expected_symbol": "build_knn_edges", "category": "file-path"},
-  {"query": "vector.rs", "expected_symbol": "cosine_similarity", "category": "file-path"},
-  {"query": "daemon.ts", "expected_symbol": "registerDaemonCommands", "category": "file-path"},
-  {"query": "all connector implementations", "expected_symbol": "OpenCodeConnector", "category": "cross-cutting"},
-  {"query": "all autograd operations", "expected_symbol": "Tape", "category": "cross-cutting"}
+  {
+    "query": "EmbeddingProvider",
+    "category": "symbol-exact",
+    "relevance": {"EmbeddingProvider": 3}
+  },
+  {
+    "query": "OpenCodeConnector",
+    "category": "symbol-exact",
+    "relevance": {"OpenCodeConnector": 3}
+  },
+  {
+    "query": "cosine_similarity",
+    "category": "symbol-exact",
+    "relevance": {"cosine_similarity": 3}
+  },
+  {
+    "query": "build_knn_edges",
+    "category": "symbol-exact",
+    "relevance": {"build_knn_edges": 3}
+  },
+  {
+    "query": "Tape",
+    "category": "symbol-exact",
+    "relevance": {"Tape": 3}
+  },
+  {
+    "query": "ScoredId",
+    "category": "symbol-exact",
+    "relevance": {"ScoredId": 3}
+  },
+
+  {
+    "query": "connector",
+    "category": "symbol-partial",
+    "relevance": {
+      "BaseConnector": 3,
+      "Connector": 3,
+      "OpenCodeConnector": 2,
+      "ClaudeCodeConnector": 2,
+      "CodexConnector": 2,
+      "ForgeConnector": 2,
+      "PiConnector": 2,
+      "OpenClawConnector": 2,
+      "OhMyPiConnector": 2,
+      "registerConnector": 2
+    }
+  },
+  {
+    "query": "embed",
+    "category": "symbol-partial",
+    "relevance": {
+      "embed": 3,
+      "EmbeddingProvider": 2,
+      "embed_row": 2,
+      "embed_batch": 2,
+      "embed_ollama": 2,
+      "embed_openai": 1
+    }
+  },
+  {
+    "query": "vector",
+    "category": "symbol-partial",
+    "relevance": {
+      "to_vector": 2,
+      "vector_to_blob": 2,
+      "blobToVector": 2,
+      "blob_to_vector": 2,
+      "vectorBlob": 2,
+      "vector_search": 2,
+      "VectorRuntimeStatus": 1
+    }
+  },
+  {
+    "query": "tray",
+    "category": "symbol-partial",
+    "relevance": {
+      "TrayUpdate": 3,
+      "updateTray": 3,
+      "update_tray": 3,
+      "buildTrayUpdate": 2,
+      "getTrayApps": 2,
+      "AppTrayEntry": 2,
+      "loadAppTray": 1,
+      "mountAppTrayRoutes": 1
+    }
+  },
+  {
+    "query": "normalize",
+    "category": "symbol-partial",
+    "relevance": {
+      "normalize": 3,
+      "normalize_content_for_storage": 2,
+      "normalize_tags": 2,
+      "normalizePath": 2,
+      "normalizeUrl": 1,
+      "normalizeSql": 1,
+      "normalizeWhitespace": 1
+    }
+  },
+  {
+    "query": "daemon",
+    "category": "symbol-partial",
+    "relevance": {
+      "daemon": 3,
+      "DaemonManager": 2,
+      "registerDaemonCommands": 2,
+      "startDaemon": 2,
+      "stopDaemon": 2,
+      "DaemonStatus": 2,
+      "daemonFetch": 1,
+      "ensureDaemonRunning": 1
+    }
+  },
+
+  {
+    "query": "compute vector similarity between embeddings",
+    "category": "nl-descriptive",
+    "relevance": {
+      "cosine_similarity": 3,
+      "merge_hybrid_scores": 2,
+      "vector_search": 1
+    }
+  },
+  {
+    "query": "split documents into chunks for indexing",
+    "category": "nl-descriptive",
+    "relevance": {
+      "chunkDocument": 3,
+      "chunker": 2,
+      "split": 1
+    }
+  },
+  {
+    "query": "find nearest neighbors in embedding space",
+    "category": "nl-descriptive",
+    "relevance": {
+      "build_knn_edges": 3,
+      "insertNearestNeighbor": 2,
+      "findSemanticDuplicates": 2,
+      "findMaxSimilarityVec": 1
+    }
+  },
+  {
+    "query": "autograd tape for backpropagation",
+    "category": "nl-descriptive",
+    "relevance": {
+      "Tape": 3,
+      "forward": 2,
+      "backward": 2,
+      "alloc": 2
+    }
+  },
+  {
+    "query": "start and stop the signet daemon process",
+    "category": "nl-descriptive",
+    "relevance": {
+      "startDaemon": 3,
+      "stopDaemon": 3,
+      "doStart": 3,
+      "doStop": 2,
+      "doRestart": 2,
+      "restartDaemon": 2,
+      "ensureDaemonRunning": 2
+    }
+  },
+
+  {
+    "query": "how are connector tools registered for different harnesses",
+    "category": "nl-abstract",
+    "relevance": {
+      "registerConnector": 3,
+      "install": 1,
+      "OpenCodeConnector": 1
+    }
+  },
+  {
+    "query": "what computes similarity scores for memory recall",
+    "category": "nl-abstract",
+    "relevance": {
+      "merge_hybrid_scores": 3,
+      "computeFtsOverlapScore": 2,
+      "cosine_similarity": 1
+    }
+  },
+  {
+    "query": "how does the tray manage autostart",
+    "category": "nl-abstract",
+    "relevance": {
+      "ensure_autostart": 3,
+      "buildTrayUpdate": 2,
+      "updateTray": 2
+    }
+  },
+
+  {
+    "query": "knn.rs",
+    "category": "file-path",
+    "relevance": {
+      "build_knn_edges": 3,
+      "insertNearestNeighbor": 2
+    }
+  },
+  {
+    "query": "vector.rs",
+    "category": "file-path",
+    "relevance": {
+      "vector_to_blob": 3,
+      "blob_to_vector": 3,
+      "cosine_similarity": 2,
+      "squared_distance": 2
+    }
+  },
+  {
+    "query": "daemon.ts",
+    "category": "file-path",
+    "relevance": {
+      "registerDaemonCommands": 3,
+      "daemon": 3,
+      "startDaemon": 2,
+      "stopDaemon": 2,
+      "DaemonManager": 2
+    }
+  },
+
+  {
+    "query": "all connector implementations",
+    "category": "cross-cutting",
+    "relevance": {
+      "OpenCodeConnector": 3,
+      "ClaudeCodeConnector": 3,
+      "CodexConnector": 3,
+      "ForgeConnector": 3,
+      "PiConnector": 3,
+      "OpenClawConnector": 3,
+      "OhMyPiConnector": 3,
+      "BaseConnector": 3
+    }
+  },
+  {
+    "query": "all autograd operations",
+    "category": "cross-cutting",
+    "relevance": {
+      "Tape": 3,
+      "alloc": 3,
+      "forward": 3,
+      "backward": 3
+    }
+  }
 ]

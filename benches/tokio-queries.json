@@ -1,28 +1,212 @@
 [
-  {"query": "Runtime", "expected_symbol": "Runtime", "category": "symbol-exact"},
-  {"query": "spawn", "expected_symbol": "spawn", "category": "symbol-exact"},
-  {"query": "TcpListener", "expected_symbol": "TcpListener", "category": "symbol-exact"},
-  {"query": "JoinHandle", "expected_symbol": "JoinHandle", "category": "symbol-exact"},
-  {"query": "Mutex", "expected_symbol": "Mutex", "category": "symbol-exact"},
-  {"query": "yield_now", "expected_symbol": "yield_now", "category": "symbol-exact"},
-  {"query": "tokio main", "expected_symbol": "main", "category": "symbol-partial"},
-  {"query": "buffer", "expected_symbol": "BufReader", "category": "symbol-partial"},
-  {"query": "channel", "expected_symbol": "channel", "category": "symbol-partial"},
-  {"query": "timeout", "expected_symbol": "timeout", "category": "symbol-partial"},
-  {"query": "mutex", "expected_symbol": "Mutex", "category": "symbol-partial"},
-  {"query": "block on", "expected_symbol": "block_on", "category": "symbol-partial"},
-  {"query": "periodic interval timer", "expected_symbol": "Interval", "category": "nl-descriptive"},
-  {"query": "tcp accept connections", "expected_symbol": "TcpListener", "category": "nl-descriptive"},
-  {"query": "block on async task", "expected_symbol": "block_on", "category": "nl-descriptive"},
-  {"query": "split tcp stream read write", "expected_symbol": "split", "category": "nl-descriptive"},
-  {"query": "join multiple concurrent tasks", "expected_symbol": "JoinSet", "category": "nl-descriptive"},
-  {"query": "how does the runtime schedule tasks", "expected_symbol": "Scheduler", "category": "nl-abstract"},
-  {"query": "what handles shutting down the runtime", "expected_symbol": "shutdown", "category": "nl-abstract"},
-  {"query": "how are timers tracked and fired", "expected_symbol": "TimerEntry", "category": "nl-abstract"},
-  {"query": "runtime.rs", "expected_symbol": "Runtime", "category": "file-path"},
-  {"query": "tcp listener", "expected_symbol": "TcpListener", "category": "file-path"},
-  {"query": "interval", "expected_symbol": "Interval", "category": "file-path"},
-  {"query": "io error", "expected_symbol": "Error", "category": "error-debug"},
-  {"query": "all sync primitives", "expected_symbol": "Mutex", "category": "cross-cutting"},
-  {"query": "all runtime handle methods", "expected_symbol": "Handle", "category": "cross-cutting"}
+  {
+    "query": "Runtime",
+    "category": "symbol-exact",
+    "relevance": {"Runtime": 3}
+  },
+  {
+    "query": "spawn",
+    "category": "symbol-exact",
+    "relevance": {"spawn": 3}
+  },
+  {
+    "query": "TcpListener",
+    "category": "symbol-exact",
+    "relevance": {"TcpListener": 3}
+  },
+  {
+    "query": "JoinHandle",
+    "category": "symbol-exact",
+    "relevance": {"JoinHandle": 3}
+  },
+  {
+    "query": "Mutex",
+    "category": "symbol-exact",
+    "relevance": {"Mutex": 3}
+  },
+  {
+    "query": "yield_now",
+    "category": "symbol-exact",
+    "relevance": {"yield_now": 3}
+  },
+
+  {
+    "query": "tokio main",
+    "category": "symbol-partial",
+    "relevance": {
+      "main": 3,
+      "Runtime": 2
+    }
+  },
+  {
+    "query": "buffer",
+    "category": "symbol-partial",
+    "relevance": {
+      "BufReader": 2,
+      "BufWriter": 2,
+      "buffer": 2,
+      "CopyBuffer": 1,
+      "ReadBuffer": 1
+    }
+  },
+  {
+    "query": "channel",
+    "category": "symbol-partial",
+    "relevance": {
+      "channel": 3,
+      "broadcast": 1,
+      "mpsc": 1
+    }
+  },
+  {
+    "query": "timeout",
+    "category": "symbol-partial",
+    "relevance": {
+      "timeout": 3,
+      "Timeout": 2
+    }
+  },
+  {
+    "query": "mutex",
+    "category": "symbol-partial",
+    "relevance": {
+      "Mutex": 3,
+      "MutexGuard": 2
+    }
+  },
+  {
+    "query": "block on",
+    "category": "symbol-partial",
+    "relevance": {
+      "block_on": 3
+    }
+  },
+
+  {
+    "query": "periodic interval timer",
+    "category": "nl-descriptive",
+    "relevance": {
+      "Interval": 3,
+      "IntervalStream": 2,
+      "Timer": 2
+    }
+  },
+  {
+    "query": "tcp accept connections",
+    "category": "nl-descriptive",
+    "relevance": {
+      "TcpListener": 3,
+      "accept": 2
+    }
+  },
+  {
+    "query": "block on async task",
+    "category": "nl-descriptive",
+    "relevance": {
+      "block_on": 3
+    }
+  },
+  {
+    "query": "split tcp stream read write",
+    "category": "nl-descriptive",
+    "relevance": {
+      "split": 3,
+      "TcpStream": 2,
+      "OwnedReadHalf": 2,
+      "OwnedWriteHalf": 2
+    }
+  },
+  {
+    "query": "join multiple concurrent tasks",
+    "category": "nl-descriptive",
+    "relevance": {
+      "JoinSet": 3,
+      "join_all": 2,
+      "JoinHandle": 1
+    }
+  },
+
+  {
+    "query": "how does the runtime schedule tasks",
+    "category": "nl-abstract",
+    "relevance": {
+      "Scheduler": 3,
+      "LocalRuntimeScheduler": 2
+    }
+  },
+  {
+    "query": "what handles shutting down the runtime",
+    "category": "nl-abstract",
+    "relevance": {
+      "shutdown": 3,
+      "shutdown_background": 2,
+      "shutdown_timeout": 2
+    }
+  },
+  {
+    "query": "how are timers tracked and fired",
+    "category": "nl-abstract",
+    "relevance": {
+      "TimerEntry": 3,
+      "TimerHandle": 2,
+      "TimerShared": 2
+    }
+  },
+
+  {
+    "query": "runtime.rs",
+    "category": "file-path",
+    "relevance": {
+      "Runtime": 3,
+      "Handle": 2,
+      "Builder": 2
+    }
+  },
+  {
+    "query": "tcp listener",
+    "category": "file-path",
+    "relevance": {
+      "TcpListener": 3,
+      "accept": 2
+    }
+  },
+  {
+    "query": "interval",
+    "category": "file-path",
+    "relevance": {
+      "Interval": 3,
+      "IntervalStream": 2
+    }
+  },
+
+  {
+    "query": "io error",
+    "category": "error-debug",
+    "relevance": {
+      "Error": 3,
+      "ErrorKind": 2
+    }
+  },
+
+  {
+    "query": "all sync primitives",
+    "category": "cross-cutting",
+    "relevance": {
+      "Mutex": 3,
+      "RwLock": 3,
+      "Semaphore": 3,
+      "Barrier": 3,
+      "Notify": 3
+    }
+  },
+  {
+    "query": "all runtime handle methods",
+    "category": "cross-cutting",
+    "relevance": {
+      "Handle": 3,
+      "block_on": 2,
+      "spawn": 2,
+      "spawn_blocking": 2
+    }
+  }
 ]
