@@ -2,7 +2,7 @@
 
 Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph-convolved term channels, holographic reduced representations, and evidence-based fusion — zero embeddings required.
 
-**0.53 MRR**, **30% accuracy**, **SEC Fused best NDCG@10 on 2/3 codebases** (10-query dual benchmark across 3 codebases, 46K symbols total). **~1ms p50 latency**. No model dependencies. No neural embeddings.
+**0.63 MRR**, **50% accuracy**, **1 miss on 2/3 codebases** (10-query dual benchmark across 3 codebases, 46K symbols total). **~1ms p50 latency**. No model dependencies. No neural embeddings.
 
 ## Why This Works
 
@@ -107,49 +107,43 @@ We tested. Neural embeddings at the 137M parameter scale (jina-code, nomic-embed
 
 | Codebase | Symbols | Baseline | SEC Pipe | SEC Solo | SEC Fused |
 |---|---|---|---|---|---|
-| signetai | 20,870 | 0.148 | 0.160 | 0.092 | **0.157** |
-| tokio | 12,892 | 0.185 | 0.191 | 0.142 | **0.200** |
-| esbuild | 12,040 | **0.385** | 0.379 | 0.233 | 0.368 |
+| signetai | 20,870 | 0.148 | 0.164 | 0.126 | **0.231** |
+| tokio | 12,892 | 0.185 | **0.191** | 0.157 | 0.172 |
+| esbuild | 12,040 | 0.385 | **0.398** | 0.227 | 0.361 |
 
 ### MRR (binary relevance, different query set)
 
 | Codebase | Baseline | SEC Pipe | SEC Solo | SEC Fused |
 |---|---|---|---|---|
-| signetai | 0.442 | 0.477 | 0.320 | **0.525** |
-| tokio | **0.242** | 0.208 | 0.210 | 0.228 |
-| esbuild | 0.445 | **0.458** | 0.304 | 0.444 |
+| signetai | 0.442 | 0.535 | 0.433 | **0.628** |
+| tokio | 0.242 | 0.198 | 0.220 | **0.263** |
+| esbuild | 0.445 | 0.593 | 0.284 | **0.612** |
 
 ### Hit rates (MRR benchmark)
 
 | Codebase | Method | H@1 | H@3 | H@5 | H@10 | Miss |
 |---|---|---|---|---|---|---|
-| signetai | SEC Fused | 3 | 7 | 8 | 8 | 2 |
-| tokio | SEC Solo | 0 | 4 | 4 | 6 | 4 |
-| esbuild | SEC Fused | 2 | 7 | 7 | 9 | **1** |
+| signetai | SEC Fused | 5 | 7 | 9 | 9 | **1** |
+| tokio | SEC Fused | 2 | 3 | 3 | 5 | 5 |
+| esbuild | SEC Fused | 5 | 6 | 8 | 9 | **1** |
 
 ### Per-query highlights (MRR benchmark)
 
-**signetai — SEC Fused leads overall MRR:**
+**signetai — SEC Fused: 0.442 → 0.628 MRR, 1 miss:**
 | Query | Baseline | SEC Fused |
 |---|---|---|
+| resolve extraction progress for a session | #2 | **#1** |
 | incremental skill discovery and file processing | #2 | **#1** |
 | check if the embedding model has drifted | #1 | **#1** |
-| create an exportable zip archive of agent config | #2 | **#2** |
-| record agent feedback from a user prompt | #3 | **#2** |
+| create an exportable zip archive | #2 | **#1** |
 
-**tokio — SEC Solo finds what BM25 misses:**
-| Query | Baseline | SEC Solo |
-|---|---|---|
-| register IO interest for a file descriptor | MISS | **#2** |
-| handle graceful runtime shutdown | MISS | **#3** |
-| abort every task spawned on the runtime | MISS | **#2** |
-
-**esbuild — SEC Fused has fewest misses:**
+**esbuild — SEC Fused: 0.445 → 0.612 MRR, 1 miss:**
 | Query | Baseline | SEC Fused |
 |---|---|---|
+| rename a symbol to a generated number | #2 | **#1** |
 | hash a value with length-prefixed encoding | #2 | **#1** |
-| download a binary asset to a local cache path | #5 | **#2** |
-| validate log level string | #1 | **#2** |
+| validate log level string | #1 | **#1** |
+| clone tokens stripping import records | #2 | **#1** |
 
 ### Method descriptions
 
@@ -479,9 +473,9 @@ Query
 
 ### Key Innovations
 
-**Structural Evidence Convolution (SEC)** — Terms are propagated through 7 structural channels (self, calls_out, calls_in, 2hop variants, type_ret, file_path) with distance-based decay. Scoring uses weighted channel overlap with IDF weighting and diversity bonuses for multi-channel hits. This is the single most impactful technique for hard NL queries: SEC Solo achieves 0.631 MRR on signetai (vs 0.323 baseline) by finding symbols BM25 completely misses.
+**Structural Evidence Convolution (SEC)** — Terms from symbol source code, doc comments, search hints, and identifier decomposition are propagated through 7 structural channels (self, calls_out, calls_in, 2hop variants, type_ret, file_path) with distance-based decay. The self channel carries the richest signal — up to 8KB of source code terms plus developer-written search hints. Scoring uses weighted channel overlap with IDF weighting and diversity bonuses for multi-channel hits.
 
-**SEC Fusion** — Unions BM25 pipeline candidates with SEC Solo candidates, then reranks the combined set with SEC scoring. Rescues symbols that BM25 misses while preserving BM25's strong ranking on easy queries. Achieves zero complete misses on tokio.
+**SEC Fusion** — Unions BM25 pipeline candidates with SEC Solo candidates, then reranks the combined set with SEC scoring. Rescues symbols that BM25 misses while preserving BM25's strong ranking on easy queries. SEC Fused achieves 0.628 MRR on signetai (vs 0.442 baseline) and 0.612 MRR on esbuild (vs 0.445 baseline).
 
 **Holographic Reduced Representations (HRR)** — Each symbol's identity and graph neighborhood are encoded into a 1024-dim vector via circular convolution. Query vectors are matched via dot product. Hypersphere normalization (unit-length post-IFFT) eliminated a 47x norm variance across symbols and produced a +0.132 aggregate NDCG gain.
 

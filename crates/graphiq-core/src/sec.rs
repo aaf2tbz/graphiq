@@ -100,11 +100,11 @@ pub fn build_sec_index(db: &GraphDb) -> Result<SecIndex, String> {
 
     let mut stmt = conn
         .prepare(
-            "SELECT s.id, s.name, s.kind, s.signature, s.file_id \
+            "SELECT s.id, s.name, s.kind, s.signature, s.file_id, s.source, s.doc_comment, s.search_hints \
              FROM symbols s ORDER BY s.id",
         )
         .map_err(|e| e.to_string())?;
-    let rows: Vec<(i64, String, String, Option<String>, i64)> = stmt
+    let rows: Vec<(i64, String, String, Option<String>, i64, String, Option<String>, String)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -112,6 +112,9 @@ pub fn build_sec_index(db: &GraphDb) -> Result<SecIndex, String> {
                 row.get(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get(4)?,
+                row.get::<_, String>(5).unwrap_or_default(),
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7).unwrap_or_default(),
             ))
         })
         .map_err(|e| e.to_string())?
@@ -124,6 +127,9 @@ pub fn build_sec_index(db: &GraphDb) -> Result<SecIndex, String> {
     let symbol_kinds: Vec<String> = rows.iter().map(|r| r.2.clone()).collect();
     let symbol_sigs: Vec<Option<String>> = rows.iter().map(|r| r.3.clone()).collect();
     let symbol_file_ids: Vec<i64> = rows.iter().map(|r| r.4).collect();
+    let symbol_sources: Vec<String> = rows.iter().map(|r| r.5.clone()).collect();
+    let symbol_docs: Vec<Option<String>> = rows.iter().map(|r| r.6.clone()).collect();
+    let symbol_hints: Vec<String> = rows.iter().map(|r| r.7.clone()).collect();
 
     let id_to_idx: HashMap<i64, usize> = symbol_ids
         .iter()
@@ -179,11 +185,31 @@ pub fn build_sec_index(db: &GraphDb) -> Result<SecIndex, String> {
         .map(|i| {
             let name_terms = sec_tokenize(&symbol_names[i]);
             let kind_terms = sec_tokenize(&symbol_kinds[i]);
+            let sig_terms = if let Some(ref sig) = symbol_sigs[i] {
+                sec_tokenize(sig)
+            } else {
+                Vec::new()
+            };
+            let source_terms = {
+                let src = &symbol_sources[i];
+                if src.len() > 8000 {
+                    sec_tokenize(&src[..8000])
+                } else {
+                    sec_tokenize(src)
+                }
+            };
+            let doc_terms = if let Some(ref doc) = symbol_docs[i] {
+                sec_tokenize(doc)
+            } else {
+                Vec::new()
+            };
+            let hint_terms = sec_tokenize(&symbol_hints[i]);
             let mut all = name_terms;
             all.extend(kind_terms);
-            if let Some(ref sig) = symbol_sigs[i] {
-                all.extend(sec_tokenize(sig));
-            }
+            all.extend(sig_terms);
+            all.extend(source_terms);
+            all.extend(doc_terms);
+            all.extend(hint_terms);
             term_bag(&all)
         })
         .collect();
@@ -697,6 +723,7 @@ pub fn sec_rerank_debug(
 
 pub struct SecInvertedIndex {
     postings: HashMap<String, Vec<Posting>>,
+    sorted_terms: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -713,6 +740,18 @@ const CH_OUT2: u8 = 0x08;
 const CH_IN2: u8 = 0x10;
 const CH_TYPE: u8 = 0x20;
 const CH_PATH: u8 = 0x40;
+
+fn channel_weight_from_mask(mask: u8) -> f64 {
+    let mut w = 0.0f64;
+    if mask & CH_SELF != 0 { w += W_SELF; }
+    if mask & CH_OUT != 0 { w += W_CALLS_OUT; }
+    if mask & CH_IN != 0 { w += W_CALLS_IN; }
+    if mask & CH_OUT2 != 0 { w += W_CALLS_OUT_2HOP; }
+    if mask & CH_IN2 != 0 { w += W_CALLS_IN_2HOP; }
+    if mask & CH_TYPE != 0 { w += W_TYPE_RET; }
+    if mask & CH_PATH != 0 { w += W_FILE_PATH; }
+    w
+}
 
 pub fn build_sec_inverted_index(sec: &SecIndex) -> SecInvertedIndex {
     let n = sec.symbol_ids.len();
@@ -753,6 +792,9 @@ pub fn build_sec_inverted_index(sec: &SecIndex) -> SecInvertedIndex {
         postings.sort_by_key(|p| p.symbol_idx);
     }
 
+    let mut sorted_terms: Vec<String> = term_postings.keys().cloned().collect();
+    sorted_terms.sort();
+
     eprintln!(
         "  SEC inverted index: {} terms, {} total postings",
         term_postings.len(),
@@ -761,6 +803,7 @@ pub fn build_sec_inverted_index(sec: &SecIndex) -> SecInvertedIndex {
 
     SecInvertedIndex {
         postings: term_postings,
+        sorted_terms,
     }
 }
 
@@ -775,19 +818,45 @@ pub fn sec_standalone_search(
         return Vec::new();
     }
 
-    let mut candidate_set: HashSet<usize> = HashSet::new();
+    let mut candidate_scores: HashMap<usize, f64> = HashMap::new();
     for qt in &query_terms {
         for variant in &qt.variants {
             if let Some(postings) = inv.postings.get(variant) {
                 for p in postings {
-                    candidate_set.insert(p.symbol_idx);
+                    let w = channel_weight_from_mask(p.channel_mask) * p.max_weight;
+                    *candidate_scores.entry(p.symbol_idx).or_default() += w * qt.idf;
                 }
             }
-            for term in inv.postings.keys() {
-                if term.contains(variant.as_str()) || variant.contains(term.as_str()) {
+            let prefix = variant.as_str();
+            let start = match inv.sorted_terms.binary_search(&variant.to_string()) {
+                Ok(_) => None,
+                Err(i) if i < inv.sorted_terms.len() && inv.sorted_terms[i].starts_with(prefix) => Some(i),
+                _ => None,
+            };
+            if let Some(start_idx) = start {
+                for term in &inv.sorted_terms[start_idx..] {
+                    if !term.starts_with(prefix) {
+                        break;
+                    }
                     if let Some(postings) = inv.postings.get(term) {
                         for p in postings {
-                            candidate_set.insert(p.symbol_idx);
+                            let w = channel_weight_from_mask(p.channel_mask) * p.max_weight * 0.7;
+                            *candidate_scores.entry(p.symbol_idx).or_default() += w * qt.idf;
+                        }
+                    }
+                }
+            }
+            if variant.len() >= 4 {
+                for term in &inv.sorted_terms {
+                    if term.len() >= 3
+                        && (term.contains(prefix) || prefix.contains(term.as_str()))
+                        && !term.starts_with(prefix)
+                    {
+                        if let Some(postings) = inv.postings.get(term) {
+                            for p in postings {
+                                let w = channel_weight_from_mask(p.channel_mask) * p.max_weight * 0.4;
+                                *candidate_scores.entry(p.symbol_idx).or_default() += w * qt.idf;
+                            }
                         }
                     }
                 }
@@ -795,13 +864,13 @@ pub fn sec_standalone_search(
         }
     }
 
-    if candidate_set.is_empty() {
+    if candidate_scores.is_empty() {
         return Vec::new();
     }
 
-    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(candidate_set.len());
+    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(candidate_scores.len());
 
-    for &i in &candidate_set {
+    for (&i, &inv_score) in &candidate_scores {
         let cs = ChannelScores {
             ch_self: channel_overlap(&query_terms, &sec.ch_self[i]),
             ch_calls_out: channel_overlap(&query_terms, &sec.ch_calls_out[i]),
@@ -877,7 +946,7 @@ pub fn sec_standalone_search(
             1.0
         };
 
-        let final_score = sec_score * kind_boost * test_penalty;
+        let final_score = (inv_score + sec_score) * kind_boost * test_penalty;
 
         if final_score > 0.001 {
             scored.push((i, final_score));
@@ -912,8 +981,17 @@ pub fn sec_standalone_search_debug(
                     candidate_set.insert(p.symbol_idx);
                 }
             }
-            for term in inv.postings.keys() {
-                if term.contains(variant.as_str()) || variant.contains(term.as_str()) {
+            let prefix = variant.as_str();
+            let start = match inv.sorted_terms.binary_search(&variant.to_string()) {
+                Ok(_) => None,
+                Err(i) if i < inv.sorted_terms.len() && inv.sorted_terms[i].starts_with(prefix) => Some(i),
+                _ => None,
+            };
+            if let Some(start_idx) = start {
+                for term in &inv.sorted_terms[start_idx..] {
+                    if !term.starts_with(prefix) {
+                        break;
+                    }
                     if let Some(postings) = inv.postings.get(term) {
                         for p in postings {
                             candidate_set.insert(p.symbol_idx);
