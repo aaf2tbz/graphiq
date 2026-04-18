@@ -760,6 +760,7 @@ struct V2Candidate {
     name_score: f64,
     name_count: usize,
     is_seed: bool,
+    seed_paths: HashSet<usize>,
 }
 
 const ENERGY_DEPTH: usize = 3;
@@ -860,6 +861,8 @@ pub fn cruncher_v2_search(
         if let Some(&i) = idx.id_to_idx.get(&id) {
             let energy = per_term_energy(&query_terms, &idx.term_sets[i]);
             let (name_s, name_c) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+            let mut sp = HashSet::new();
+            sp.insert(i);
             candidates.insert(
                 i,
                 V2Candidate {
@@ -869,6 +872,7 @@ pub fn cruncher_v2_search(
                     name_score: name_s,
                     name_count: name_c,
                     is_seed: true,
+                    seed_paths: sp,
                 },
             );
         }
@@ -886,25 +890,25 @@ pub fn cruncher_v2_search(
     let seed_indices: Vec<usize> = candidates.keys().cloned().collect();
 
     for &seed_i in &seed_indices {
-        let mut queue: VecDeque<(usize, f64, usize)> = VecDeque::new();
+        let mut queue: VecDeque<(usize, f64, usize, usize)> = VecDeque::new();
         let mut visited: HashSet<usize> = HashSet::new();
         visited.insert(seed_i);
 
         for edge in &idx.outgoing[seed_i] {
             if !visited.contains(&edge.target) {
-                queue.push_back((edge.target, edge.weight, 1));
+                queue.push_back((edge.target, edge.weight, 1, seed_i));
                 visited.insert(edge.target);
             }
         }
         for edge in &idx.incoming[seed_i] {
             if !visited.contains(&edge.target) {
-                queue.push_back((edge.target, edge.weight, 1));
+                queue.push_back((edge.target, edge.weight, 1, seed_i));
                 visited.insert(edge.target);
             }
         }
 
         let mut expanded_count = 0usize;
-        while let Some((neighbor_i, edge_w, depth)) = queue.pop_front() {
+        while let Some((neighbor_i, edge_w, depth, origin_seed)) = queue.pop_front() {
             if depth > ENERGY_DEPTH || expanded_count >= ENERGY_BREADTH {
                 break;
             }
@@ -925,9 +929,11 @@ pub fn cruncher_v2_search(
                         name_score: 0.0,
                         name_count: 0,
                         is_seed: false,
+                        seed_paths: HashSet::new(),
                     });
 
                     entry.energy[ti] += propagated;
+                    entry.seed_paths.insert(origin_seed);
 
                     if !entry.is_seed {
                         let (name_s, _name_c) =
@@ -954,7 +960,7 @@ pub fn cruncher_v2_search(
                         .collect();
                     for (next_i, next_w) in next {
                         visited.insert(next_i);
-                        queue.push_back((next_i, next_w, depth + 1));
+                        queue.push_back((next_i, next_w, depth + 1, origin_seed));
                     }
                 }
             }
@@ -1014,6 +1020,23 @@ pub fn cruncher_v2_search(
             let br = 1.0 + idx.bridging[c.idx] * 1.5;
             let seed_bonus = if c.is_seed { 1.2 } else { 1.0 };
 
+            let yoyo = if !c.is_seed && c.seed_paths.len() < 2 {
+                0.5
+            } else if !c.is_seed {
+                1.0 + 0.1 * (c.seed_paths.len().min(5) - 2) as f64
+            } else {
+                1.0
+            };
+
+            let out_set: HashSet<usize> =
+                idx.outgoing[c.idx].iter().map(|e| e.target).collect();
+            let in_set: HashSet<usize> =
+                idx.incoming[c.idx].iter().map(|e| e.target).collect();
+            let overlap = out_set.intersection(&in_set).count() as f64;
+            let max_deg = (out_set.len().max(in_set.len()) as f64).max(1.0);
+            let hub_score = overlap / max_deg;
+            let hub_dampen = 1.0 / (1.0 + hub_score * hub_score);
+
             let multi_term_bonus = if n_qt >= 2 && cov_count >= 2 {
                 1.0 + 0.3 * (cov_count as f64 - 1.0)
             } else {
@@ -1027,7 +1050,9 @@ pub fn cruncher_v2_search(
                 * kb
                 * tp
                 * br
-                * seed_bonus;
+                * seed_bonus
+                * yoyo
+                * hub_dampen;
 
             if raw > 0.0 {
                 Some((c.idx, raw))
