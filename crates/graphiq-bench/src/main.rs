@@ -36,13 +36,7 @@ fn dcg_at_k(relevances: &[f64], k: usize) -> f64 {
         .iter()
         .take(k)
         .enumerate()
-        .map(|(i, rel)| {
-            if i == 0 {
-                *rel
-            } else {
-                *rel / ((i + 1) as f64).log2()
-            }
-        })
+        .map(|(rank, rel)| rel / ((rank + 2) as f64).log2())
         .sum()
 }
 

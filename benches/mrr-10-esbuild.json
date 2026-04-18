@@ -1,12 +1,12 @@
 [
-  {"query": "how does esbuild tree-shake unused code from bundles", "category": "behavioral", "expected_symbol": "Renamer"},
-  {"query": "how are plugin build callbacks registered and invoked", "category": "behavioral", "expected_symbol": "onLoad"},
-  {"query": "validate esbuild build options", "category": "behavioral", "expected_symbol": "ParseBuildOptions"},
-  {"query": "convert CSS prefix data for output", "category": "behavioral", "expected_symbol": "mangleFontFamily"},
-  {"query": "how does esbuild handle source map generation", "category": "behavioral", "expected_symbol": "AppendSourceMapChunk"},
-  {"query": "analyze metafile and generate bundle statistics", "category": "behavioral", "expected_symbol": "analyzeMetafileImpl"},
-  {"query": "validate that an escape sequence is syntactically valid", "category": "behavioral", "expected_symbol": "isValidEscape"},
-  {"query": "check if a file is an entry point for the bundle", "category": "behavioral", "expected_symbol": "IsEntryPoint"},
-  {"query": "sanitize and format error messages for the user", "category": "behavioral", "expected_symbol": "sanitizeMessages"},
-  {"query": "flush debug logs during build", "category": "behavioral", "expected_symbol": "flushDebugLogs"}
+  {"query": "encode a value in variable-length quantity for source maps", "category": "behavioral", "expected_symbol": "encodeVLQ"},
+  {"query": "check if a string is a valid JS identifier", "category": "behavioral", "expected_symbol": "IsIdentifier"},
+  {"query": "rename a symbol to a generated number", "category": "behavioral", "expected_symbol": "NumberRenamer"},
+  {"query": "validate that a log level string is acceptable", "category": "behavioral", "expected_symbol": "validateLogLevel"},
+  {"query": "compute the longest common substring between two strings", "category": "behavioral", "expected_symbol": "lcSubstr"},
+  {"query": "convert colors between XYZ and standard RGB color spaces", "category": "behavioral", "expected_symbol": "gamut_mapping_xyz_to_srgb"},
+  {"query": "hash a value with length-prefixed encoding", "category": "behavioral", "expected_symbol": "hashWriteLengthPrefixed"},
+  {"query": "download a binary asset to a local cache path", "category": "behavioral", "expected_symbol": "downloadedBinPath"},
+  {"query": "clone tokens while stripping import record metadata", "category": "behavioral", "expected_symbol": "CloneTokensWithoutImportRecords"},
+  {"query": "create a trace file for esbuild profiling", "category": "behavioral", "expected_symbol": "createTraceFile"}
 ]

@@ -1,12 +1,12 @@
 [
-  {"query": "ParseBuildOptions", "category": "symbol-exact", "relevance": {"ParseBuildOptions": 3, "flagsForBuildOptions": 2}},
-  {"query": "Renamer", "category": "symbol-exact", "relevance": {"Renamer": 3}},
-  {"query": "validate build options", "category": "symbol-partial", "relevance": {"ParseBuildOptions": 3, "flagsForBuildOptions": 2}},
-  {"query": "remove dead CSS rules", "category": "symbol-partial", "relevance": {"RemoveDeadRulesInPlace": 3}},
-  {"query": "how does esbuild parse and validate build configuration options", "category": "nl-descriptive", "relevance": {"ParseBuildOptions": 3, "flagsForBuildOptions": 2}},
-  {"query": "how does the resolver determine if a path is an npm package", "category": "nl-abstract", "relevance": {"ParseYarnPnPVirtualPath": 3, "maybeOptimizePackage": 2}},
-  {"query": "invalid escape sequence in template literal parsing", "category": "error-debug", "relevance": {"isValidEscape": 3, "parseTemplateParts": 2}},
-  {"query": "esbuild parser lexer", "category": "file-path", "relevance": {"NewLexerJSON": 3, "parseFnExpr": 2}},
-  {"query": "all AST lowering transformations in esbuild", "category": "cross-cutting", "relevance": {"lowerLogicalAssignmentOperator": 3, "lowerNullishCoalescingAssignmentOperator": 3, "cloneKeyForLowerClass": 2}},
-  {"query": "all source map handling functions", "category": "cross-cutting", "relevance": {"AppendSourceMapChunk": 3, "CanHaveSourceMap": 3, "parseStackLinesV8": 2}}
+  {"query": "encodeVLQ", "category": "symbol-exact", "relevance": {"encodeVLQ": 3, "AppendSourceMapChunk": 2}},
+  {"query": "renamer number rename", "category": "symbol-partial", "relevance": {"Renamer": 3, "NumberRenamer": 3}},
+  {"query": "esbuild metafile analysis and bundle statistics", "category": "nl-descriptive", "relevance": {"analyzeMetafileImpl": 3, "Metafile": 3, "BuildResult": 2}},
+  {"query": "CSS color space conversion and gamut mapping", "category": "nl-descriptive", "relevance": {"gamut_mapping_xyz_to_srgb": 3, "F64": 2, "Range": 1}},
+  {"query": "how does esbuild detect identifiers in ES5 and ESNext", "category": "nl-abstract", "relevance": {"IsIdentifier": 3, "expectParseErrorTSNoAmbiguousLessThan": 2, "expectParseErrorJSXAutomatic": 2}},
+  {"query": "JSX automatic runtime parse error detection", "category": "error-debug", "relevance": {"expectParseErrorJSXAutomatic": 3, "EFunction": 2, "SFunction": 1}},
+  {"query": "log level validation and configuration", "category": "nl-descriptive", "relevance": {"validateLogLevel": 3, "parseBoolFlag": 2, "parseRangeInt": 1}},
+  {"query": "package resolution and path preparation", "category": "nl-abstract", "relevance": {"checkAndPreparePackage": 3, "downloadedBinPath": 2, "partialFetch": 2}},
+  {"query": "esbuild source map VLQ encoding", "category": "file-path", "relevance": {"encodeVLQ": 3, "AppendSourceMapChunk": 3, "createTraceFile": 2}},
+  {"query": "AST lowering and import record cloning", "category": "cross-cutting", "relevance": {"CloneTokensWithoutImportRecords": 3, "EFunction": 2, "SFunction": 2, "JoinAllWithComma": 1}}
 ]

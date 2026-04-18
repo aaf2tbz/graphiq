@@ -1,12 +1,12 @@
 [
-  {"query": "how does the extraction pipeline process conversations into memories", "category": "behavioral", "expected_symbol": "extractFromConversation"},
-  {"query": "what determines if a connector is healthy", "category": "behavioral", "expected_symbol": "getEntityHealth"},
-  {"query": "how are entity dependencies tracked across memories", "category": "behavioral", "expected_symbol": "ConstellationDependency"},
-  {"query": "how does the hybrid search combine vector and text results", "category": "behavioral", "expected_symbol": "hybrid_search"},
-  {"query": "compact and condense old memories into epochs", "category": "behavioral", "expected_symbol": "condenseToEpoch"},
-  {"query": "fetch marketplace MCP server catalog entries", "category": "behavioral", "expected_symbol": "fetchMarketplaceMcpCatalog"},
-  {"query": "create a rate limiter for API endpoints", "category": "behavioral", "expected_symbol": "createRateLimiter"},
-  {"query": "failed to start daemon", "category": "debugging", "expected_symbol": "doStart"},
-  {"query": "resolve agent skills from plugin registry", "category": "behavioral", "expected_symbol": "resolveAgentSkills"},
-  {"query": "get active session keys for cleanup", "category": "behavioral", "expected_symbol": "getActiveSessionKeys"}
+  {"query": "how does periodic memory compaction decide what to forget", "category": "behavioral", "expected_symbol": "ForgetMemoryTxInput"},
+  {"query": "resolve the current extraction progress for a session", "category": "behavioral", "expected_symbol": "resolveExtractionProgressAt"},
+  {"query": "write synthesized memories to the MEMORY.md file", "category": "behavioral", "expected_symbol": "writeMemoryMd"},
+  {"query": "incremental skill discovery and file processing", "category": "behavioral", "expected_symbol": "syncIncremental"},
+  {"query": "check if the embedding model has drifted from expected behavior", "category": "behavioral", "expected_symbol": "checkModelDrift"},
+  {"query": "apply a learning boost based on rehearsal feedback signals", "category": "behavioral", "expected_symbol": "applyRehearsalBoost"},
+  {"query": "create an exportable zip archive of agent configuration", "category": "behavioral", "expected_symbol": "export_agent_zip"},
+  {"query": "unify installed skills across multiple harness directories", "category": "behavioral", "expected_symbol": "unifySkills"},
+  {"query": "record agent feedback from a user prompt submission", "category": "behavioral", "expected_symbol": "recordAgentFeedback"},
+  {"query": "count approximate token count for memory content", "category": "behavioral", "expected_symbol": "estimateTokens"}
 ]

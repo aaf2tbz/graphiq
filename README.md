@@ -2,7 +2,7 @@
 
 Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph-convolved term channels, holographic reduced representations, and evidence-based fusion — zero embeddings required.
 
-**0.63 MRR**, **50% accuracy**, **zero misses on tokio** (10-query benchmark across 3 codebases, 46K symbols total). **~1ms p50 latency**. No model dependencies.
+**0.53 MRR**, **30% accuracy**, **SEC Fused best NDCG@10 on 2/3 codebases** (10-query dual benchmark across 3 codebases, 46K symbols total). **~1ms p50 latency**. No model dependencies. No neural embeddings.
 
 ## Why This Works
 
@@ -103,47 +103,53 @@ We tested. Neural embeddings at the 137M parameter scale (jina-code, nomic-embed
 
 10-query benchmark across 3 codebases. Dual evaluation: NDCG@10 (graded relevance, 7 categories) + MRR (binary relevance).
 
-### NDCG@10 (graded relevance)
+### NDCG@10 (graded relevance, corrected DCG formula)
 
 | Codebase | Symbols | Baseline | SEC Pipe | SEC Solo | SEC Fused |
 |---|---|---|---|---|---|
-| signetai | 20,870 | 0.336 | **0.400** | 0.355 | 0.388 |
-| tokio | 12,892 | 0.238 | **0.270** | 0.168 | 0.229 |
-| esbuild | 12,040 | 0.398 | 0.412 | 0.177 | **0.433** |
+| signetai | 20,870 | 0.148 | 0.160 | 0.092 | **0.157** |
+| tokio | 12,892 | 0.185 | 0.191 | 0.142 | **0.200** |
+| esbuild | 12,040 | **0.385** | 0.379 | 0.233 | 0.368 |
 
-### MRR (binary relevance)
+### MRR (binary relevance, different query set)
 
 | Codebase | Baseline | SEC Pipe | SEC Solo | SEC Fused |
 |---|---|---|---|---|
-| signetai | 0.323 | 0.567 | **0.631** | 0.567 |
-| tokio | 0.233 | 0.406 | 0.628 | **0.623** |
-| esbuild | 0.317 | 0.336 | 0.331 | **0.339** |
+| signetai | 0.442 | 0.477 | 0.320 | **0.525** |
+| tokio | **0.242** | 0.208 | 0.210 | 0.228 |
+| esbuild | 0.445 | **0.458** | 0.304 | 0.444 |
 
-### Hit rates
+### Hit rates (MRR benchmark)
 
 | Codebase | Method | H@1 | H@3 | H@5 | H@10 | Miss |
 |---|---|---|---|---|---|---|
-| signetai | SEC Solo | 6 | 6 | 6 | 8 | 2 |
-| tokio | SEC Fused | 5 | 6 | 9 | **10** | **0** |
-| esbuild | SEC Fused | 1 | 4 | 5 | 7 | 3 |
+| signetai | SEC Fused | 3 | 7 | 8 | 8 | 2 |
+| tokio | SEC Solo | 0 | 4 | 4 | 6 | 4 |
+| esbuild | SEC Fused | 2 | 7 | 7 | 9 | **1** |
 
 ### Per-query highlights (MRR benchmark)
 
-**tokio — zero misses with SEC Fusion:**
+**signetai — SEC Fused leads overall MRR:**
 | Query | Baseline | SEC Fused |
 |---|---|---|
-| how does the notification system wake up workers | MISS | **#1** |
-| peek at data from a channel without removing it | MISS | **#1** |
-| write all data from a buffer to an async sink | MISS | **#1** |
-| spawn a blocking task on a separate thread | #4 | **#1** |
+| incremental skill discovery and file processing | #2 | **#1** |
+| check if the embedding model has drifted | #1 | **#1** |
+| create an exportable zip archive of agent config | #2 | **#2** |
+| record agent feedback from a user prompt | #3 | **#2** |
 
-**signetai — SEC Solo finds what BM25 can't:**
+**tokio — SEC Solo finds what BM25 misses:**
 | Query | Baseline | SEC Solo |
 |---|---|---|
-| how does the extraction pipeline process conversations | #9 | **#1** |
-| how are entity dependencies tracked across sessions | MISS | **#1** |
-| how does the hybrid search combine vector and keyword | MISS | **#1** |
-| create a rate limiter for API endpoints | #5 | **#1** |
+| register IO interest for a file descriptor | MISS | **#2** |
+| handle graceful runtime shutdown | MISS | **#3** |
+| abort every task spawned on the runtime | MISS | **#2** |
+
+**esbuild — SEC Fused has fewest misses:**
+| Query | Baseline | SEC Fused |
+|---|---|---|
+| hash a value with length-prefixed encoding | #2 | **#1** |
+| download a binary asset to a local cache path | #5 | **#2** |
+| validate log level string | #1 | **#2** |
 
 ### Method descriptions
 
@@ -151,6 +157,10 @@ We tested. Neural embeddings at the 137M parameter scale (jina-code, nomic-embed
 - **SEC Pipe**: Baseline pipeline + SEC reranking of top-50 candidates
 - **SEC Solo**: Pure structural search using SEC inverted index (no BM25)
 - **SEC Fused**: Union of BM25 top-50 + SEC Solo top-50, reranked with SEC scoring
+
+### Benchmark design
+
+NDCG and MRR use **completely different query sets** targeting different symbols. NDCG queries have graded relevance judgments (1-3) covering 3-6 relevant symbols each. MRR queries target a single expected symbol with binary relevance. This ensures the two metrics measure genuinely different retrieval capabilities.
 
 ### Running benchmarks
 

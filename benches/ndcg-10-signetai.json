@@ -1,12 +1,12 @@
 [
-  {"query": "extractFromConversation", "category": "symbol-exact", "relevance": {"extractFromConversation": 3, "extractFromConversations": 2}},
-  {"query": "compute permission footprint", "category": "symbol-partial", "relevance": {"computePermissionFootprint": 3}},
-  {"query": "how does memory extraction process conversation transcripts", "category": "nl-descriptive", "relevance": {"extractFromConversation": 3, "process_extract": 3, "extractFromConversations": 2}},
-  {"query": "what checks if a connector is healthy", "category": "nl-descriptive", "relevance": {"getEntityHealth": 3, "scoreStatus": 3, "HealthState": 2}},
-  {"query": "what determines the retention and compaction of memories", "category": "nl-abstract", "relevance": {"condenseToEpoch": 3, "preCompaction": 2, "forgetMemory": 2}},
-  {"query": "daemon failed to start port already in use", "category": "error-debug", "relevance": {"doStart": 3, "doRestart": 2, "sessionStartTimeout": 2}},
-  {"query": "embedding provider returned invalid dimensions", "category": "error-debug", "relevance": {"checkProviderAvailable": 3, "EmbeddingProvider": 2}},
-  {"query": "mcp marketplace catalog", "category": "file-path", "relevance": {"fetchMarketplaceMcpCatalog": 3, "filterCatalog": 2}},
-  {"query": "all embedding provider status values", "category": "cross-cutting", "relevance": {"NativeProviderStatus": 3, "EmbeddingProvider": 2, "UpdateHealth": 1}},
-  {"query": "all plugin lifecycle hooks", "category": "cross-cutting", "relevance": {"HookDeps": 3, "replaceTriggers": 2}}
+  {"query": "hybridRecall", "category": "symbol-exact", "relevance": {"hybridRecall": 3, "searchTemporalFallback": 2, "searchTranscriptFallback": 2}},
+  {"query": "estimateTokens pollEmbeddings", "category": "symbol-partial", "relevance": {"estimateTokens": 3, "pollEmbeddings": 3, "checkModelDrift": 2}},
+  {"query": "memory synthesis and condensation pipeline", "category": "nl-descriptive", "relevance": {"handleSynthesisRequest": 3, "condenseToEpoch": 3, "writeMemoryMd": 2, "resolveExtractionProgressAt": 2}},
+  {"query": "incremental sync and reconciliation of skills", "category": "nl-descriptive", "relevance": {"syncIncremental": 3, "reconcileOnce": 3, "unifySkills": 2, "syncFull": 1}},
+  {"query": "session lifecycle state management", "category": "nl-abstract", "relevance": {"endCurrentSession": 3, "AgentSessionState": 3, "upsertSessionTranscript": 2, "queueCheckpointWrite": 2}},
+  {"query": "embedding health check and provider validation", "category": "error-debug", "relevance": {"checkModelDrift": 3, "EmbeddingCheckResult": 3, "fetchEmbedding": 2, "EmbeddingConfig": 2}},
+  {"query": "export agent configuration archive", "category": "nl-descriptive", "relevance": {"export_agent_zip": 3, "ConnectorRecord": 2, "MemoryStats": 1}},
+  {"query": "feedback scoring and predictor boost weights", "category": "nl-abstract", "relevance": {"applyRehearsalBoost": 3, "recordAgentFeedback": 3, "formatPeriodicDigest": 2}},
+  {"query": "dead memory cleanup and forget transaction", "category": "nl-descriptive", "relevance": {"DeadMemory": 3, "ForgetMemoryTxInput": 3, "CandidateMemory": 2}},
+  {"query": "parse config yaml boolean flags", "category": "file-path", "relevance": {"tryParseJson": 3, "loadUpdateConfig": 2, "PipelineV2Config": 1}}
 ]
