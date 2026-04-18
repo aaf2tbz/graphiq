@@ -1,24 +1,26 @@
 # GraphIQ Roadmap
 
-## Current State (Goober v2)
+## Current State (GooberV3 — NG-augmented)
 
-### 10-query benchmark
+### 30-query MRR benchmark
 
-| Codebase | BM25 MRR | Goober MRR | Delta |
+| Codebase | BM25 MRR | Goober v2 MRR | **GooberV3 MRR** | vs v2 | vs BM25 |
+|---|---|---|---|---|---|
+| signetai | 0.556 | 0.626 | **0.676** | **+0.050** | **+0.120** |
+| tokio | 0.583 | 0.513 | **0.512** | ~same | -0.071 |
+| esbuild | 0.675 | 0.777 | **0.806** | **+0.029** | **+0.131** |
+
+GooberV3 adds Non-Gaussianity (NG) scoring on top of Goober v2. NG measures how far a symbol's 7-channel SEC score vector deviates from a uniform/Gaussian distribution. Symbols with spiky channel profiles (a few channels dominate) are more specific matches. Channel coherence (bispectrum analog) measures whether the same query terms hit multiple channels simultaneously.
+
+The NG boost uses negentropy (entropy gap from uniform) + excess kurtosis weighting, with `1.0 + 0.25 * ng_norm + 0.15 * coherence_norm` as the multiplicative factor.
+
+### 10-query benchmark (legacy reference)
+
+| Codebase | BM25 MRR | Goober MRR | GooberV3 MRR |
 |---|---|---|---|
-| signetai | 0.720 | 0.764 | **+0.044** |
-| tokio | 0.508 | 0.393 | -0.115 |
-| esbuild | 0.562 | 0.681 | **+0.119** |
-
-### 30-query benchmark (more stable)
-
-| Codebase | BM25 MRR | Goober MRR | Delta |
-|---|---|---|---|
-| signetai | 0.556 | 0.625 | **+0.069** |
-| tokio | 0.583 | 0.513 | -0.070 |
-| esbuild | 0.675 | 0.777 | **+0.102** |
-
-Goober beats BM25 on 2/3 codebases and beats CruncherV2 on all 3. The tokio regression is -0.070 on the 30-query benchmark (smaller than the 10-query -0.115 suggested).
+| signetai | 0.720 | 0.764 | 0.659 |
+| tokio | 0.508 | 0.393 | 0.483 |
+| esbuild | 0.562 | 0.681 | 0.798 |
 
 ---
 
@@ -63,11 +65,15 @@ Added 30-query MRR benchmark sets for all 3 codebases. The 30-query results conf
 
 ---
 
-## Priority 3: Query Understanding
+## Priority 3: Query Understanding — IN PROGRESS (NG scoring done)
 
-Goober currently treats all query terms equally. But "how does periodic memory compaction work" and "set TCP linger" have very different intent.
+GooberV3 added Non-Gaussianity scoring derived from SEC channel analysis. The remaining query understanding work:
 
-### Actions:
+### Completed:
+- **Non-Gaussianity (NG) scoring** — Negentropy + excess kurtosis of 7-channel SEC score vectors. Symbols with non-Gaussian channel profiles (spiky, specific) get boosted over symbols with flat/uniform profiles. Implemented as multiplicative `ng_boost` in `goober_v3_search`.
+- **Channel coherence (bispectrum analog)** — Measures whether the same query terms hit multiple SEC channels simultaneously. Second-order correlation that linear scoring can't capture.
+
+### Remaining actions:
 
 1. **Query type detection** — Classify queries as navigational (symbol name lookup), informational ("how does X work"), or structural ("callers of X"). Each type may benefit from different scoring weights.
 

@@ -1396,3 +1396,442 @@ pub fn goober_search(
 
     results
 }
+
+#[derive(Clone)]
+struct SecChannelVec {
+    ch_self: f64,
+    ch_name: f64,
+    ch_sig: f64,
+    ch_out_1hop: f64,
+    ch_in_1hop: f64,
+    ch_out_2hop: f64,
+    ch_in_2hop: f64,
+}
+
+fn compute_sec_channels(
+    query_terms: &[QueryTerm],
+    idx: &CruncherIndex,
+    sym_i: usize,
+) -> SecChannelVec {
+    let ts = &idx.term_sets[sym_i];
+
+    let (ch_self, _) = term_match_score(query_terms, ts);
+    let (ch_name, _) = name_coverage(query_terms, &ts.name_terms);
+
+    let sig_terms_ref: HashSet<String> = ts.sig_terms.iter().cloned().collect();
+    let (ch_sig, _) = name_coverage(query_terms, &sig_terms_ref);
+
+    let mut ch_out_1hop = 0.0f64;
+    let mut ch_in_1hop = 0.0f64;
+    let mut out_2hop_set: HashSet<usize> = HashSet::new();
+    let mut in_2hop_set: HashSet<usize> = HashSet::new();
+
+    for edge in idx.outgoing[sym_i].iter().take(30) {
+        let (s, _) = term_match_score(query_terms, &idx.term_sets[edge.target]);
+        ch_out_1hop = ch_out_1hop.max(s);
+        for e2 in idx.outgoing[edge.target].iter().take(15) {
+            if e2.target != sym_i {
+                out_2hop_set.insert(e2.target);
+            }
+        }
+    }
+
+    for edge in idx.incoming[sym_i].iter().take(30) {
+        let (s, _) = term_match_score(query_terms, &idx.term_sets[edge.target]);
+        ch_in_1hop = ch_in_1hop.max(s);
+        for e2 in idx.incoming[edge.target].iter().take(15) {
+            if e2.target != sym_i {
+                in_2hop_set.insert(e2.target);
+            }
+        }
+    }
+
+    let mut ch_out_2hop = 0.0f64;
+    for &ni in out_2hop_set.iter().take(50) {
+        let (s, _) = term_match_score(query_terms, &idx.term_sets[ni]);
+        ch_out_2hop = ch_out_2hop.max(s);
+    }
+
+    let mut ch_in_2hop = 0.0f64;
+    for &ni in in_2hop_set.iter().take(50) {
+        let (s, _) = term_match_score(query_terms, &idx.term_sets[ni]);
+        ch_in_2hop = ch_in_2hop.max(s);
+    }
+
+    SecChannelVec {
+        ch_self,
+        ch_name,
+        ch_sig,
+        ch_out_1hop: ch_out_1hop * 0.6,
+        ch_in_1hop: ch_in_1hop * 0.6,
+        ch_out_2hop: ch_out_2hop * 0.3,
+        ch_in_2hop: ch_in_2hop * 0.3,
+    }
+}
+
+fn negentropy(channels: &SecChannelVec) -> f64 {
+    let scores = [
+        channels.ch_self,
+        channels.ch_name,
+        channels.ch_sig,
+        channels.ch_out_1hop,
+        channels.ch_in_1hop,
+        channels.ch_out_2hop,
+        channels.ch_in_2hop,
+    ];
+
+    let sum: f64 = scores.iter().sum::<f64>().max(1e-15);
+    let n = scores.len() as f64;
+    let uniform_entropy = n.ln();
+
+    let mut entropy = 0.0f64;
+    for &s in &scores {
+        let p = s / sum;
+        if p > 1e-15 {
+            entropy -= p * p.ln();
+        }
+    }
+
+    let ng = uniform_entropy - entropy;
+
+    let mean = sum / n;
+    let variance = scores.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n;
+    let kurtosis = if variance > 1e-15 {
+        scores.iter().map(|s| ((s - mean) / variance.sqrt()).powi(4)).sum::<f64>() / n - 3.0
+    } else {
+        0.0
+    };
+
+    ng + kurtosis.max(0.0) * 0.3
+}
+
+fn channel_coherence(
+    query_terms: &[QueryTerm],
+    idx: &CruncherIndex,
+    sym_i: usize,
+) -> f64 {
+    if query_terms.len() < 2 {
+        return 0.0;
+    }
+
+    let ts = &idx.term_sets[sym_i];
+    let mut term_self_match: Vec<bool> = Vec::with_capacity(query_terms.len());
+    let mut term_name_match: Vec<bool> = Vec::with_capacity(query_terms.len());
+    let mut term_sig_match: Vec<bool> = Vec::with_capacity(query_terms.len());
+    let mut term_out_match: Vec<bool> = Vec::with_capacity(query_terms.len());
+    let mut term_in_match: Vec<bool> = Vec::with_capacity(query_terms.len());
+
+    for qt in query_terms {
+        term_self_match.push(per_term_match(ts, qt) > 0.0);
+        term_name_match.push(qt.variants.iter().any(|v| ts.name_terms.contains(v)));
+        term_sig_match.push(qt.variants.iter().any(|v| ts.sig_terms.contains(v)));
+
+        let mut out_hit = false;
+        for edge in idx.outgoing[sym_i].iter().take(20) {
+            if per_term_match(&idx.term_sets[edge.target], qt) > 0.0 {
+                out_hit = true;
+                break;
+            }
+        }
+        term_out_match.push(out_hit);
+
+        let mut in_hit = false;
+        for edge in idx.incoming[sym_i].iter().take(20) {
+            if per_term_match(&idx.term_sets[edge.target], qt) > 0.0 {
+                in_hit = true;
+                break;
+            }
+        }
+        term_in_match.push(in_hit);
+    }
+
+    let channels: [&[bool]; 5] = [
+        &term_self_match,
+        &term_name_match,
+        &term_sig_match,
+        &term_out_match,
+        &term_in_match,
+    ];
+
+    let mut coherent_pairs = 0usize;
+    let mut total_pairs = 0usize;
+
+    for ci in 0..channels.len() {
+        for cj in (ci + 1)..channels.len() {
+            for k in 0..query_terms.len() {
+                total_pairs += 1;
+                if channels[ci][k] && channels[cj][k] {
+                    coherent_pairs += 1;
+                }
+            }
+        }
+    }
+
+    if total_pairs == 0 {
+        return 0.0;
+    }
+
+    let ratio = coherent_pairs as f64 / total_pairs as f64;
+    ratio * ratio.ln_1p()
+}
+
+struct GooberV3Candidate {
+    idx: usize,
+    bm25_score: f64,
+    coverage_score: f64,
+    coverage_count: usize,
+    name_score: f64,
+    is_seed: bool,
+    walk_evidence: f64,
+    seed_paths: HashSet<usize>,
+    ng_score: f64,
+    coherence_score: f64,
+}
+
+pub fn goober_v3_search(
+    query: &str,
+    idx: &CruncherIndex,
+    bm25_seeds: &[(i64, f64)],
+    top_k: usize,
+) -> Vec<(i64, f64)> {
+    let query_terms = build_query_terms(query, &idx.global_idf);
+    if query_terms.is_empty() {
+        return bm25_seeds.to_vec();
+    }
+
+    let n_qt = query_terms.len();
+    let idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
+
+    let bm25_max = bm25_seeds
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let mut candidates: HashMap<usize, GooberV3Candidate> = HashMap::new();
+
+    for &(id, score) in bm25_seeds.iter().take(30) {
+        if let Some(&i) = idx.id_to_idx.get(&id) {
+            let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
+            let (name_s, _) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+
+            let channels = compute_sec_channels(&query_terms, idx, i);
+            let ng = negentropy(&channels);
+            let coherence = channel_coherence(&query_terms, idx, i);
+
+            let mut sp = HashSet::new();
+            sp.insert(i);
+
+            candidates.insert(
+                i,
+                GooberV3Candidate {
+                    idx: i,
+                    bm25_score: score / bm25_max,
+                    coverage_score: cov_score,
+                    coverage_count: cov_count,
+                    name_score: name_s,
+                    is_seed: true,
+                    walk_evidence: 0.0,
+                    seed_paths: sp,
+                    ng_score: ng,
+                    coherence_score: coherence,
+                },
+            );
+        }
+    }
+
+    let mut idf_sorted: Vec<f64> = query_terms.iter().map(|qt| qt.idf).collect();
+    idf_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let idf_threshold = idf_sorted[idf_sorted.len() / 2];
+
+    let seed_indices: Vec<usize> = candidates.keys().cloned().collect();
+
+    for &seed_i in seed_indices.iter().take(8) {
+        let mut queue: VecDeque<(usize, f64, usize)> = VecDeque::new();
+        let mut visited: HashSet<usize> = HashSet::new();
+        visited.insert(seed_i);
+
+        for edge in idx.outgoing[seed_i].iter().take(10) {
+            if !visited.contains(&edge.target) {
+                queue.push_back((edge.target, edge.weight, 1));
+                visited.insert(edge.target);
+            }
+        }
+        for edge in idx.incoming[seed_i].iter().take(10) {
+            if !visited.contains(&edge.target) {
+                queue.push_back((edge.target, edge.weight, 1));
+                visited.insert(edge.target);
+            }
+        }
+
+        let mut expanded = 0usize;
+        while let Some((neighbor_i, edge_w, depth)) = queue.pop_front() {
+            if depth > 2 || expanded >= 25 {
+                break;
+            }
+
+            let has_specific = query_terms
+                .iter()
+                .filter(|qt| qt.idf >= idf_threshold)
+                .any(|qt| per_term_match(&idx.term_sets[neighbor_i], qt) > 0.0);
+
+            if !has_specific {
+                continue;
+            }
+
+            let (cov_score, cov_count) =
+                term_match_score(&query_terms, &idx.term_sets[neighbor_i]);
+            if cov_count == 0 {
+                continue;
+            }
+
+            let proximity = 0.5_f64.powi(depth as i32);
+            let evidence = cov_score * proximity * edge_w;
+
+            let channels = compute_sec_channels(&query_terms, idx, neighbor_i);
+            let ng = negentropy(&channels);
+            let coherence = channel_coherence(&query_terms, idx, neighbor_i);
+
+            let entry = candidates.entry(neighbor_i).or_insert_with(|| {
+                let (ns, _) = name_coverage(&query_terms, &idx.term_sets[neighbor_i].name_terms);
+                GooberV3Candidate {
+                    idx: neighbor_i,
+                    bm25_score: 0.0,
+                    coverage_score: cov_score,
+                    coverage_count: cov_count,
+                    name_score: ns,
+                    is_seed: false,
+                    walk_evidence: 0.0,
+                    seed_paths: HashSet::new(),
+                    ng_score: ng,
+                    coherence_score: coherence,
+                }
+            });
+
+            if !entry.is_seed {
+                entry.coverage_score = entry.coverage_score.max(cov_score);
+                entry.coverage_count = entry.coverage_count.max(cov_count);
+                entry.ng_score = entry.ng_score.max(ng);
+                entry.coherence_score = entry.coherence_score.max(coherence);
+            }
+            entry.walk_evidence += evidence;
+            entry.seed_paths.insert(seed_i);
+            expanded += 1;
+
+            if depth < 2 {
+                let next: Vec<(usize, f64)> = idx.outgoing[neighbor_i]
+                    .iter()
+                    .chain(idx.incoming[neighbor_i].iter())
+                    .take(6)
+                    .filter(|e| !visited.contains(&e.target))
+                    .map(|e| (e.target, e.weight.min(edge_w)))
+                    .collect();
+                for (next_i, next_w) in next {
+                    visited.insert(next_i);
+                    queue.push_back((next_i, next_w, depth + 1));
+                }
+            }
+        }
+    }
+
+    let max_ng = candidates
+        .values()
+        .map(|c| c.ng_score)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let max_coherence = candidates
+        .values()
+        .map(|c| c.coherence_score)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let mut scored: Vec<(usize, f64)> = candidates
+        .values()
+        .filter_map(|c| {
+            if !c.is_seed && c.seed_paths.len() < 2 {
+                return None;
+            }
+
+            let cov_norm = if idf_sum > 0.0 {
+                c.coverage_score / idf_sum
+            } else {
+                0.0
+            };
+            let name_norm = if idf_sum > 0.0 {
+                c.name_score / idf_sum
+            } else {
+                0.0
+            };
+            let walk_norm = if idf_sum > 0.0 {
+                c.walk_evidence / idf_sum
+            } else {
+                0.0
+            };
+
+            let base = if c.is_seed {
+                3.0 * c.bm25_score + 1.5 * cov_norm.min(0.5) + 2.0 * name_norm.min(0.5)
+            } else {
+                1.5 * cov_norm + 2.0 * name_norm + walk_norm
+            };
+
+            let coverage_frac = if n_qt > 0 {
+                c.coverage_count as f64 / n_qt as f64
+            } else {
+                0.0
+            };
+
+            let ng_norm = c.ng_score / max_ng;
+            let coh_norm = c.coherence_score / max_coherence;
+            let ng_boost = 1.0 + 0.25 * ng_norm + 0.15 * coh_norm;
+
+            let seed_bonus = if c.is_seed { 1.15 } else { 1.0 };
+            let kb = kind_boost(&idx.symbol_kinds[c.idx]);
+            let tp = test_penalty(&idx.file_paths, idx.symbol_file_ids[c.idx]);
+
+            let raw = base * coverage_frac.powf(0.3) * ng_boost * seed_bonus * kb * tp;
+
+            if raw > 0.0 {
+                Some((c.idx, raw))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let bm25_confident = bm25_seeds.len() >= 2
+        && bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10) > 1.2;
+    if bm25_confident {
+        if let Some(&lock_i) = bm25_seeds
+            .first()
+            .and_then(|(id, _)| idx.id_to_idx.get(id))
+        {
+            if let Some(pos) = scored.iter().position(|(i, _)| *i == lock_i) {
+                if pos > 0 {
+                    let (li, ls) = scored.remove(pos);
+                    scored.insert(0, (li, ls + 1e6));
+                }
+            }
+        }
+    }
+
+    let mut results: Vec<(i64, f64)> = Vec::with_capacity(top_k);
+    let mut file_counts: HashMap<i64, usize> = HashMap::new();
+
+    for (i, score) in scored {
+        let fid = idx.symbol_file_ids[i];
+        let fc = file_counts.entry(fid).or_insert(0);
+        if *fc >= 3 {
+            continue;
+        }
+        *fc += 1;
+        results.push((idx.symbol_ids[i], score));
+        if results.len() >= top_k {
+            break;
+        }
+    }
+
+    results
+}
