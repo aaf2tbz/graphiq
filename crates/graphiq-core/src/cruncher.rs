@@ -342,7 +342,7 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
             scored.truncate(TOP_K_TERMS);
             let mut filtered = HashMap::new();
-            for (t, score) in scored {
+            for (t, _score) in scored {
                 let tf = ts.terms.get(&t).copied().unwrap_or(0.0);
                 filtered.insert(t, tf);
             }

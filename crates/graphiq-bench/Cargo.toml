@@ -11,6 +11,10 @@ path = "src/main.rs"
 name = "graphiq-locomo"
 path = "src/locomo.rs"
 
+[[bin]]
+name = "graphiq-diag"
+path = "src/diagnostic.rs"
+
 [features]
 default = []
 embed = ["graphiq-core/embed"]

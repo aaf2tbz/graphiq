@@ -1,0 +1,12 @@
+[
+  {"query": "DecodeVLQ", "category": "symbol-exact", "expected_symbol": "DecodeVLQ"},
+  {"query": "hash combine two values", "category": "nl-descriptive", "expected_symbol": "HashCombine"},
+  {"query": "link together all the chunks into a final bundle", "category": "nl-abstract", "expected_symbol": "Link"},
+  {"query": "resolve npm package paths and node_modules", "category": "nl-descriptive", "expected_symbol": "NewResolver"},
+  {"query": "parse command line build options flags", "category": "nl-descriptive", "expected_symbol": "ParseBuildOptions"},
+  {"query": "check if a class declaration can be safely tree shaken", "category": "nl-abstract", "expected_symbol": "ClassCanBeRemovedIfUnused"},
+  {"query": "generate a source map chunk for output", "category": "nl-descriptive", "expected_symbol": "GenerateChunk"},
+  {"query": "convert a binding pattern to an expression AST node", "category": "nl-abstract", "expected_symbol": "ConvertBindingToExpr"},
+  {"query": "analyze bundle metafile statistics", "category": "nl-descriptive", "expected_symbol": "AnalyzeMetafile"},
+  {"query": "create a new minified renamer for symbol renaming", "category": "nl-descriptive", "expected_symbol": "NewMinifyRenamer"}
+]
