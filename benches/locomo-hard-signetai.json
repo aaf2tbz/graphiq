@@ -1,0 +1,12 @@
+[
+  {"query": "what controls which permissions a token has", "category": "nl-abstract", "relevance": {"TokenScope": 3, "buildAgentScopeClause": 2, "permission": 1}},
+  {"query": "how does the extraction pipeline process conversations into memories", "category": "nl-abstract", "relevance": {"parseExtractionResponse": 3, "extractFromConversation": 2, "extractFromConversations": 2, "extractFromEntireSession": 2}},
+  {"query": "what determines if a connector is healthy", "category": "nl-abstract", "relevance": {"getConnectorHealth": 3, "mapHealthStatus": 2, "getHealth": 1}},
+  {"query": "what manages the lifecycle of daemon processes", "category": "nl-abstract", "relevance": {"DaemonManager": 3, "startDaemon": 2, "stopDaemon": 2, "restartDaemon": 2}},
+  {"query": "how are entity dependencies tracked across memories", "category": "nl-abstract", "relevance": {"EntityDependency": 3, "postApiRepairPruneSingletonEntities": 1}},
+  {"query": "failed to start daemon", "category": "error-debug", "relevance": {"startDaemon": 3, "DaemonManager": 2, "isDaemonRunning": 1}},
+  {"query": "list installed MCP servers from marketplace", "category": "nl-descriptive", "relevance": {"fetchMarketplaceMcpInstalled": 3, "installMcp": 1}},
+  {"query": "run full text search query against memory index", "category": "nl-descriptive", "relevance": {"fts_query": 3}},
+  {"query": "how does the hybrid search combine vector and text results", "category": "nl-abstract", "relevance": {"hybrid_search": 3, "vector_search": 2, "keyword_search": 2}},
+  {"query": "what happens when embedding provider returns an error", "category": "nl-abstract", "relevance": {"embeddingProvider": 3, "fetchOllamaEmbedding": 2, "shutdownNativeProvider": 1}}
+]

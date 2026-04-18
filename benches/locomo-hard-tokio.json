@@ -1,0 +1,12 @@
+[
+  {"query": "how does the runtime scheduler decide which task to run next", "category": "nl-abstract", "relevance": {"block_on": 3, "spawn": 2}},
+  {"query": "read bytes from a TCP stream", "category": "nl-descriptive", "relevance": {"poll_read": 3, "AsyncRead": 2, "tcp_into_std": 1}},
+  {"query": "spawn a blocking task on a separate thread pool", "category": "nl-descriptive", "relevance": {"spawn_blocking": 3, "block_on": 2}},
+  {"query": "create a periodic interval timer", "category": "nl-descriptive", "relevance": {"interval": 3}},
+  {"query": "send a message through a bounded channel", "category": "nl-descriptive", "relevance": {"blocking_send": 3, "send": 2}},
+  {"query": "wait for multiple concurrent tasks to complete", "category": "nl-abstract", "relevance": {"join_all": 3, "spawn": 2, "JoinHandle": 2}},
+  {"query": "acquire a semaphore permit with a timeout", "category": "nl-descriptive", "relevance": {"try_acquire_owned": 3, "Semaphore": 2, "acquire_owned": 1}},
+  {"query": "what happens when a channel receiver is dropped while sender is still active", "category": "nl-abstract", "relevance": {"SendError": 3, "channel": 2}},
+  {"query": "how does the notification system wake up waiting tasks", "category": "nl-abstract", "relevance": {"Notify": 3, "notify_one": 2, "notify_waiters": 2}},
+  {"query": "what tracks spawned task backtraces for panic reporting", "category": "nl-abstract", "relevance": {"spawn": 3, "JoinHandle": 2}}
+]

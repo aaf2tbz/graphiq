@@ -1,0 +1,12 @@
+[
+  {"query": "how does esbuild tree-shake unused code from bundles", "category": "nl-abstract", "relevance": {"validateTreeShaking": 3, "UnusedImportFlags": 2, "Bundle": 2}},
+  {"query": "what determines if a statement is side-effect free", "category": "nl-abstract", "relevance": {"Bundle": 2, "ScanBundle": 2}},
+  {"query": "how are plugin build callbacks registered and invoked", "category": "nl-abstract", "relevance": {"RunOnResolvePlugins": 3, "runOnLoadPlugins": 2, "Plugin": 2, "OnResolve": 2}},
+  {"query": "how does the resolver map npm packages to file paths", "category": "nl-abstract", "relevance": {"resolveJsonModule": 3, "OnResolveArgs": 2}},
+  {"query": "what tracks symbol use counts across modules", "category": "nl-abstract", "relevance": {"UnusedImportFlags": 3, "TSUnusedImportFlags": 2}},
+  {"query": "how are range errors annotated with source positions", "category": "nl-abstract", "relevance": {"SourceMap": 3, "AddSourceMapping": 2, "SourceMapShift": 2}},
+  {"query": "check if a path is an npm package", "category": "nl-descriptive", "relevance": {"OnResolveArgs": 3, "resolveJsonModule": 2}},
+  {"query": "generate closure wrapper for TypeScript enum", "category": "nl-descriptive", "relevance": {"generateClosureForTypeScriptEnum": 3, "generateMetadataJSON": 1}},
+  {"query": "validate esbuild build options", "category": "nl-descriptive", "relevance": {"validateBuildOptions": 3}},
+  {"query": "convert CSS prefix data for output", "category": "nl-descriptive", "relevance": {"CSSPrefixData": 3, "lowerAndMinifyColor": 1}}
+]

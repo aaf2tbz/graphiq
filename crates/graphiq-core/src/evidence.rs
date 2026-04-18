@@ -12,7 +12,9 @@ pub struct EvidenceIndex {
     pub symbol_hints: Vec<String>,
     pub file_paths: HashMap<i64, String>,
     pub outgoing: Vec<Vec<usize>>,
+    pub outgoing_refs: Vec<Vec<usize>>,
     pub incoming: Vec<Vec<usize>>,
+    pub incoming_refs: Vec<Vec<usize>>,
     pub id_to_idx: HashMap<i64, usize>,
 }
 
@@ -68,7 +70,9 @@ pub fn build_evidence_index(db: &GraphDb) -> Result<EvidenceIndex, String> {
         .collect();
 
     let mut outgoing: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut outgoing_refs: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut incoming_refs: Vec<Vec<usize>> = vec![Vec::new(); n];
 
     let mut edge_stmt = conn
         .prepare("SELECT source_id, target_id, kind FROM edges")
@@ -81,10 +85,14 @@ pub fn build_evidence_index(db: &GraphDb) -> Result<EvidenceIndex, String> {
         .flatten()
         .collect();
 
-    for (src, tgt, _kind) in &edges {
+    for (src, tgt, kind) in &edges {
         if let (Some(&si), Some(&ti)) = (id_to_idx.get(src), id_to_idx.get(tgt)) {
             outgoing[si].push(ti);
             incoming[ti].push(si);
+            if kind == "references" {
+                outgoing_refs[si].push(ti);
+                incoming_refs[ti].push(si);
+            }
         }
     }
 
@@ -98,7 +106,9 @@ pub fn build_evidence_index(db: &GraphDb) -> Result<EvidenceIndex, String> {
         symbol_hints,
         file_paths,
         outgoing,
+        outgoing_refs,
         incoming,
+        incoming_refs,
         id_to_idx,
     })
 }
@@ -118,7 +128,7 @@ fn extract_query_terms(query: &str) -> Vec<String> {
         "should", "may", "might", "can", "shall", "the", "a", "an", "of", "in", "to", "for", "on",
         "at", "by", "with", "from", "as", "into", "through", "and", "or", "but", "not", "that",
         "this", "these", "those", "it", "its", "if", "then", "than", "so", "up", "out", "two",
-        "new", "run", "all", "every", "check", "list",
+        "new", "all", "every",
     ]
     .iter()
     .cloned()
@@ -132,6 +142,42 @@ fn extract_query_terms(query: &str) -> Vec<String> {
         .collect()
 }
 
+fn normalize_plurals(word: &str) -> Vec<String> {
+    let mut variants = vec![word.to_string()];
+    let w = word.to_lowercase();
+    if w.ends_with("ies") && w.len() > 4 {
+        variants.push(format!("{}y", &w[..w.len() - 3]));
+    } else if w.ends_with("ves") && w.len() > 4 {
+        variants.push(format!("{}f", &w[..w.len() - 3]));
+    } else if w.ends_with("ses") && w.len() > 4 {
+        variants.push(format!("{}s", &w[..w.len() - 2]));
+        variants.push(format!("{}is", &w[..w.len() - 2]));
+    } else if w.ends_with("es") && w.len() > 3 {
+        variants.push(format!("{}", &w[..w.len() - 2]));
+        variants.push(format!("{}e", &w[..w.len() - 2]));
+    } else if w.ends_with("s") && w.len() > 3 {
+        variants.push(format!("{}", &w[..w.len() - 1]));
+    }
+    if w.ends_with("ing") && w.len() > 5 {
+        variants.push(format!("{}", &w[..w.len() - 3]));
+        variants.push(format!("{}e", &w[..w.len() - 3]));
+    }
+    if w.ends_with("ed") && w.len() > 4 {
+        variants.push(format!("{}", &w[..w.len() - 2]));
+        variants.push(format!("{}", &w[..w.len() - 1]));
+    }
+    if w.ends_with("tion") {
+        variants.push(format!("{}te", &w[..w.len() - 4]));
+        variants.push(format!("{}te", &w[..w.len() - 3]));
+    }
+    if w.ends_with("ment") && w.len() > 5 {
+        variants.push(format!("{}", &w[..w.len() - 4]));
+    }
+    variants.sort_unstable();
+    variants.dedup();
+    variants
+}
+
 fn find_high_quality_seeds(term: &str, idx: &EvidenceIndex) -> (Vec<(usize, f64)>, HashSet<usize>) {
     let term_lower = term.to_lowercase();
     let n = idx.symbol_ids.len();
@@ -140,13 +186,28 @@ fn find_high_quality_seeds(term: &str, idx: &EvidenceIndex) -> (Vec<(usize, f64)
     let max_seeds = 200;
 
     let stems: Vec<String> = if term.len() > 4 {
-        vec![
+        let base_stems = vec![
             term_lower.clone(),
             term_lower[..term.len() - 1].to_string(),
             term_lower[..term.len() - 2].to_string(),
-        ]
+        ];
+        let plural_variants = normalize_plurals(term);
+        let mut all = base_stems;
+        for v in plural_variants {
+            if !all.contains(&v) {
+                all.push(v);
+            }
+        }
+        all
     } else {
-        vec![term_lower.clone()]
+        let plural_variants = normalize_plurals(term);
+        let mut all = vec![term_lower.clone()];
+        for v in plural_variants {
+            if !all.contains(&v) {
+                all.push(v);
+            }
+        }
+        all
     };
 
     for i in 0..n {
@@ -238,6 +299,29 @@ fn find_high_quality_seeds(term: &str, idx: &EvidenceIndex) -> (Vec<(usize, f64)
                 seen.insert(neighbor);
             }
         }
+
+        for &si in &name_matched {
+            for &ref_target in &idx.outgoing_refs[si] {
+                if ref_target == si
+                    || idx.symbol_names[ref_target].len() > 100
+                    || seen.contains(&ref_target)
+                {
+                    continue;
+                }
+                seeds.push((ref_target, 1.5));
+                seen.insert(ref_target);
+            }
+            for &ref_source in &idx.incoming_refs[si] {
+                if ref_source == si
+                    || idx.symbol_names[ref_source].len() > 100
+                    || seen.contains(&ref_source)
+                {
+                    continue;
+                }
+                seeds.push((ref_source, 1.3));
+                seen.insert(ref_source);
+            }
+        }
     }
 
     let abbreviations: &[(&str, &[&str])] = &[
@@ -255,6 +339,7 @@ fn find_high_quality_seeds(term: &str, idx: &EvidenceIndex) -> (Vec<(usize, f64)
         ("perm", &["permission", "permissions"]),
         ("authn", &["authentication"]),
         ("authz", &["authorization"]),
+        ("scope", &["scope", "range", "boundary", "domain", "extent"]),
     ];
 
     for (abbr, expansions) in abbreviations {
@@ -315,6 +400,8 @@ fn find_high_quality_seeds(term: &str, idx: &EvidenceIndex) -> (Vec<(usize, f64)
                 "gate",
                 "policy",
                 "enforce",
+                "scope",
+                "scope",
             ],
         ),
         (
@@ -343,6 +430,43 @@ fn find_high_quality_seeds(term: &str, idx: &EvidenceIndex) -> (Vec<(usize, f64)
         (
             "lifecycle",
             &["start", "stop", "restart", "init", "shutdown", "manager"],
+        ),
+        (
+            "combines",
+            &["merge", "combine", "hybrid", "join", "mix", "blend", "fuse"],
+        ),
+        (
+            "connects",
+            &["connector", "bridge", "link", "connect", "join", "wire"],
+        ),
+        (
+            "validates",
+            &["validate", "check", "verify", "assert", "guard", "ensure"],
+        ),
+        (
+            "routes",
+            &["router", "route", "dispatch", "redirect", "forward"],
+        ),
+        (
+            "transforms",
+            &["transform", "convert", "map", "adapt", "translate"],
+        ),
+        (
+            "annotated",
+            &["annotate", "mark", "tag", "label", "decorate"],
+        ),
+        ("registered", &["register", "add", "bind", "attach", "hook"]),
+        (
+            "invoked",
+            &["invoke", "call", "trigger", "fire", "dispatch", "execute"],
+        ),
+        (
+            "wake",
+            &["notify", "wake", "signal", "interrupt", "trigger"],
+        ),
+        (
+            "returning",
+            &["return", "respond", "reply", "yield", "output"],
         ),
     ];
 

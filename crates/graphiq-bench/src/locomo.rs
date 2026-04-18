@@ -3,7 +3,6 @@ use std::path::Path;
 
 use graphiq_core::cache::HotCache;
 use graphiq_core::db::GraphDb;
-use graphiq_core::holo;
 use graphiq_core::hrr;
 use graphiq_core::index::Indexer;
 use graphiq_core::search::{SearchEngine, SearchQuery};
@@ -151,17 +150,24 @@ fn main() {
         db_stats.files, db_stats.symbols, db_stats.edges
     );
 
+    let use_hrr = !args.iter().any(|a| a == "--no-hrr");
+
     print!("Computing HRR ... ");
-    let hrr_index = match hrr::compute_hrr(&db) {
-        Ok(idx) => {
-            let dim = idx.holograms.first().map(|h| h.len()).unwrap_or(0);
-            println!("done ({} symbols, {}D)", idx.symbol_ids.len(), dim);
-            Some(idx)
+    let hrr_index = if use_hrr {
+        match hrr::compute_hrr(&db) {
+            Ok(idx) => {
+                let dim = idx.holograms.first().map(|h| h.len()).unwrap_or(0);
+                println!("done ({} symbols, {}D)", idx.symbol_ids.len(), dim);
+                Some(idx)
+            }
+            Err(e) => {
+                println!("failed: {e}");
+                None
+            }
         }
-        Err(e) => {
-            println!("failed: {e}");
-            None
-        }
+    } else {
+        println!("skipped (--no-hrr)");
+        None
     };
 
     print!("Computing Evidence Index ... ");

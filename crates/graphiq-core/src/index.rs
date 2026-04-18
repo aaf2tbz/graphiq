@@ -363,6 +363,11 @@ impl<'a> Indexer<'a> {
             .map(|(_, name, decomposed, _, _, _, _, _)| (name.clone(), decomposed.clone()))
             .collect();
 
+        let name_to_id: HashMap<String, i64> = symbols
+            .iter()
+            .map(|(id, name, _, _, _, _, _, _)| (name.clone(), *id))
+            .collect();
+
         for (id, _name, name_decomposed, kind_str, doc_comment, file_id, signature, source) in
             &symbols
         {
@@ -443,6 +448,33 @@ impl<'a> Indexer<'a> {
                     .collect::<Vec<_>>()
                     .join(", ");
                 hints.push(format!("used by {}", callers));
+            }
+
+            let mut hop2_names: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            if let Some(incoming) = in_by_id.get(id) {
+                for (_, source_name) in incoming.iter().take(6) {
+                    if let Some(&caller_id) = name_to_id.get(source_name) {
+                        if let Some(caller_out) = out_by_id.get(&caller_id) {
+                            for (_, callee_name) in caller_out.iter().take(4) {
+                                if callee_name != _name {
+                                    hop2_names.insert(callee_name.to_lowercase());
+                                }
+                            }
+                        }
+                        if let Some(caller_in) = in_by_id.get(&caller_id) {
+                            for (_, co_caller_name) in caller_in.iter().take(4) {
+                                if co_caller_name != _name && co_caller_name != source_name {
+                                    hop2_names.insert(co_caller_name.to_lowercase());
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !hop2_names.is_empty() {
+                let hop2_list: Vec<String> = hop2_names.into_iter().take(8).collect();
+                hints.push(format!("near {}", hop2_list.join(", ")));
             }
 
             if let Ok(Some((container_id, container_name))) = self.db.container_for(*id) {

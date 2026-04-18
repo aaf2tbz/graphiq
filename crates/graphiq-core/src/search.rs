@@ -149,17 +149,20 @@ impl<'a> SearchEngine<'a> {
             let evidence_reranked =
                 crate::evidence::evidence_rerank(&query.query, &bm25_ids, &bm25_scores, ev_idx);
 
+            let ev_raw_max = evidence_hits.iter().map(|(_, s)| *s).fold(0.0f64, f64::max);
+            let ev_has_good_hits = evidence_hits.iter().take(3).any(|(_, s)| *s > 1.0);
+
+            let ev_weight = if ev_has_good_hits { 3.0 } else { 1.5 };
+            let ev_rerank_weight = if ev_has_good_hits { 2.0 } else { 1.0 };
+            let bm25_weight = if ev_has_good_hits { 1.0 } else { 2.0 };
+
             let mut fused: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
 
-            let ev_max = evidence_hits
-                .iter()
-                .map(|(_, s)| *s)
-                .fold(0.0f64, f64::max)
-                .max(1e-10);
+            let ev_max = ev_raw_max.max(1e-10);
             for (rank, (id, score)) in evidence_hits.iter().enumerate() {
                 let normalized = score / ev_max;
                 let rank_decay = 1.0 / (1.0 + rank as f64 * 0.3);
-                *fused.entry(*id).or_insert(0.0) += 3.0 * normalized * rank_decay;
+                *fused.entry(*id).or_insert(0.0) += ev_weight * normalized * rank_decay;
             }
 
             let ev_rerank_max = evidence_reranked
@@ -170,7 +173,7 @@ impl<'a> SearchEngine<'a> {
             for (rank, (id, score)) in evidence_reranked.iter().enumerate() {
                 let normalized = score / ev_rerank_max;
                 let rank_decay = 1.0 / (1.0 + rank as f64 * 0.3);
-                *fused.entry(*id).or_insert(0.0) += 2.0 * normalized * rank_decay;
+                *fused.entry(*id).or_insert(0.0) += ev_rerank_weight * normalized * rank_decay;
             }
 
             let bm25_max = bm25_scores
@@ -181,7 +184,7 @@ impl<'a> SearchEngine<'a> {
             for (rank, (&id, &score)) in bm25_ids.iter().zip(bm25_scores.iter()).enumerate() {
                 let normalized = score / bm25_max;
                 let rank_decay = 1.0 / (1.0 + rank as f64 * 0.3);
-                *fused.entry(id).or_insert(0.0) += 1.0 * normalized * rank_decay;
+                *fused.entry(id).or_insert(0.0) += bm25_weight * normalized * rank_decay;
             }
 
             let mut merged: Vec<(i64, f64)> = fused.into_iter().collect();

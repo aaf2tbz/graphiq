@@ -48,9 +48,9 @@ Layer 4 (embed reranker) was also tested with jina-code and nomic-embed — both
 
 | Codebase | Symbols | MRR | Accuracy | symbol-exact | symbol-partial | nl-descriptive | nl-abstract |
 |---|---|---|---|---|---|---|---|
-| signetai | 20,870 | 0.590 | 52% | 100% | 40% | 50% | 0% |
-| esbuild | 12,040 | 0.600 | 54% | 93% | 10% | 38% | 67% |
-| tokio | 12,892 | 0.462 | 44% | 87% | 70% | 12% | 0% |
+| signetai | 20,870 | 0.591 | 50% | 100% | 40% | 50% | 0% |
+| esbuild | 12,040 | 0.569 | 48% | 93% | 10% | 38% | 67% |
+| tokio | 12,892 | 0.461 | 44% | 87% | 70% | 12% | 0% |
 
 Latency: p50 ~1ms cold, <0.1ms warm. No model dependencies.
 
