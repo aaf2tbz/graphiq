@@ -104,4 +104,4 @@ For NL queries like "split tcp stream read write":
 - `crates/graphiq-core/src/db.rs` — Modified: latent vector storage
 - `crates/graphiq-core/src/index.rs` — Modified: LSA computation after indexing
 - `crates/graphiq-core/Cargo.toml` — Modified: add linalg dependency
-- `DESIGN-LSA.md` — The full design document
+- `docs/DESIGN-LSA.md` — The full design document

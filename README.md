@@ -121,7 +121,24 @@ graphiq blast RateLimiter --depth 5 --direction forward
 
 ### `graphiq demo`
 
-Generates a sample project, indexes it, runs showcase queries. Zero setup.
+Generates a multi-language sample project (Rust, Java, Ruby), indexes it, and runs a side-by-side comparison of BM25 (FTS-only) vs GraphIQ (GooberV5). Shows where structural graph analysis promotes the right symbol above pure text search results.
+
+```
+$ graphiq demo
+Indexed in 41ms: 13 files, 119 symbols, 48 edges
+
+── BM25 (FTS) vs GraphIQ (GooberV5) ──
+
+  "maximum concurrent connections"  [target: ConnectionPool]
+  BM25 rank:  #3   GraphIQ rank:  #1   GraphIQ promotes target
+
+  "scheduler shutdown cleanup"  [target: shutdown]
+  BM25 rank:  #5   GraphIQ rank:  #2   GraphIQ promotes target
+
+  Result: GraphIQ 3/8 | BM25 1/8 | Tied 4/8
+```
+
+Zero setup. No project needed.
 
 ### Other commands
 
@@ -173,7 +190,7 @@ Manual configuration for any MCP client:
 - [docs/retrieval.md](docs/retrieval.md) — Retrieval pipeline, SEC, NG scoring, holographic name gate
 - [docs/benchmarks.md](docs/benchmarks.md) — Full benchmark results and methodology
 - [docs/research.md](docs/research.md) — Experimental history and lessons learned
-- [ROADMAP.md](ROADMAP.md) — Current state and next steps
+- [ROADMAP.md](docs/ROADMAP.md) — Current state and next steps
 
 ## Architecture
 

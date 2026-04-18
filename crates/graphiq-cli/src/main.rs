@@ -754,6 +754,8 @@ fn cmd_demo() {
     }
     let _ = std::fs::create_dir_all(&tmp.join("src"));
     let _ = std::fs::create_dir_all(&tmp.join("tests"));
+    let _ = std::fs::create_dir_all(&tmp.join("src/main/java/com/demo"));
+    let _ = std::fs::create_dir_all(&tmp.join("lib"));
 
     std::fs::write(
         tmp.join("src/lib.rs"),
@@ -1085,17 +1087,481 @@ fn test_rate_limiter_blocks_admin() {
     )
     .unwrap();
 
+    std::fs::write(
+        tmp.join("src/main/java/com/demo/ConnectionPool.java"),
+        r#"package com.demo;
+
+import java.util.concurrent.*;
+import java.util.*;
+
+public class ConnectionPool {
+    private final BlockingQueue<Connection> available;
+    private final Set<Connection> leased;
+    private final int maxPoolSize;
+    private final Semaphore permits;
+
+    public ConnectionPool(int maxSize) {
+        this.maxPoolSize = maxSize;
+        this.available = new LinkedBlockingQueue<>();
+        this.leased = ConcurrentHashMap.newKeySet();
+        this.permits = new Semaphore(maxSize);
+        for (int i = 0; i < maxSize; i++) {
+            available.offer(new Connection("conn-" + i));
+        }
+    }
+
+    public Connection acquire(long timeoutMs) throws InterruptedException {
+        if (!permits.tryAcquire(timeoutMs, TimeUnit.MILLISECONDS)) {
+            throw new RuntimeException("no connections available");
+        }
+        Connection conn = available.poll(timeoutMs, TimeUnit.MILLISECONDS);
+        if (conn != null) {
+            leased.add(conn);
+        }
+        return conn;
+    }
+
+    public void release(Connection conn) {
+        if (leased.remove(conn)) {
+            available.offer(conn);
+            permits.release();
+        }
+    }
+
+    public void drain() {
+        List<Connection> remaining = new ArrayList<>();
+        available.drainTo(remaining);
+        for (Connection conn : remaining) {
+            conn.markClosed();
+        }
+        for (Connection conn : leased) {
+            conn.markClosed();
+        }
+        leased.clear();
+    }
+
+    public void replenish(int count) {
+        for (int i = 0; i < count && available.size() + leased.size() < maxPoolSize; i++) {
+            Connection conn = new Connection("conn-replenish-" + i);
+            available.offer(conn);
+        }
+    }
+
+    public boolean isHealthy(Connection conn) {
+        return conn != null && !conn.isClosed() && leased.contains(conn);
+    }
+
+    public PoolStats snapshot() {
+        return new PoolStats(available.size(), leased.size(), maxPoolSize);
+    }
+
+    public static class Connection {
+        private final String id;
+        private boolean closed;
+
+        public Connection(String id) {
+            this.id = id;
+            this.closed = false;
+        }
+
+        public String getId() { return id; }
+        public boolean isClosed() { return closed; }
+        public void markClosed() { this.closed = true; }
+    }
+
+    public static class PoolStats {
+        public final int available;
+        public final int leased;
+        public final int max;
+
+        public PoolStats(int available, int leased, int max) {
+            this.available = available;
+            this.leased = leased;
+            this.max = max;
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        tmp.join("src/main/java/com/demo/TaskScheduler.java"),
+        r#"package com.demo;
+
+import java.util.*;
+import java.util.concurrent.*;
+
+public class TaskScheduler {
+    private final PriorityBlockingQueue<ScheduledTask> queue;
+    private final ExecutorService workerPool;
+    private final ConnectionPool pool;
+    private volatile boolean running;
+
+    public TaskScheduler(int workers, ConnectionPool pool) {
+        this.queue = new PriorityBlockingQueue<>();
+        this.workerPool = Executors.newFixedThreadPool(workers);
+        this.pool = pool;
+        this.running = true;
+    }
+
+    public Future<String> submit(String payload, int priority) {
+        ScheduledTask task = new ScheduledTask(payload, priority);
+        queue.offer(task);
+        return workerPool.submit(() -> execute(task));
+    }
+
+    public void cancel(String taskId) {
+        queue.removeIf(t -> t.getId().equals(taskId));
+    }
+
+    public void awaitCompletion(long timeoutMs) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (!queue.isEmpty() && System.currentTimeMillis() < deadline) {
+            Thread.sleep(50);
+        }
+    }
+
+    private String execute(ScheduledTask task) {
+        try {
+            ConnectionPool.Connection conn = pool.acquire(5000);
+            try {
+                return task.getPayload() + " executed on " + conn.getId();
+            } finally {
+                pool.release(conn);
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return task.getPayload() + " interrupted";
+        }
+    }
+
+    public void shutdown() {
+        running = false;
+        workerPool.shutdown();
+        try {
+            if (!workerPool.awaitTermination(10, TimeUnit.SECONDS)) {
+                workerPool.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            workerPool.shutdownNow();
+        }
+        pool.drain();
+    }
+
+    public static class ScheduledTask implements Comparable<ScheduledTask> {
+        private static final AtomicLong counter = new AtomicLong(0);
+        private final String id;
+        private final String payload;
+        private final int priority;
+
+        public ScheduledTask(String payload, int priority) {
+            this.id = "task-" + counter.incrementAndGet();
+            this.payload = payload;
+            this.priority = priority;
+        }
+
+        public String getId() { return id; }
+        public String getPayload() { return payload; }
+        public int getPriority() { return priority; }
+
+        @Override
+        public int compareTo(ScheduledTask other) {
+            return Integer.compare(other.priority, this.priority);
+        }
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        tmp.join("lib/notification_service.rb"),
+        r##"require 'set'
+require 'time'
+
+module DemoApp
+  class NotificationService
+    def initialize(channel_registry)
+      @registry = channel_registry
+      @pending = []
+      @suppress_until = {}
+    end
+
+    def enqueue(recipient, message, urgency: :normal)
+      entry = { recipient: recipient, message: message, urgency: urgency, queued_at: Time.now }
+      @pending << entry
+      entry
+    end
+
+    def flush
+      dispatched = []
+      @pending.each do |entry|
+        unless suppressed?(entry[:recipient])
+          dispatched << deliver(entry)
+        end
+      end
+      @pending.clear
+      dispatched
+    end
+
+    def deliver(entry)
+      channel = @registry.resolve(entry[:recipient])
+      channel&.send(entry[:message])
+      entry.merge(dispatched_at: Time.now)
+    end
+
+    def suppress(recipient, duration_seconds)
+      @suppress_until[recipient] = Time.now + duration_seconds
+    end
+
+    def suppressed?(recipient)
+      deadline = @suppress_until[recipient]
+      deadline && Time.now < deadline
+    end
+
+    def pending_count
+      @pending.length
+    end
+  end
+
+  class ChannelRegistry
+    def initialize
+      @channels = {}
+    end
+
+    def register(name, handler)
+      @channels[name] = handler
+    end
+
+    def resolve(recipient)
+      @channels[recipient]
+    end
+
+    def registered?(name)
+      @channels.key?(name)
+    end
+  end
+
+  class AlertManager
+    THRESHOLDS = { warning: 0.7, critical: 0.9 }.freeze
+
+    def initialize(notification_service)
+      @notifier = notification_service
+      @active_alerts = {}
+    end
+
+    def evaluate(metric_name, value)
+      THRESHOLDS.each do |severity, threshold|
+        if value >= threshold
+          trigger(metric_name, severity, value)
+          return
+        end
+      end
+    end
+
+    def trigger(metric_name, severity, value)
+      return if @active_alerts.key?(metric_name)
+      @active_alerts[metric_name] = { severity: severity, value: value, triggered_at: Time.now }
+      msg = "#{severity}: #{metric_name} at #{value}"
+      @notifier.enqueue("ops", msg, urgency: :high)
+    end
+
+    def resolve_alert(metric_name)
+      @active_alerts.delete(metric_name)
+    end
+
+    def active_alerts
+      @active_alerts.dup
+    end
+  end
+
+  class PaymentProcessor
+    def initialize(notification_service, audit_log)
+      @notifier = notification_service
+      @audit = audit_log
+    end
+
+    def settle(amount, customer_id)
+      txn = { id: SecureRandom.hex(8), amount: amount, customer: customer_id, status: :settled, settled_at: Time.now }
+      @audit.record(txn)
+      txn
+    end
+
+    def void_transaction(txn_id)
+      @audit.mark_voided(txn_id)
+    end
+
+    def reconcile(start_date, end_date)
+      @audit.transactions_in_range(start_date, end_date).select { |t| t[:status] == :settled }
+    end
+  end
+
+  class AuditLog
+    def initialize
+      @entries = []
+    end
+
+    def record(txn)
+      @entries << txn
+    end
+
+    def mark_voided(txn_id)
+      entry = @entries.find { |e| e[:id] == txn_id }
+      entry[:status] = :voided if entry
+    end
+
+    def transactions_in_range(start_date, end_date)
+      @entries.select do |e|
+        t = e[:settled_at]
+        t >= start_date && t <= end_date
+      end
+    end
+  end
+end
+"##,
+    )
+    .unwrap();
+
+    std::fs::write(
+        tmp.join("src/main/java/com/demo/HealthMonitor.java"),
+        r#"package com.demo;
+
+import java.util.*;
+import java.util.concurrent.*;
+
+public class HealthMonitor {
+    private final ConnectionPool pool;
+    private final Map<String, Long> checkTimestamps;
+    private final long checkIntervalMs;
+
+    public HealthMonitor(ConnectionPool pool, long checkIntervalMs) {
+        this.pool = pool;
+        this.checkIntervalMs = checkIntervalMs;
+        this.checkTimestamps = new ConcurrentHashMap<>();
+    }
+
+    public boolean check(String serviceId) {
+        checkTimestamps.put(serviceId, System.currentTimeMillis());
+        ConnectionPool.PoolStats stats = pool.snapshot();
+        return stats.available > 0 && stats.leased < stats.max;
+    }
+
+    public boolean validateService(String serviceId) {
+        Long lastCheck = checkTimestamps.get(serviceId);
+        if (lastCheck == null) return false;
+        return System.currentTimeMillis() - lastCheck < checkIntervalMs;
+    }
+
+    public void processFailure(String serviceId, String reason) {
+        checkTimestamps.remove(serviceId);
+    }
+
+    public Map<String, Long> getCheckHistory() {
+        return Collections.unmodifiableMap(checkTimestamps);
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        tmp.join("src/main/java/com/demo/InputValidator.java"),
+        r#"package com.demo;
+
+import java.util.regex.Pattern;
+
+public class InputValidator {
+    private static final Pattern EMAIL = Pattern.compile("^[A-Za-z0-9.+_-]+@[A-Za-z0-9.-]+$");
+    private static final Pattern SAFE_TEXT = Pattern.compile("^[A-Za-z0-9 .,_-]+$");
+
+    public boolean validate(String input, String type) {
+        if (input == null || input.isEmpty()) return false;
+        switch (type) {
+            case "email": return EMAIL.matcher(input).matches();
+            case "text": return SAFE_TEXT.matcher(input).matches();
+            default: return false;
+        }
+    }
+
+    public String sanitize(String input) {
+        if (input == null) return "";
+        return input.replaceAll("[<>\"'&]", "");
+    }
+
+    public boolean checkLength(String input, int min, int max) {
+        if (input == null) return false;
+        int len = input.length();
+        return len >= min && len <= max;
+    }
+
+    public String process(String input) {
+        String sanitized = sanitize(input);
+        return sanitized.trim().toLowerCase();
+    }
+}
+"#,
+    )
+    .unwrap();
+
+    std::fs::write(
+        tmp.join("lib/health_check.rb"),
+        r#"module DemoApp
+  class HealthCheck
+    def initialize(connection_pool, alert_manager)
+      @pool = connection_pool
+      @alerts = alert_manager
+      @results = {}
+    end
+
+    def run_check(component)
+      healthy = case component
+                when "pool"
+                  @pool.snapshot.available > 0
+                when "alerts"
+                  @alerts.active_alerts.empty?
+                else
+                  false
+                end
+      @results[component] = { healthy: healthy, checked_at: Time.now }
+      @alerts.evaluate("health.#{component}", healthy ? 0.0 : 1.0)
+      healthy
+    end
+
+    def validate_all
+      @results.each do |component, result|
+        run_check(component)
+      end
+    end
+
+    def process_results
+      @results.select { |_, r| !r[:healthy] }.keys
+    end
+
+    def check_interval_met?(component, interval_seconds)
+      result = @results[component]
+      return true unless result
+      Time.now - result[:checked_at] >= interval_seconds
+    end
+  end
+end
+"#,
+    )
+    .unwrap();
+
     let demo_db = tmp.join(".graphiq/demo.db");
     let _ = std::fs::create_dir_all(tmp.join(".graphiq"));
 
-    println!("╭──────────────────────────────────────────────╮");
-    println!("│              GraphIQ Demo                     │");
-    println!("╰──────────────────────────────────────────────╯");
+    println!("╭──────────────────────────────────────────────────────────╮");
+    println!("│                    GraphIQ Demo                          │");
+    println!("╰──────────────────────────────────────────────────────────╯");
     println!();
 
     println!("Sample project: ~/tmp/graphiq-demo/");
-    println!("  src/lib.rs, auth.rs, middleware.rs, routes.rs, db.rs");
-    println!("  tests/auth_test.rs, middleware_test.rs");
+    println!("  rust/  lib.rs, auth.rs, middleware.rs, routes.rs, db.rs");
+    println!("  java/  ConnectionPool, TaskScheduler, HealthMonitor, InputValidator");
+    println!("  ruby/  notification_service.rb, health_check.rb");
+    println!("  tests/ auth_test.rs, middleware_test.rs");
     println!();
 
     let db = match graphiq_core::db::GraphDb::open(&demo_db) {
@@ -1127,7 +1593,13 @@ fn test_rate_limiter_blocks_admin() {
 
     let cache = graphiq_core::cache::HotCache::with_defaults();
     cache.prewarm(&db, 200);
-    let engine = graphiq_core::search::SearchEngine::new(&db, &cache);
+
+    let fts = graphiq_core::fts::FtsSearch::new(&db);
+
+    let cruncher_idx = graphiq_core::cruncher::build_cruncher_index(&db).unwrap();
+    let holo_idx = graphiq_core::cruncher::build_holo_index(&db, &cruncher_idx);
+    let engine = graphiq_core::search::SearchEngine::new(&db, &cache)
+        .with_goober(&cruncher_idx, &holo_idx);
 
     let queries = &[
         ("symbol-exact", "authenticate"),
@@ -1137,21 +1609,23 @@ fn test_rate_limiter_blocks_admin() {
         ("cross-cutting", "handle_request"),
     ];
 
+    println!("── Standard Queries ──");
+    println!();
     for (label, query) in queries {
-        println!("── {} ──", label);
+        println!("  {} : \"{}\"", label, query);
         let q = graphiq_core::search::SearchQuery::new(*query).top_k(3);
         let t = Instant::now();
         let result = engine.search(&q);
         let elapsed = t.elapsed();
 
         if result.results.is_empty() {
-            println!("  No results for \"{}\"", query);
+            println!("    No results");
         } else {
             for (i, scored) in result.results.iter().enumerate() {
                 let sym = &scored.symbol;
                 let file = scored.file_path.as_deref().unwrap_or("?");
                 println!(
-                    "  #{} {:.3} {}:{}  {}::{}",
+                    "    #{} {:.3}  {}:{} {}::{}",
                     i + 1,
                     scored.score,
                     file,
@@ -1161,11 +1635,116 @@ fn test_rate_limiter_blocks_admin() {
                 );
             }
         }
-        println!("  ({:.1}ms)", elapsed.as_secs_f64() * 1000.0);
+        println!("    ({:.1}ms)", elapsed.as_secs_f64() * 1000.0);
         println!();
     }
 
-    println!("── blast radius ──");
+    println!("── BM25 (FTS) vs GraphIQ (GooberV5) ──");
+    println!("  Left: BM25 text search only.");
+    println!("  Right: BM25 + graph walk + structural rerank + holographic gate.");
+    println!();
+
+    let file_paths: std::collections::HashMap<i64, String> = {
+        let conn = db.conn();
+        let mut s = conn.prepare("SELECT id, path FROM files").unwrap();
+        s.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .unwrap()
+            .flatten()
+            .collect()
+    };
+
+    let comparison_queries: &[(&str, &str)] = &[
+        ("maximum concurrent connections", "ConnectionPool"),
+        ("execute scheduled work", "execute"),
+        ("reject admin paths", "before_request"),
+        ("connection pool statistics", "snapshot"),
+        ("sanitize user text input", "sanitize"),
+        ("validate email format", "validate"),
+        ("check service uptime", "check"),
+        ("scheduler shutdown cleanup", "shutdown"),
+    ];
+
+    let mut graphiq_wins = 0usize;
+    let mut bm25_wins = 0usize;
+    let mut ties = 0usize;
+    let top_n = 5;
+
+    for (query, expected) in comparison_queries {
+        let fts_results = fts.search(query, Some(20));
+        let bm25_rank = fts_results
+            .iter()
+            .position(|r| r.symbol.name.contains(expected))
+            .map(|p| p + 1);
+
+        let q = graphiq_core::search::SearchQuery::new(*query).top_k(top_n);
+        let result = engine.search(&q);
+        let graphiq_rank = result
+            .results
+            .iter()
+            .position(|r| r.symbol.name.contains(expected))
+            .map(|p| p + 1);
+
+        match (bm25_rank, graphiq_rank) {
+            (Some(b), Some(g)) if g < b => graphiq_wins += 1,
+            (None, Some(_)) => graphiq_wins += 1,
+            (Some(_), None) => bm25_wins += 1,
+            (Some(b), Some(g)) if b < g => bm25_wins += 1,
+            _ => ties += 1,
+        };
+
+        let bm25_label = match bm25_rank {
+            Some(r) => format!("#{}", r),
+            None => "-".to_string(),
+        };
+        let gq_label = match graphiq_rank {
+            Some(r) => format!("#{}", r),
+            None => "-".to_string(),
+        };
+
+        let verdict = match (bm25_rank, graphiq_rank) {
+            (Some(b), Some(g)) if g < b => "GraphIQ promotes target",
+            (None, Some(_)) => "GraphIQ finds what BM25 misses",
+            (Some(_), None) => "BM25 finds what GraphIQ misses",
+            (Some(b), Some(g)) if b < g => "BM25 ranks target higher",
+            (Some(_), Some(_)) => "Tie",
+            (None, None) => "Neither finds target",
+        };
+
+        println!("  \"{}\"  [target: {}]", query, expected);
+        println!("  BM25 rank: {:>3}   GraphIQ rank: {:>3}   {}", bm25_label, gq_label, verdict);
+
+        let bm25_slice: Vec<_> = fts_results.iter().take(top_n).collect();
+        let gq_slice: Vec<_> = result.results.iter().take(top_n).collect();
+
+        for i in 0..top_n {
+            let left = bm25_slice.get(i).map(|r| {
+                let fp = file_paths.get(&r.symbol.file_id).map(|s| s.as_str()).unwrap_or("?");
+                let hit = if r.symbol.name.contains(expected) { " <<" } else { "" };
+                format!("#{} {:.1} {}:{} {}::{}{}", i + 1, r.bm25_score, fp, r.symbol.line_start, r.symbol.kind.as_str(), r.symbol.name, hit)
+            });
+
+            let right = gq_slice.get(i).map(|r| {
+                let fp = r.file_path.as_deref().unwrap_or("?");
+                let hit = if r.symbol.name.contains(expected) { " <<" } else { "" };
+                format!("#{} {:.1} {}:{} {}::{}{}", i + 1, r.score, fp, r.symbol.line_start, r.symbol.kind.as_str(), r.symbol.name, hit)
+            });
+
+            match (left, right) {
+                (Some(l), Some(r)) => println!("    {:<55} | {}", l, r),
+                (Some(l), None) => println!("    {:<55} |", l),
+                (None, Some(r)) => println!("    {:<55} | {}", "", r),
+                (None, None) => break,
+            }
+        }
+        println!();
+    }
+
+    let total = graphiq_wins + bm25_wins + ties;
+    println!("  Result: GraphIQ {}/{} | BM25 {}/{} | Tied {}/{}",
+        graphiq_wins, total, bm25_wins, total, ties, total);
+    println!();
+
+    println!("── Blast Radius ──");
     let candidates = db.symbols_by_name("authenticate").unwrap_or_default();
     if let Some(sym) = candidates.first() {
         let t = Instant::now();
