@@ -95,10 +95,10 @@ fn run_searches(
         .map(|r| (r.symbol.id, r.bm25_score))
         .collect();
 
-    let cr_solo = cruncher::cruncher_search_standalone(query, ci, top_k);
-    let cr_fused = cruncher::cruncher_search(query, ci, &bm25, top_k);
+    let cr_v1 = cruncher::cruncher_search(query, ci, &bm25, top_k);
+    let cr_v2 = cruncher::cruncher_v2_search(query, ci, &bm25, top_k);
 
-    [bm25, cr_solo, cr_fused]
+    [bm25, cr_v1, cr_v2]
 }
 
 fn run_ndcg_benchmark(
@@ -111,7 +111,7 @@ fn run_ndcg_benchmark(
     println!("  NDCG@10 BENCHMARK  ({} queries)", queries.len());
     println!("{}", "=".repeat(60));
 
-    let methods = ["BM25", "CR Solo", "CR Fused"];
+    let methods = ["BM25", "CR v1", "CR v2"];
     let n = queries.len();
     let mut all_ndcg: [Vec<f64>; 3] = Default::default();
     let mut all_hits: [Vec<[bool; 5]>; 3] = Default::default();
@@ -166,7 +166,7 @@ fn run_ndcg_benchmark(
     println!("\n--- By Category ---\n");
     let mut cats: Vec<&String> = cat_data.keys().collect();
     cats.sort();
-    println!("{:<20} {:>8} {:>8} {:>8}", "Category", "BM25", "CR Solo", "CR Fused");
+    println!("{:<20} {:>8} {:>8} {:>8}", "Category", "BM25", "CR v1", "CR v2");
     println!("{}", "-".repeat(50));
     for cat in &cats {
         let d = &cat_data[*cat];
@@ -175,7 +175,7 @@ fn run_ndcg_benchmark(
     }
 
     println!("\n--- Per-Query ---\n");
-    println!("{:<40} {:>8} {:>8} {:>8}", "Query", "BM25", "CR Solo", "CR Fused");
+    println!("{:<40} {:>8} {:>8} {:>8}", "Query", "BM25", "CR v1", "CR v2");
     println!("{}", "-".repeat(70));
     for (i, q) in queries.iter().enumerate() {
         println!(
@@ -195,7 +195,7 @@ fn run_mrr_benchmark(
     println!("  MRR BENCHMARK  ({} queries)", queries.len());
     println!("{}", "=".repeat(60));
 
-    let methods = ["BM25", "CR Solo", "CR Fused"];
+    let methods = ["BM25", "CR v1", "CR v2"];
     let n = queries.len();
 
     struct MrrResult {
@@ -254,7 +254,7 @@ fn run_mrr_benchmark(
     println!("\n--- Per-Query ---\n");
     println!(
         "{:<40} {:>6} {:>6} {:>6}  {:>6} {:>6} {:>6}",
-        "Query", "B_rr", "S_rr", "F_rr", "B_rnk", "S_rnk", "F_rnk"
+        "Query", "B_rr", "1_rr", "2_rr", "B_rnk", "1_rnk", "2_rnk"
     );
     println!("{}", "-".repeat(78));
     for (i, q) in queries.iter().enumerate() {
