@@ -10,6 +10,7 @@ use crate::fts::FtsSearch;
 use crate::graph::StructuralExpander;
 use crate::hrr::HrrIndex;
 use crate::rerank::{Reranker, ScoredSymbol};
+use crate::sec::SecIndex;
 
 #[derive(Debug, Clone)]
 pub struct SearchQuery {
@@ -73,6 +74,7 @@ pub struct SearchEngine<'a> {
     cache: &'a HotCache,
     hrr_index: Option<&'a HrrIndex>,
     evidence_index: Option<&'a EvidenceIndex>,
+    sec_index: Option<&'a SecIndex>,
 }
 
 impl<'a> SearchEngine<'a> {
@@ -82,6 +84,7 @@ impl<'a> SearchEngine<'a> {
             cache,
             hrr_index: None,
             evidence_index: None,
+            sec_index: None,
         }
     }
 
@@ -92,6 +95,11 @@ impl<'a> SearchEngine<'a> {
 
     pub fn with_evidence(mut self, ev: &'a EvidenceIndex) -> Self {
         self.evidence_index = Some(ev);
+        self
+    }
+
+    pub fn with_sec(mut self, sec: &'a SecIndex) -> Self {
+        self.sec_index = Some(sec);
         self
     }
 
@@ -189,6 +197,18 @@ impl<'a> SearchEngine<'a> {
 
             let mut merged: Vec<(i64, f64)> = fused.into_iter().collect();
             merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            if let Some(sec_idx) = self.sec_index {
+                let sec_ids: Vec<i64> = merged.iter().map(|(id, _)| *id).collect();
+                let sec_scores: Vec<f64> = merged.iter().map(|(_, s)| *s).collect();
+                merged = crate::sec::sec_rerank(
+                    &query.query,
+                    &sec_ids,
+                    &sec_scores,
+                    sec_idx,
+                    query.top_k * 3,
+                );
+            }
 
             results = merged
                 .into_iter()
@@ -350,6 +370,18 @@ impl<'a> SearchEngine<'a> {
 
                     let mut merged: Vec<(i64, f64)> = fused.into_iter().collect();
                     merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+                    if let Some(sec_idx) = self.sec_index {
+                        let sec_ids: Vec<i64> = merged.iter().map(|(id, _)| *id).collect();
+                        let sec_scores: Vec<f64> = merged.iter().map(|(_, s)| *s).collect();
+                        merged = crate::sec::sec_rerank(
+                            &query.query,
+                            &sec_ids,
+                            &sec_scores,
+                            sec_idx,
+                            query.top_k * 3,
+                        );
+                    }
 
                     results = merged
                         .into_iter()
