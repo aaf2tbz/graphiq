@@ -1,0 +1,12 @@
+[
+  {"query": "add_permits", "expected_symbol": "add_permits", "category": "exact"},
+  {"query": "poll_write_ready", "expected_symbol": "poll_write_ready", "category": "exact"},
+  {"query": "CtrlCStream", "expected_symbol": "CtrlCStream", "category": "exact"},
+  {"query": "spawn_blocking", "expected_symbol": "spawn_blocking", "category": "exact"},
+  {"query": "TryRecvError", "expected_symbol": "TryRecvError", "category": "exact"},
+  {"query": "add permits to a semaphore", "expected_symbol": "add_permits", "category": "nl"},
+  {"query": "listen for ctrl c signal", "expected_symbol": "CtrlCStream", "category": "nl"},
+  {"query": "run a blocking task on the runtime", "expected_symbol": "spawn_blocking", "category": "nl"},
+  {"query": "receive error when channel is empty", "expected_symbol": "TryRecvError", "category": "nl"},
+  {"query": "configure multi threaded runtime", "expected_symbol": "multi_thread", "category": "nl"}
+]

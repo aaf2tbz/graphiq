@@ -102,3 +102,16 @@ Optimizing aggregate MRR led to over-fitting on easy queries while ignoring hard
 - **Tokio regression**: The structural walk hurts on codebases with generic function names. Possible fix: seed-only fallback for queries with low average IDF.
 - **More codebases**: Current benchmark covers TS, Rust, Go. Need Python, Java to validate generalizability.
 - **Statistical significance**: 30 queries is small. Bootstrap resampling would help determine whether differences are real.
+
+## Cross-References to New Roadmap
+
+These precedents from failed experiments are directly relevant to the new phases:
+
+| Failed Experiment | New Phase | Relationship |
+|---|---|---|
+| AFMO bandpass (`afmo.rs:82-130`) | Phase 7 (anisotropic W) | AFMO used σ-only diagonal weighting with a 100x amplification bug. Phase 7 adds `discᵢ` discriminativity term. The key difference: AFMO weighted by variance alone; Phase 7 weights by variance × non-uniformity. |
+| V9 entropy weighting | Phase 7 Step B (discᵢ risk) | `discᵢ` is conceptually similar to entropy weighting. V9 "helped tokio, hurt signetai" — not robust across codebases. Phase 7 Step F ablation is designed to catch this same pattern early. |
+| Evidence BFS (`evidence.rs`) | Phase 8 Step B (reinforcing) | Evidence computed multi-path convergence at candidate level. Phase 8 reuses the same BFS machinery at per-edge granularity. |
+| Walk tuning null result | Phase 8 Step C (evidence-aware walk) | Walk tuning of existing edge-type weights produced zero improvement. Evidence profiles add new signals (multiplicity, boundary, motif) not tested in those experiments. Must validate against the null result. |
+| Spectral (`spectral.rs`) | Phase 9 Step A (subsystem detection) | Spectral graph coordinates via Lanczos produced "interesting, not useful" results. Phase 9 must NOT use eigen-decomposition for subsystem detection — use modularity-based community detection on evidence-weighted edges instead. |
+| Isotropic LSA (`lsa.rs`) | Phase 7 (anisotropic correction) | Isotropic LSA captured patterns already in BM25. Phase 7 is the same SVD + same structural augmentation but with anisotropic normalization that suppresses generic dimensions. |

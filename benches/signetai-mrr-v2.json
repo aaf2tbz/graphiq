@@ -1,0 +1,12 @@
+[
+  {"query": "ensure_autostart", "expected_symbol": "ensure_autostart", "category": "exact"},
+  {"query": "insertMemoryEmbedding", "expected_symbol": "insertMemoryEmbedding", "category": "exact"},
+  {"query": "export_with_vectors", "expected_symbol": "export_with_vectors", "category": "exact"},
+  {"query": "build_combine_prompt", "expected_symbol": "build_combine_prompt", "category": "exact"},
+  {"query": "ContinuityState", "expected_symbol": "ContinuityState", "category": "exact"},
+  {"query": "autostart daemon on boot", "expected_symbol": "ensure_autostart", "category": "nl"},
+  {"query": "insert embedding vector into memory store", "expected_symbol": "insertMemoryEmbedding", "category": "nl"},
+  {"query": "export memories with their vector embeddings", "expected_symbol": "export_with_vectors", "category": "nl"},
+  {"query": "build the prompt that combines context for synthesis", "expected_symbol": "build_combine_prompt", "category": "nl"},
+  {"query": "compute squared distance between time series vectors", "expected_symbol": "tsSquaredDistance", "category": "nl"}
+]

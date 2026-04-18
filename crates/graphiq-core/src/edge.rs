@@ -1,6 +1,69 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum EvidenceKind {
+    Direct,
+    Structural,
+    Reinforcing,
+    Boundary,
+    Incidental,
+}
+
+impl EvidenceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EvidenceKind::Direct => "direct",
+            EvidenceKind::Structural => "structural",
+            EvidenceKind::Reinforcing => "reinforcing",
+            EvidenceKind::Boundary => "boundary",
+            EvidenceKind::Incidental => "incidental",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "direct" => Some(EvidenceKind::Direct),
+            "structural" => Some(EvidenceKind::Structural),
+            "reinforcing" => Some(EvidenceKind::Reinforcing),
+            "boundary" => Some(EvidenceKind::Boundary),
+            "incidental" => Some(EvidenceKind::Incidental),
+            _ => None,
+        }
+    }
+
+    pub fn retrieval_weight(&self) -> f64 {
+        match self {
+            EvidenceKind::Direct => 1.0,
+            EvidenceKind::Boundary => 1.0,
+            EvidenceKind::Reinforcing => 0.85,
+            EvidenceKind::Structural => 0.7,
+            EvidenceKind::Incidental => 0.3,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceProfile {
+    pub kind: EvidenceKind,
+    pub multiplicity: u32,
+    pub cross_module: bool,
+    pub cross_visibility: bool,
+    pub motif_name: Option<String>,
+}
+
+impl EvidenceProfile {
+    pub fn incidental() -> Self {
+        Self {
+            kind: EvidenceKind::Incidental,
+            multiplicity: 1,
+            cross_module: false,
+            cross_visibility: false,
+            motif_name: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EdgeKind {
     Imports,
     Calls,
@@ -170,5 +233,37 @@ mod tests {
         assert!(EdgeKind::Imports.is_dependency());
         assert!(!EdgeKind::Tests.is_dependency());
         assert!(!EdgeKind::Implements.is_dependency());
+    }
+
+    #[test]
+    fn test_evidence_kind_roundtrip() {
+        for kind in [
+            EvidenceKind::Direct,
+            EvidenceKind::Structural,
+            EvidenceKind::Reinforcing,
+            EvidenceKind::Boundary,
+            EvidenceKind::Incidental,
+        ] {
+            assert_eq!(EvidenceKind::from_str(kind.as_str()), Some(kind));
+        }
+    }
+
+    #[test]
+    fn test_evidence_retrieval_weights() {
+        assert!(
+            EvidenceKind::Direct.retrieval_weight() > EvidenceKind::Incidental.retrieval_weight()
+        );
+        assert!(
+            EvidenceKind::Boundary.retrieval_weight() >= EvidenceKind::Structural.retrieval_weight()
+        );
+        assert!((EvidenceKind::Incidental.retrieval_weight() - 0.3).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_incidental_profile() {
+        let p = EvidenceProfile::incidental();
+        assert_eq!(p.kind, EvidenceKind::Incidental);
+        assert_eq!(p.multiplicity, 1);
+        assert!(!p.cross_module);
     }
 }

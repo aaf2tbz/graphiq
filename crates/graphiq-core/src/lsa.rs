@@ -16,6 +16,7 @@ pub struct LsaIndex {
     pub symbol_vecs: Vec<Vec<f64>>,
     pub singular_values: Vec<f64>,
     pub term_idf: Vec<f64>,
+    pub anisotropy_weights: Vec<f64>,
 }
 
 struct SparseMat {
@@ -412,6 +413,81 @@ pub fn normalize_to_sphere(vecs: &mut [Vec<f64>]) {
     }
 }
 
+pub fn compute_anisotropy_weights(
+    sigma: &[f64],
+    symbol_vecs: &[Vec<f64>],
+    alpha: f64,
+    epsilon: f64,
+) -> Vec<f64> {
+    if sigma.is_empty() || symbol_vecs.is_empty() {
+        return Vec::new();
+    }
+
+    let k = sigma.len();
+    let n = symbol_vecs.len();
+
+    let mut spec = vec![0.0f64; k];
+    for dim in 0..k {
+        let s_i = if dim < sigma.len() { sigma[dim] } else { 0.0 };
+
+        let mut vals = Vec::with_capacity(n);
+        for vec in symbol_vecs {
+            if dim < vec.len() {
+                vals.push(vec[dim]);
+            }
+        }
+        if vals.len() < 2 {
+            spec[dim] = s_i;
+            continue;
+        }
+
+        let mean: f64 = vals.iter().sum::<f64>() / vals.len() as f64;
+        let variance: f64 =
+            vals.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (vals.len() - 1) as f64;
+        let std_dev = variance.sqrt();
+
+        let disc = if std_dev > 1e-10 {
+            1.0 - mean.abs() / std_dev
+        } else {
+            0.0
+        };
+        let disc = disc.max(0.0);
+
+        spec[dim] = s_i * disc;
+    }
+
+    let max_spec = spec.iter().cloned().fold(0.0f64, f64::max);
+    if max_spec < 1e-10 {
+        return vec![epsilon; k];
+    }
+
+    let weights: Vec<f64> = spec
+        .iter()
+        .map(|&s| (s / max_spec).powf(alpha) + epsilon)
+        .collect();
+
+    weights
+}
+
+pub fn normalize_anisotropic(vecs: &mut [Vec<f64>], weights: &[f64]) {
+    if weights.is_empty() {
+        return;
+    }
+    for v in vecs.iter_mut() {
+        for (i, x) in v.iter_mut().enumerate() {
+            if i < weights.len() {
+                *x *= weights[i];
+            }
+        }
+        let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+        if norm > 1e-10 {
+            for x in v.iter_mut() {
+                *x /= norm;
+            }
+        }
+    }
+}
+
 pub fn angular_distance(a: &[f64], b: &[f64]) -> f64 {
     let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let dot = dot.clamp(-1.0, 1.0);
@@ -423,6 +499,7 @@ pub fn project_query(
     term_index: &HashMap<String, usize>,
     term_basis: &[Vec<f64>],
     _n_terms: usize,
+    anisotropy_weights: &[f64],
 ) -> Vec<f64> {
     let terms = extract_terms(query);
     let k = if term_basis.is_empty() {
@@ -450,6 +527,14 @@ pub fn project_query(
         }
     }
 
+    if !anisotropy_weights.is_empty() {
+        for (i, x) in query_vec.iter_mut().enumerate() {
+            if i < anisotropy_weights.len() {
+                *x *= anisotropy_weights[i];
+            }
+        }
+    }
+
     let norm: f64 = query_vec.iter().map(|x| x * x).sum::<f64>().sqrt();
     if norm > 1e-10 {
         for x in query_vec.iter_mut() {
@@ -458,6 +543,144 @@ pub fn project_query(
     }
 
     query_vec
+}
+
+pub fn lsa_rerank(
+    query: &str,
+    candidates: &[(i64, f64)],
+    db: &GraphDb,
+    blend_weight: f64,
+) -> Vec<(i64, f64)> {
+    let (term_basis, term_index, _term_idf) = match load_lsa_basis(db) {
+        Ok(b) if !b.0.is_empty() => b,
+        _ => return candidates.to_vec(),
+    };
+
+    let symbol_map = match load_latent_vectors(db) {
+        Ok(m) if !m.is_empty() => m,
+        _ => return candidates.to_vec(),
+    };
+
+    let anisotropy_weights = load_anisotropy_weights(db).unwrap_or_default();
+
+    let query_vec = project_query(query, &term_index, &term_basis, 0, &anisotropy_weights);
+    let q_norm: f64 = query_vec.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if q_norm < 1e-10 {
+        return candidates.to_vec();
+    }
+
+    let mut scored: Vec<(i64, f64, f64)> = Vec::with_capacity(candidates.len());
+    for &(id, goober_score) in candidates {
+        let sym_vec = match symbol_map.get(&id) {
+            Some(v) => v,
+            None => {
+                scored.push((id, goober_score, 0.0));
+                continue;
+            }
+        };
+
+        let dot: f64 = query_vec
+            .iter()
+            .zip(sym_vec.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+        let s_norm: f64 = sym_vec.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let cosine = if s_norm > 1e-10 {
+            (dot / (q_norm * s_norm)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        scored.push((id, goober_score, cosine));
+    }
+
+    if scored.is_empty() {
+        return candidates.to_vec();
+    }
+
+    let max_goober = scored
+        .iter()
+        .map(|&(_, g, _)| g)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let blended: Vec<(i64, f64)> = scored
+        .into_iter()
+        .map(|(id, g, c)| {
+            let final_score = (1.0 - blend_weight) * g + blend_weight * c * max_goober;
+            (id, final_score)
+        })
+        .collect();
+
+    let mut result = blended;
+    result.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    result
+}
+
+pub fn lsa_rerank_promote(
+    query: &str,
+    candidates: &[(i64, f64)],
+    db: &GraphDb,
+    boost_threshold: f64,
+    boost_amount: f64,
+) -> Vec<(i64, f64)> {
+    let (term_basis, term_index, _term_idf) = match load_lsa_basis(db) {
+        Ok(b) if !b.0.is_empty() => b,
+        _ => return candidates.to_vec(),
+    };
+
+    let symbol_map = match load_latent_vectors(db) {
+        Ok(m) if !m.is_empty() => m,
+        _ => return candidates.to_vec(),
+    };
+
+    let anisotropy_weights = load_anisotropy_weights(db).unwrap_or_default();
+
+    let query_vec = project_query(query, &term_index, &term_basis, 0, &anisotropy_weights);
+    let q_norm: f64 = query_vec.iter().map(|x| x * x).sum::<f64>().sqrt();
+    if q_norm < 1e-10 {
+        return candidates.to_vec();
+    }
+
+    let max_goober = candidates
+        .iter()
+        .map(|&(_, g)| g)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let mut scored: Vec<(i64, f64)> = Vec::with_capacity(candidates.len());
+    for &(id, goober_score) in candidates {
+        let sym_vec = match symbol_map.get(&id) {
+            Some(v) => v,
+            None => {
+                scored.push((id, goober_score));
+                continue;
+            }
+        };
+
+        let dot: f64 = query_vec
+            .iter()
+            .zip(sym_vec.iter())
+            .map(|(a, b)| a * b)
+            .sum();
+        let s_norm: f64 = sym_vec.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let cosine = if s_norm > 1e-10 {
+            (dot / (q_norm * s_norm)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+
+        let boosted = if cosine > boost_threshold {
+            goober_score + boost_amount * cosine * max_goober
+        } else {
+            goober_score
+        };
+
+        scored.push((id, boosted));
+    }
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored
 }
 
 pub fn spherical_cap_search(
@@ -682,10 +905,35 @@ pub fn compute_lsa(db: &GraphDb) -> Result<LsaIndex, String> {
     eprintln!("  computing randomized SVD (k={})...", LSA_DIM);
     let (term_basis, singular_values, mut symbol_vecs) = randomized_svd(&matrix, LSA_DIM);
 
-    eprintln!("  normalizing to unit hypersphere...");
-    normalize_to_sphere(&mut symbol_vecs);
+    let alpha = 1.0;
+    let epsilon = 0.1;
+    eprintln!(
+        "  computing anisotropy weights (α={}, ε={})...",
+        alpha, epsilon
+    );
+    let anisotropy_weights = compute_anisotropy_weights(
+        &singular_values,
+        &symbol_vecs,
+        alpha,
+        epsilon,
+    );
+
+    let k = if singular_values.is_empty() {
+        0
+    } else {
+        singular_values.len().min(LSA_DIM)
+    };
+    for i in 0..k.min(anisotropy_weights.len()) {
+        eprintln!(
+            "    dim {:3}: σ={:10.4}  w={:.4}",
+            i, singular_values[i], anisotropy_weights[i]
+        );
+    }
+
+    eprintln!("  normalizing to anisotropic hypersphere...");
+    normalize_anisotropic(&mut symbol_vecs, &anisotropy_weights);
     let mut term_basis_normed = term_basis;
-    normalize_to_sphere(&mut term_basis_normed);
+    normalize_anisotropic(&mut term_basis_normed, &anisotropy_weights);
 
     eprintln!(
         "  LSA done: {} terms, {} symbols, top σ = {:.4}",
@@ -701,6 +949,7 @@ pub fn compute_lsa(db: &GraphDb) -> Result<LsaIndex, String> {
         symbol_vecs,
         singular_values,
         term_idf,
+        anisotropy_weights,
     })
 }
 
@@ -1128,4 +1377,140 @@ pub fn load_lsa_basis(
     }
 
     Ok((basis, term_index, idf_vec))
+}
+
+pub fn store_anisotropy_weights(db: &GraphDb, weights: &[f64]) -> Result<(), String> {
+    let conn = db.conn();
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS lsa_anisotropy (
+            id INTEGER PRIMARY KEY,
+            weights BLOB NOT NULL,
+            dim INTEGER NOT NULL
+        )",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute("DELETE FROM lsa_anisotropy", [])
+        .map_err(|e| e.to_string())?;
+
+    let bytes: Vec<u8> = weights.iter().flat_map(|f| f.to_le_bytes()).collect();
+    conn.execute(
+        "INSERT INTO lsa_anisotropy (id, weights, dim) VALUES (1, ?1, ?2)",
+        params![bytes, weights.len() as i64],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+pub fn load_anisotropy_weights(db: &GraphDb) -> Result<Vec<f64>, String> {
+    let conn = db.conn();
+    let row: Option<(Vec<u8>, i64)> = conn
+        .query_row(
+            "SELECT weights, dim FROM lsa_anisotropy WHERE id = 1",
+            [],
+            |row| {
+                let bytes: Vec<u8> = row.get(0).unwrap_or_default();
+                let dim: i64 = row.get(1).unwrap_or(0);
+                Ok((bytes, dim))
+            },
+        )
+        .ok();
+
+    match row {
+        Some((bytes, dim)) if dim > 0 && bytes.len() == dim as usize * 8 => {
+            let weights: Vec<f64> = bytes
+                .chunks_exact(8)
+                .map(|c| {
+                    f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]])
+                })
+                .collect();
+            Ok(weights)
+        }
+        _ => Err("no anisotropy weights stored".into()),
+    }
+}
+
+#[cfg(test)]
+mod anisotropy_tests {
+    use super::*;
+
+    fn approx_eq(a: f64, b: f64) -> bool {
+        (a - b).abs() < 1e-8
+    }
+
+    #[test]
+    fn test_discriminativity_high_when_zero_mean_high_spread() {
+        let sigma = vec![10.0, 5.0, 1.0];
+        let symbol_vecs = vec![
+            vec![10.0, 5.0, 1.0],
+            vec![-10.0, -5.0, -1.0],
+            vec![5.0, 0.0, 0.5],
+            vec![-5.0, 0.0, -0.5],
+        ];
+        let weights = compute_anisotropy_weights(&sigma, &symbol_vecs, 1.0, 0.1);
+        assert_eq!(weights.len(), 3);
+        assert!(weights[0] > 0.1, "dim 0 should have weight > epsilon");
+        assert!(weights[1] > 0.1, "dim 1 should have weight > epsilon");
+        assert!(weights[2] > 0.1, "dim 2 should have weight > epsilon");
+    }
+
+    #[test]
+    fn test_discriminativity_low_when_high_mean_low_spread() {
+        let sigma = vec![10.0, 5.0];
+        let symbol_vecs = vec![
+            vec![100.0, 0.1],
+            vec![100.0, -0.1],
+            vec![100.0, 0.05],
+        ];
+        let weights = compute_anisotropy_weights(&sigma, &symbol_vecs, 1.0, 0.1);
+        assert!(weights[1] > weights[0], "dim 1 (low mean/high disc) should outweigh dim 0 (high mean/low disc)");
+    }
+
+    #[test]
+    fn test_alpha_zero_isotropic() {
+        let sigma = vec![10.0, 1.0];
+        let symbol_vecs = vec![
+            vec![1.0, 0.0],
+            vec![-1.0, 1.0],
+        ];
+        let weights = compute_anisotropy_weights(&sigma, &symbol_vecs, 0.0, 0.1);
+        let first = weights[0];
+        for w in &weights {
+            assert!(approx_eq(*w, first), "alpha=0 should give uniform weights");
+        }
+    }
+
+    #[test]
+    fn test_epsilon_floor() {
+        let sigma = vec![1.0];
+        let symbol_vecs = vec![vec![0.0], vec![0.0]];
+        let weights = compute_anisotropy_weights(&sigma, &symbol_vecs, 1.0, 0.1);
+        assert!(approx_eq(weights[0], 0.1), "zero discriminativity should floor at epsilon");
+    }
+
+    #[test]
+    fn test_anisotropic_normalization_preserves_unit_norm() {
+        let weights = vec![2.0, 0.5, 1.0];
+        let mut vecs = vec![
+            vec![1.0, 0.0, 0.0],
+            vec![0.0, 1.0, 0.0],
+            vec![0.5, 0.5, 0.5],
+        ];
+        normalize_anisotropic(&mut vecs, &weights);
+        for v in &vecs {
+            let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+            assert!(approx_eq(norm, 1.0), "all vectors should be unit norm after anisotropic normalization");
+        }
+    }
+
+    #[test]
+    fn test_anisotropic_stretches_high_weight_dims() {
+        let weights = vec![10.0, 0.1];
+        let mut vecs = vec![vec![1.0, 1.0]];
+        normalize_anisotropic(&mut vecs, &weights);
+        let v = &vecs[0];
+        assert!(v[0].abs() > v[1].abs(), "high weight on dim 0 amplifies its contribution to unit sphere");
+    }
 }

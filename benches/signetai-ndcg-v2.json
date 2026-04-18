@@ -1,0 +1,132 @@
+[
+  {
+    "query": "ensure_autostart",
+    "category": "symbol-exact",
+    "relevance": {"ensure_autostart": 3}
+  },
+  {
+    "query": "insertMemoryEmbedding",
+    "category": "symbol-exact",
+    "relevance": {"insertMemoryEmbedding": 3}
+  },
+  {
+    "query": "export_with_vectors",
+    "category": "symbol-exact",
+    "relevance": {"export_with_vectors": 3}
+  },
+  {
+    "query": "build_combine_prompt",
+    "category": "symbol-exact",
+    "relevance": {"build_combine_prompt": 3}
+  },
+  {
+    "query": "ContinuityState",
+    "category": "symbol-exact",
+    "relevance": {"ContinuityState": 3}
+  },
+  {
+    "query": "sanitizeServerId",
+    "category": "symbol-exact",
+    "relevance": {"sanitizeServerId": 3}
+  },
+  {
+    "query": "resolveRegistryOpenRouterBaseUrl",
+    "category": "symbol-exact",
+    "relevance": {"resolveRegistryOpenRouterBaseUrl": 3}
+  },
+  {
+    "query": "tsSquaredDistance",
+    "category": "symbol-exact",
+    "relevance": {"tsSquaredDistance": 3}
+  },
+  {
+    "query": "rowToAspect",
+    "category": "symbol-exact",
+    "relevance": {"rowToAspect": 3}
+  },
+  {
+    "query": "inject_agent_id",
+    "category": "symbol-exact",
+    "relevance": {"inject_agent_id": 3}
+  },
+  {
+    "query": "autostart daemon on boot",
+    "category": "nl-descriptive",
+    "relevance": {
+      "ensure_autostart": 3,
+      "install_systemd": 2,
+      "uninstall_systemd": 1
+    }
+  },
+  {
+    "query": "insert embedding vector into memory store",
+    "category": "nl-descriptive",
+    "relevance": {
+      "insertMemoryEmbedding": 3,
+      "embed_row": 2,
+      "embed_batch": 1
+    }
+  },
+  {
+    "query": "export memories with their vector embeddings",
+    "category": "nl-descriptive",
+    "relevance": {
+      "export_with_vectors": 3,
+      "export": 2
+    }
+  },
+  {
+    "query": "build the prompt that combines context for synthesis",
+    "category": "nl-descriptive",
+    "relevance": {
+      "build_combine_prompt": 3,
+      "hasExplicitSynthesisConfig": 2
+    }
+  },
+  {
+    "query": "manage continuity state across sessions",
+    "category": "nl-descriptive",
+    "relevance": {
+      "ContinuityState": 3,
+      "CompactionCompleteBody": 1
+    }
+  },
+  {
+    "query": "sanitize a server identifier for safe storage",
+    "category": "nl-descriptive",
+    "relevance": {
+      "sanitizeServerId": 3,
+      "validate_name": 1
+    }
+  },
+  {
+    "query": "resolve the base url for an openrouter model registry",
+    "category": "nl-descriptive",
+    "relevance": {
+      "resolveRegistryOpenRouterBaseUrl": 3
+    }
+  },
+  {
+    "query": "compute squared distance between time series vectors",
+    "category": "nl-descriptive",
+    "relevance": {
+      "tsSquaredDistance": 3,
+      "cosine_similarity": 1
+    }
+  },
+  {
+    "query": "convert a database row to an aspect record",
+    "category": "nl-descriptive",
+    "relevance": {
+      "rowToAspect": 3,
+      "mapTrainingRow": 1
+    }
+  },
+  {
+    "query": "inject the agent id into a request context",
+    "category": "nl-descriptive",
+    "relevance": {
+      "inject_agent_id": 3
+    }
+  }
+]

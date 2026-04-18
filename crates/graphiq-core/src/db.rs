@@ -57,8 +57,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     kind,
     language,
     search_hints,
-    content=symbols,
-    content_rowid=id,
     tokenize='porter unicode61'
 );
 
@@ -69,8 +67,14 @@ CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
-    INSERT INTO symbols_fts(symbols_fts, rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
-    VALUES ('delete', old.id, old.name, old.name_decomposed, old.qualified_name, old.signature, old.source, old.doc_comment, '', old.kind, old.language, old.search_hints);
+    DELETE FROM symbols_fts WHERE rowid = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
+    DELETE FROM symbols_fts WHERE rowid = old.id;
+    INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
+    SELECT new.id, new.name, new.name_decomposed, new.qualified_name, new.signature, new.source, new.doc_comment, f.path, new.kind, new.language, new.search_hints
+    FROM files f WHERE f.id = new.file_id;
 END;
 
 CREATE TABLE IF NOT EXISTS edges (
@@ -505,13 +509,12 @@ impl GraphDb {
             params![hints, symbol_id],
         )?;
         self.conn.execute(
-            "INSERT INTO symbols_fts(symbols_fts, rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
-             SELECT 'delete', id, name, name_decomposed, qualified_name, signature, source, doc_comment, '', kind, language, search_hints FROM symbols WHERE id = ?1",
+            "DELETE FROM symbols_fts WHERE rowid = ?1",
             params![symbol_id],
         )?;
         self.conn.execute(
             "INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
-             SELECT id, name, name_decomposed, qualified_name, signature, source, doc_comment, f.path, kind, language, ?2
+             SELECT s.id, s.name, s.name_decomposed, s.qualified_name, s.signature, s.source, s.doc_comment, f.path, s.kind, s.language, ?2
              FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?1",
             params![symbol_id, hints],
         )?;

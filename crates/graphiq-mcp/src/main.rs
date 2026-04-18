@@ -409,6 +409,75 @@ fn tools_list() -> Value {
                     "type": "object",
                     "properties": {}
                 }
+            },
+            {
+                "name": "explain",
+                "description": "Explain a symbol's structural role — its evidence-bearing edges, subsystem membership, and how it fits into the graph. Reveals what the graph knows about this symbol.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Symbol name to explain"
+                        }
+                    },
+                    "required": ["symbol"]
+                }
+            },
+            {
+                "name": "topology",
+                "description": "Describe the structural topology around a region — motifs, boundary-defining symbols, and evidence clusters. Shows how the graph is wired.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Symbol name or file path to center the topology on"
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "description": "Max traversal depth (default: 2)",
+                            "default": 2
+                        }
+                    },
+                    "required": ["symbol"]
+                }
+            },
+            {
+                "name": "why",
+                "description": "Explain why a search result ranked where it did — the evidence chain, edge types, and structural signals that caused it to appear.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query that produced the result"
+                        },
+                        "symbol": {
+                            "type": "string",
+                            "description": "The symbol name from the result to explain"
+                        }
+                    },
+                    "required": ["query", "symbol"]
+                }
+            },
+            {
+                "name": "interrogate",
+                "description": "Ask a structural question about the codebase. Answers questions about subsystems, boundaries, entry points, error flow, and architectural patterns. Not a symbol search — a structural interrogation.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "question": {
+                            "type": "string",
+                            "description": "Structural question about the codebase, e.g. 'What are the main subsystems?', 'Where are the entry points?', 'What handles errors?'"
+                        },
+                        "subsystem": {
+                            "type": "string",
+                            "description": "Optional: focus on a specific subsystem name"
+                        }
+                    },
+                    "required": ["question"]
+                }
             }
         ]
     })
@@ -466,6 +535,34 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
             }
+        }
+        "explain" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_explain(&s.db, arguments)
+        }
+        "topology" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_topology(&s.db, arguments)
+        }
+        "why" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_why(&s.db, &s.cache, s.cruncher_index.as_ref(), s.holo_index.as_ref(), arguments)
+        }
+        "interrogate" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_interrogate(&s.db, arguments)
         }
         _ => tool_error(&format!("unknown tool: {tool_name}")),
     }
@@ -731,6 +828,584 @@ fn tool_status(state: &ServerState) -> Value {
             tool_ok(text)
         }
         Err(e) => tool_error(&format!("database error: {e}")),
+    }
+}
+
+fn tool_explain(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
+    let symbol_name = match args.get("symbol").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return tool_error("missing required parameter: symbol"),
+    };
+
+    let candidates = match db.symbols_by_name(symbol_name) {
+        Ok(c) => c,
+        Err(e) => return tool_error(&format!("database error: {e}")),
+    };
+
+    let sym = match candidates.first() {
+        Some(s) => s,
+        None => return tool_error(&format!("symbol not found: {symbol_name}")),
+    };
+
+    let mut lines = Vec::new();
+    lines.push(format!("=== {} ({}) ===", sym.name, sym.kind.as_str()));
+
+    if let Some(ref sig) = sym.signature {
+        lines.push(format!("Signature: {}", sig));
+    }
+
+    let outgoing = db.edges_from(sym.id).unwrap_or_default();
+    let incoming = db.edges_to(sym.id).unwrap_or_default();
+
+    let mut direct_count = 0usize;
+    let mut boundary_count = 0usize;
+    let mut reinforcing_count = 0usize;
+    let mut structural_count = 0usize;
+    let mut incidental_count = 0usize;
+
+    let mut evidence_lines = Vec::new();
+    for edge in &outgoing {
+        let ev = parse_evidence_kind(&edge.metadata);
+        count_evidence(ev, &mut direct_count, &mut boundary_count, &mut reinforcing_count, &mut structural_count, &mut incidental_count);
+        if ev != "incidental" {
+            if let Some(t) = db.get_symbol(edge.target_id).ok().flatten() {
+                evidence_lines.push(format!("  -> [{}] {} ({}) via {}", ev, t.name, t.kind.as_str(), edge.kind.as_str()));
+            }
+        }
+    }
+    for edge in &incoming {
+        let ev = parse_evidence_kind(&edge.metadata);
+        count_evidence(ev, &mut direct_count, &mut boundary_count, &mut reinforcing_count, &mut structural_count, &mut incidental_count);
+        if ev != "incidental" {
+            if let Some(s) = db.get_symbol(edge.source_id).ok().flatten() {
+                evidence_lines.push(format!("  <- [{}] {} ({}) via {}", ev, s.name, s.kind.as_str(), edge.kind.as_str()));
+            }
+        }
+    }
+
+    let total_edges = outgoing.len() + incoming.len();
+    lines.push(format!("\nEvidence profile ({} edges):", total_edges));
+    lines.push(format!("  direct: {} | boundary: {} | reinforcing: {} | structural: {} | incidental: {}",
+        direct_count, boundary_count, reinforcing_count, structural_count, incidental_count));
+
+    if !evidence_lines.is_empty() {
+        lines.push("\nEvidence-bearing edges:".into());
+        for el in evidence_lines.iter().take(20) {
+            lines.push(el.clone());
+        }
+        if evidence_lines.len() > 20 {
+            lines.push(format!("  ... and {} more", evidence_lines.len() - 20));
+        }
+    }
+
+    let out_call_count = outgoing.iter().filter(|e| e.kind == graphiq_core::edge::EdgeKind::Calls).count();
+    let in_call_count = incoming.iter().filter(|e| e.kind == graphiq_core::edge::EdgeKind::Calls).count();
+
+    if out_call_count >= 5 && in_call_count <= 2 {
+        lines.push("\nStructural role: orchestrator (many outgoing calls, few incoming)".into());
+    } else if in_call_count >= 5 && out_call_count <= 2 {
+        lines.push("\nStructural role: sink / leaf (many incoming calls, few outgoing)".into());
+    } else if out_call_count > 0 && in_call_count > 0 {
+        lines.push("\nStructural role: connector (bidirectional call flow)".into());
+    }
+
+    let cross_module = outgoing.iter().chain(incoming.iter())
+        .filter(|e| e.metadata.to_string().contains("\"cross_module\":true"))
+        .count();
+    if cross_module > 0 {
+        lines.push(format!("\nCross-module connections: {} edges cross module boundaries", cross_module));
+    }
+
+    tool_ok(lines.join("\n"))
+}
+
+fn count_evidence(ev: &str, d: &mut usize, b: &mut usize, r: &mut usize, s: &mut usize, i: &mut usize) {
+    match ev {
+        "direct" => *d += 1,
+        "boundary" => *b += 1,
+        "reinforcing" => *r += 1,
+        "structural" => *s += 1,
+        "incidental" => *i += 1,
+        _ => {}
+    }
+}
+
+fn tool_topology(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
+    let symbol_name = match args.get("symbol").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return tool_error("missing required parameter: symbol"),
+    };
+
+    let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(2).min(5) as usize;
+
+    let candidates = match db.symbols_by_name(symbol_name) {
+        Ok(c) => c,
+        Err(e) => return tool_error(&format!("database error: {e}")),
+    };
+
+    let sym = match candidates.first() {
+        Some(s) => s,
+        None => return tool_error(&format!("symbol not found: {symbol_name}")),
+    };
+
+    let mut lines = Vec::new();
+    lines.push(format!("=== Topology around {} ===", sym.name));
+
+    let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut queue: std::collections::VecDeque<(i64, usize)> = std::collections::VecDeque::new();
+    visited.insert(sym.id);
+    queue.push_back((sym.id, 0));
+
+    let mut boundary_symbols: Vec<(String, String, String)> = Vec::new();
+    let mut hub_symbols: Vec<(String, usize)> = Vec::new();
+    let mut evidence_summary: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    while let Some((sid, d)) = queue.pop_front() {
+        if d >= depth { continue; }
+
+        let out = db.edges_from(sid).unwrap_or_default();
+        let inc = db.edges_to(sid).unwrap_or_default();
+        let out_count = out.len();
+
+        let sym_name = if sid == sym.id {
+            sym.name.clone()
+        } else {
+            match db.get_symbol(sid) {
+                Ok(Some(s)) => s.name.clone(),
+                _ => continue,
+            }
+        };
+
+        if out_count >= 5 {
+            hub_symbols.push((sym_name.clone(), out_count));
+        }
+
+        for edge in &out {
+            let ev = parse_evidence_kind(&edge.metadata);
+            *evidence_summary.entry(ev.to_string()).or_insert(0) += 1;
+            if ev == "boundary" {
+                if let Some(t) = db.get_symbol(edge.target_id).ok().flatten() {
+                    boundary_symbols.push((t.name, t.kind.as_str().to_string(), edge.kind.as_str().to_string()));
+                }
+            }
+        }
+        for edge in &inc {
+            let ev = parse_evidence_kind(&edge.metadata);
+            *evidence_summary.entry(ev.to_string()).or_insert(0) += 1;
+        }
+
+        for edge in &out {
+            if visited.insert(edge.target_id) {
+                queue.push_back((edge.target_id, d + 1));
+            }
+        }
+        for edge in &inc {
+            if visited.insert(edge.source_id) {
+                queue.push_back((edge.source_id, d + 1));
+            }
+        }
+    }
+
+    lines.push(format!("\nRegion size: {} symbols (depth={})", visited.len(), depth));
+
+    let total_ev: usize = evidence_summary.values().sum();
+    if total_ev > 0 {
+        lines.push("\nEvidence distribution:".into());
+        for (kind, count) in &evidence_summary {
+            lines.push(format!("  {}: {} ({:.0}%)", kind, count, *count as f64 / total_ev as f64 * 100.0));
+        }
+    }
+
+    if !boundary_symbols.is_empty() {
+        lines.push("\nBoundary-defining edges:".into());
+        for (name, kind, edge_kind) in boundary_symbols.iter().take(15) {
+            lines.push(format!("  {} ({}) via {}", name, kind, edge_kind));
+        }
+    }
+
+    if !hub_symbols.is_empty() {
+        lines.push("\nHub symbols (high out-degree):".into());
+        hub_symbols.sort_by(|a, b| b.1.cmp(&a.1));
+        for (name, count) in hub_symbols.iter().take(10) {
+            lines.push(format!("  {} ({} outgoing)", name, count));
+        }
+    }
+
+    tool_ok(lines.join("\n"))
+}
+
+fn tool_why(
+    db: &graphiq_core::db::GraphDb,
+    cache: &graphiq_core::cache::HotCache,
+    cruncher_index: Option<&graphiq_core::cruncher::CruncherIndex>,
+    holo_index: Option<&graphiq_core::cruncher::HoloIndex>,
+    args: Value,
+) -> Value {
+    let query = match args.get("query").and_then(|v| v.as_str()) {
+        Some(q) => q,
+        None => return tool_error("missing required parameter: query"),
+    };
+    let symbol_name = match args.get("symbol").and_then(|v| v.as_str()) {
+        Some(s) => s,
+        None => return tool_error("missing required parameter: symbol"),
+    };
+
+    let mut engine = graphiq_core::search::SearchEngine::new(db, cache);
+    if let (Some(ci), Some(hi)) = (cruncher_index, holo_index) {
+        engine = engine.with_goober(ci, hi);
+    }
+    let q = graphiq_core::search::SearchQuery::new(query).top_k(20);
+    let result = engine.search(&q);
+
+    let scored = match result.results.iter().find(|r| r.symbol.name == symbol_name) {
+        Some(s) => s,
+        None => return tool_error(&format!("'{}' not found in search results for '{}'", symbol_name, query)),
+    };
+
+    let sym = &scored.symbol;
+    let mut lines = Vec::new();
+    lines.push(format!("=== Why did '{}' rank for '{}'? ===", sym.name, query));
+    lines.push(format!("Score: {:.4}", scored.score));
+
+    let rank = result.results.iter().position(|r| r.symbol.name == symbol_name).unwrap_or(0);
+    if rank < 5 {
+        lines.push(format!("Rank: #{} (BM25 seed region)", rank + 1));
+    } else {
+        lines.push(format!("Rank: #{} (structural expansion)", rank + 1));
+    }
+
+    let query_lower = query.to_lowercase();
+    let query_terms: Vec<String> = query_lower.split_whitespace().filter(|w| w.len() >= 3).map(|s| s.to_string()).collect();
+
+    let neighborhood = cache.load_neighborhood(db, sym.id);
+
+    if let Some(ref n) = neighborhood {
+        let matching_callers: Vec<String> = n.callers.iter()
+            .filter(|(s, _)| query_terms.iter().any(|t| s.name.to_lowercase().contains(t.as_str())))
+            .map(|(s, _)| s.name.clone())
+            .collect();
+        if !matching_callers.is_empty() {
+            lines.push("\nCalling symbols matching query:".into());
+            for name in matching_callers.iter().take(5) {
+                lines.push(format!("  <- {} (calls this symbol)", name));
+            }
+        }
+
+        let matching_callees: Vec<String> = n.callees.iter()
+            .filter(|(s, _)| query_terms.iter().any(|t| s.name.to_lowercase().contains(t.as_str())))
+            .map(|(s, _)| s.name.clone())
+            .collect();
+        if !matching_callees.is_empty() {
+            lines.push("\nCalled symbols matching query:".into());
+            for name in matching_callees.iter().take(5) {
+                lines.push(format!("  -> {} (called by this symbol)", name));
+            }
+        }
+    }
+
+    let outgoing = db.edges_from(sym.id).unwrap_or_default();
+    let incoming = db.edges_to(sym.id).unwrap_or_default();
+
+    let mut evidence_chain: Vec<String> = Vec::new();
+    for edge in &outgoing {
+        let ev = parse_evidence_kind(&edge.metadata);
+        if ev != "incidental" {
+            if let Some(t) = db.get_symbol(edge.target_id).ok().flatten() {
+                evidence_chain.push(format!("  -> [{}] {} ({})", ev, t.name, edge.kind.as_str()));
+            }
+        }
+    }
+    for edge in &incoming {
+        let ev = parse_evidence_kind(&edge.metadata);
+        if ev != "incidental" {
+            if let Some(s) = db.get_symbol(edge.source_id).ok().flatten() {
+                evidence_chain.push(format!("  <- [{}] {} ({})", ev, s.name, edge.kind.as_str()));
+            }
+        }
+    }
+
+    if !evidence_chain.is_empty() {
+        lines.push("\nEvidence chain:".into());
+        for ec in evidence_chain.iter().take(15) {
+            lines.push(ec.clone());
+        }
+    }
+
+    tool_ok(lines.join("\n"))
+}
+
+fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
+    let question = match args.get("question").and_then(|v| v.as_str()) {
+        Some(q) => q,
+        None => return tool_error("missing 'question' parameter"),
+    };
+
+    let focus_subsystem = args.get("subsystem").and_then(|v| v.as_str());
+
+    let subsystems = match graphiq_core::subsystems::load_subsystems(db) {
+        Ok(s) if !s.subsystems.is_empty() => s,
+        _ => {
+            match graphiq_core::subsystems::detect_subsystems(db) {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("subsystem detection failed: {e}")),
+            }
+        }
+    };
+
+    let roles_available = db
+        .conn()
+        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='symbol_structural_roles'")
+        .ok()
+        .and_then(|mut s| s.query_row([], |r| r.get::<_, i64>(0)).ok())
+        .map_or(false, |c| c > 0);
+
+    let mut ss: Vec<&graphiq_core::subsystems::Subsystem> = subsystems.subsystems.iter().collect();
+    if let Some(focus) = focus_subsystem {
+        let focus_lower = focus.to_lowercase();
+        let filtered: Vec<&graphiq_core::subsystems::Subsystem> = ss
+            .iter()
+            .filter(|s| s.name.to_lowercase().contains(&focus_lower))
+            .cloned()
+            .collect();
+        if !filtered.is_empty() {
+            ss = filtered;
+        }
+    }
+
+    ss.sort_by(|a, b| b.symbol_ids.len().cmp(&a.symbol_ids.len()));
+    let top = ss.iter().take(15).collect::<Vec<_>>();
+
+    let lower = question.to_lowercase();
+    let mut lines: Vec<String> = Vec::new();
+
+    if lower.contains("subsystem") || lower.contains("module") || lower.contains("component") || lower.contains("architecture") {
+        let active: Vec<_> = subsystems.subsystems.iter()
+            .filter(|s| s.internal_edge_count > 0)
+            .collect();
+        let active_top: Vec<_> = active.iter().take(20).collect();
+
+        lines.push(format!("Active subsystems ({} with internal edges, {} total):", active.len(), subsystems.subsystems.len()));
+        lines.push("".into());
+        for s in &active_top {
+            let sample: Vec<String> = s.symbol_names.iter().take(5).cloned().collect();
+            lines.push(format!(
+                "{}: {} symbols, {} internal, {} boundary (cohesion: {:.2})",
+                s.name, s.symbol_ids.len(), s.internal_edge_count, s.boundary_edge_count, s.cohesion
+            ));
+            if !sample.is_empty() {
+                lines.push(format!("  key symbols: {}", sample.join(", ")));
+            }
+        }
+        if active.len() > 20 {
+            lines.push(format!("  ... and {} more", active.len() - 20));
+        }
+    }
+
+    if lower.contains("entry point") || lower.contains("entrypoint") || lower.contains("main") || lower.contains("start") {
+        if roles_available {
+            let conn = db.conn();
+            let mut stmt = conn.prepare(
+                "SELECT symbol_name, roles, subsystem_id, external_callers, internal_degree
+                 FROM symbol_structural_roles
+                 WHERE roles LIKE '%entry_point%'
+                 ORDER BY external_callers DESC
+                 LIMIT 25"
+            ).unwrap();
+            let rows: Vec<(String, String, i64, i64, i64)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+                .ok()
+                .map(|r| r.flatten().collect())
+                .unwrap_or_default();
+
+            lines.push(format!("\nEntry points ({} found, by external caller count):", rows.len()));
+            for (name, roles, sub_id, ext_callers, int_deg) in &rows {
+                let sub_name = subsystems.subsystems.iter()
+                    .find(|s| s.id == *sub_id as usize)
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("?");
+                lines.push(format!("  {} [{}] ({} callers, {} internal calls)", name, sub_name, ext_callers, int_deg));
+            }
+        } else {
+            lines.push("\nRun `graphiq subsystems --roles` to enable entry point detection.".into());
+        }
+    }
+
+    if lower.contains("error") || lower.contains("fail") || lower.contains("fault") {
+        if roles_available {
+            let conn = db.conn();
+            let mut stmt = conn.prepare(
+                "SELECT symbol_name, roles, subsystem_id, internal_degree, boundary_degree
+                 FROM symbol_structural_roles
+                 WHERE roles LIKE '%boundary%'
+                 AND (symbol_name LIKE '%error%' OR symbol_name LIKE '%fail%' OR symbol_name LIKE '%handle%' OR symbol_name LIKE '%catch%' OR symbol_name LIKE '%recover%')
+                 ORDER BY boundary_degree DESC
+                 LIMIT 25"
+            ).unwrap();
+            let rows: Vec<(String, String, i64, i64, i64)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+                .ok()
+                .map(|r| r.flatten().collect())
+                .unwrap_or_default();
+
+            lines.push(format!("\nError boundary symbols ({} found):", rows.len()));
+            for (name, roles, sub_id, int_deg, bnd_deg) in &rows {
+                let sub_name = subsystems.subsystems.iter()
+                    .find(|s| s.id == *sub_id as usize)
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("?");
+                lines.push(format!("  {} [{}] (roles: {}, {} internal, {} boundary)", name, sub_name, roles, int_deg, bnd_deg));
+            }
+        }
+    }
+
+    if lower.contains("boundary") || lower.contains("boundar") || lower.contains("interface") {
+        if roles_available {
+            let conn = db.conn();
+            let mut stmt = conn.prepare(
+                "SELECT symbol_name, subsystem_id, boundary_degree, internal_degree
+                 FROM symbol_structural_roles
+                 WHERE roles LIKE '%boundary%'
+                 ORDER BY boundary_degree DESC
+                 LIMIT 25"
+            ).unwrap();
+            let rows: Vec<(String, i64, i64, i64)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+                .ok()
+                .map(|r| r.flatten().collect())
+                .unwrap_or_default();
+
+            lines.push(format!("\nBoundary symbols ({} with boundary role):", rows.len()));
+            for (name, sub_id, bnd_deg, int_deg) in &rows {
+                let sub_name = subsystems.subsystems.iter()
+                    .find(|s| s.id == *sub_id as usize)
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("?");
+                lines.push(format!("  {} [{}] ({} boundary edges, {} internal)", name, sub_name, bnd_deg, int_deg));
+            }
+        }
+    }
+
+    if lower.contains("role") || lower.contains("structural role") {
+        if roles_available {
+            let conn = db.conn();
+            let role_types = [
+                ("entry_point", "Entry points"),
+                ("orchestrator", "Orchestrators"),
+                ("hub", "Hubs"),
+                ("boundary", "Boundary symbols"),
+                ("leaf", "Leaves"),
+            ];
+
+            for (role_key, role_label) in &role_types {
+                let sql = format!(
+                    "SELECT COUNT(*) FROM symbol_structural_roles WHERE roles LIKE '%{}%'",
+                    role_key
+                );
+                let count: i64 = conn.prepare(&sql).ok()
+                    .and_then(|mut s| s.query_row([], |r| r.get(0)).ok())
+                    .unwrap_or(0);
+                if count > 0 {
+                    lines.push(format!("  {}: {}", role_label, count));
+                }
+            }
+        } else {
+            lines.push("\nRun `graphiq subsystems --roles` to enable structural role analysis.".into());
+        }
+    }
+
+    if lower.contains("orchestrat") || lower.contains("orchestrator") {
+        if roles_available {
+            let conn = db.conn();
+            let mut stmt = conn.prepare(
+                "SELECT symbol_name, subsystem_id, internal_degree, external_callers
+                 FROM symbol_structural_roles
+                 WHERE roles LIKE '%orchestrator%'
+                 ORDER BY internal_degree DESC
+                 LIMIT 20"
+            ).unwrap();
+            let rows: Vec<(String, i64, i64, i64)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+                .ok()
+                .map(|r| r.flatten().collect())
+                .unwrap_or_default();
+
+            lines.push(format!("\nOrchestrators ({} found):", rows.len()));
+            for (name, sub_id, int_deg, ext_callers) in &rows {
+                let sub_name = subsystems.subsystems.iter()
+                    .find(|s| s.id == *sub_id as usize)
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("?");
+                lines.push(format!("  {} [{}] ({} internal calls, {} external callers)", name, sub_name, int_deg, ext_callers));
+            }
+        }
+    }
+
+    if lower.contains("cohesion") || lower.contains("coupling") || lower.contains("tight") || lower.contains("loose") {
+        let mut sorted: Vec<_> = subsystems.subsystems.iter()
+            .filter(|s| s.internal_edge_count > 0)
+            .collect();
+        sorted.sort_by(|a, b| b.cohesion.partial_cmp(&a.cohesion).unwrap());
+
+        lines.push("\nSubsystem cohesion ranking (highest first):".into());
+        for s in sorted.iter().take(10) {
+            lines.push(format!("  {:.2} - {} ({} symbols, {} internal, {} boundary)",
+                s.cohesion, s.name, s.symbol_ids.len(), s.internal_edge_count, s.boundary_edge_count));
+        }
+        lines.push("\nLowest cohesion:".into());
+        for s in sorted.iter().rev().take(5) {
+            lines.push(format!("  {:.2} - {} ({} symbols, {} internal, {} boundary)",
+                s.cohesion, s.name, s.symbol_ids.len(), s.internal_edge_count, s.boundary_edge_count));
+        }
+    }
+
+    if lower.contains("convention") || lower.contains("pattern") || lower.contains("contradiction") {
+        if roles_available {
+            let conn = db.conn();
+            let mut stmt = conn.prepare(
+                "SELECT subsystem_id, roles, COUNT(*) as cnt
+                 FROM symbol_structural_roles
+                 WHERE roles LIKE '%entry_point%' OR roles LIKE '%orchestrator%'
+                 GROUP BY subsystem_id
+                 ORDER BY cnt DESC
+                 LIMIT 10"
+            ).unwrap();
+            let rows: Vec<(i64, String, i64)> = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .ok()
+                .map(|r| r.flatten().collect())
+                .unwrap_or_default();
+
+            lines.push("\nSubsystem leadership (entry points + orchestrators per subsystem):".into());
+            for (sub_id, roles, cnt) in &rows {
+                let sub_name = subsystems.subsystems.iter()
+                    .find(|s| s.id == *sub_id as usize)
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("?");
+                lines.push(format!("  {} [{}]: {} leaders", sub_name, roles, cnt));
+            }
+        }
+    }
+
+    if lines.len() <= 1 || (lines.len() == 2 && lines[1].is_empty()) {
+        lines.push(format!("No specific structural pattern matched for: {}", question));
+        lines.push("Try: subsystems, entry points, error boundaries, roles, boundary, orchestrators, cohesion, or convention analysis.".into());
+    }
+
+    tool_ok(lines.join("\n"))
+}
+
+fn parse_evidence_kind(meta: &serde_json::Value) -> &'static str {
+    if let Some(kind) = meta.get("evidence").and_then(|e| e.get("kind")).and_then(|k| k.as_str()) {
+        match kind {
+            "direct" => "direct",
+            "boundary" => "boundary",
+            "reinforcing" => "reinforcing",
+            "structural" => "structural",
+            "incidental" => "incidental",
+            _ => "unknown",
+        }
+    } else {
+        "unknown"
     }
 }
 

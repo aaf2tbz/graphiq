@@ -55,6 +55,8 @@ pub struct CruncherIndex {
 
     bridging: Vec<f64>,
     id_to_idx: HashMap<i64, usize>,
+    name_to_indices: HashMap<String, Vec<usize>>,
+    structural_degree: Vec<f64>,
 }
 
 struct TermSet {
@@ -201,6 +203,14 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         .map(|(i, &id)| (id, i))
         .collect();
 
+    let mut name_to_indices: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, name) in symbol_names.iter().enumerate() {
+        name_to_indices
+            .entry(name.to_lowercase())
+            .or_default()
+            .push(i);
+    }
+
     let mut file_stmt = conn
         .prepare("SELECT id, path FROM files")
         .map_err(|e| e.to_string())?;
@@ -268,7 +278,8 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
 
             let src = &symbol_sources[i];
             let src_terms = if src.len() > 4000 {
-                cr_tokenize(&src[..4000])
+                let end = src.floor_char_boundary(4000);
+                cr_tokenize(&src[..end])
             } else {
                 cr_tokenize(src)
             };
@@ -365,6 +376,14 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
 
     eprintln!("  Cruncher: done ({} symbols)", n);
 
+    let structural_degree: Vec<f64> = (0..n)
+        .map(|i| {
+            let out_deg = outgoing[i].len() as f64;
+            let in_deg = incoming[i].len() as f64;
+            (out_deg + in_deg).ln_1p()
+        })
+        .collect();
+
     Ok(CruncherIndex {
         n,
         symbol_ids,
@@ -378,6 +397,8 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         global_idf,
         bridging,
         id_to_idx,
+        name_to_indices,
+        structural_degree,
     })
 }
 
@@ -2337,7 +2358,7 @@ fn holo_query_name_cosine(query: &str, hi: &HoloIndex, symbol_i: usize) -> f64 {
     holo_cosine(&q_holo, &hi.name_holos[symbol_i])
 }
 
-struct V5Candidate {
+ struct V5Candidate {
     idx: usize,
     bm25_score: f64,
     coverage_score: f64,
@@ -2349,6 +2370,7 @@ struct V5Candidate {
     ng_score: f64,
     coherence_score: f64,
     holo_name_sim: f64,
+    structural_recall: bool,
 }
 
 pub fn goober_v5_search(
@@ -2410,8 +2432,53 @@ pub fn goober_v5_search(
                     ng_score: ng,
                     coherence_score: coherence,
                     holo_name_sim: holo_name,
+                    structural_recall: false,
                 },
             );
+        }
+    }
+
+    let bm25_ids: HashSet<i64> = bm25_seeds.iter().take(MAX_SEEDS).map(|(id, _)| *id).collect();
+    let structural_max_deg = idx.structural_degree.iter().cloned().fold(0.0f64, f64::max).max(1e-10);
+
+    for qt in &query_terms {
+        let ql = qt.text.to_lowercase();
+        if let Some(indices) = idx.name_to_indices.get(&ql) {
+            for &i in indices.iter().take(5) {
+                if candidates.contains_key(&i) {
+                    continue;
+                }
+
+                let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
+                let (name_s, _) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+
+                let channels = compute_sec_channels(&query_terms, idx, i);
+                let ng = negentropy(&channels);
+                let coherence = channel_coherence(&query_terms, idx, i);
+                let holo_name = holo_query_name_cosine(query, hi, i);
+
+                candidates.insert(
+                    i,
+                    V5Candidate {
+                        idx: i,
+                        bm25_score: 0.0,
+                        coverage_score: cov_score,
+                        coverage_count: cov_count,
+                        name_score: name_s,
+                        is_seed: true,
+                        walk_evidence: 0.0,
+                        seed_paths: {
+                            let mut sp = HashSet::new();
+                            sp.insert(i);
+                            sp
+                        },
+                        ng_score: ng,
+                        coherence_score: coherence,
+                        holo_name_sim: holo_name,
+                        structural_recall: true,
+                    },
+                );
+            }
         }
     }
 
@@ -2484,6 +2551,7 @@ pub fn goober_v5_search(
                         ng_score: ng,
                         coherence_score: coherence,
                         holo_name_sim: holo_name,
+                        structural_recall: false,
                     }
                 });
 
@@ -2584,7 +2652,14 @@ pub fn goober_v5_search(
             let kb = kind_boost(&idx.symbol_kinds[c.idx]);
             let tp = test_penalty(&idx.file_paths, idx.symbol_file_ids[c.idx]);
 
-            let raw = (base + holo_additive) * coverage_frac.powf(0.3) * ng_boost * seed_bonus * kb * tp;
+            let structural_bonus = if c.structural_recall && c.name_score > 0.0 {
+                let deg_norm = idx.structural_degree[c.idx] / structural_max_deg;
+                2.0 + deg_norm * 3.0
+            } else {
+                0.0
+            };
+
+            let raw = (base + holo_additive + structural_bonus) * coverage_frac.powf(0.3) * ng_boost * seed_bonus * kb * tp;
 
             if raw > 0.0 {
                 Some((c.idx, raw))

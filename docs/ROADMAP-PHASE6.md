@@ -1,84 +1,40 @@
-# Phase 6: Latent Semantic Geometry
+# Phase 6→7: Latent Semantic Geometry → Anisotropic Hypersphere
 
-**Goal**: Replace neural embeddings with pure mathematical semantic search via
-truncated SVD on a structurally-augmented term-symbol matrix. Hyperspherical
-geometry as the relevance framework.
+**Phase 6 (isotropic) completed** — LSA infrastructure built, SVD working, angular
+scoring implemented. Did not improve retrieval because isotropic normalization
+treats all latent dimensions equally, capturing patterns already in BM25.
 
-**Baseline** (Phase 5, no embeddings):
-- Self: 0.717 | Tokio: 0.540 | Signetai: 0.527
+**Phase 7 (anisotropic) is the continuation** — warps the sphere before projection
+so discriminative dimensions dominate and generic/noisy ones are suppressed.
 
-## Steps
+Full design: `docs/DESIGN-LSA.md` (updated for anisotropic model)
+Full roadmap: `docs/ROADMAP.md` (Phase 7 section)
 
-### Step A: Term-Symbol Matrix Extraction
-Build the TF-IDF matrix during indexing. Extract per-symbol term frequencies
-from FTS data (name, signature, doc_comment, source tokens). Compute IDF
-across all symbols. Store the sparse matrix for SVD.
+## Phase 6 Deliverables (Completed)
 
-**Deliverable**: `extract_term_matrix()` producing a sparse CSR matrix.
-**Verify**: Matrix dimensions and sparsity match expectations.
+- [x] Term-symbol matrix extraction with structural augmentation (`build_tfidf_matrix`)
+- [x] Randomized SVD to k=96 (`randomized_svd`)
+- [x] Isotropic hyperspherical normalization (`normalize_to_sphere`)
+- [x] Angular distance and spherical cap search (`spherical_cap_search`, `blade_search`)
+- [x] Query projection (`project_query`)
+- [x] Centroid projection for multi-concept queries
 
-### Step B: Truncated SVD
-Implement or integrate truncated SVD. Lanczos iteration on the sparse matrix,
-keeping top k=128 singular values/vectors. Produces:
-- Term basis T_k (for query projection)
-- Symbol vectors S_k (for storage)
+## Phase 7 Steps
 
-**Deliverable**: `compute_lsa(matrix, k=128) -> (T_k, S_k, Sigma_k)`
-**Verify**: Reconstruction quality (Frobenius norm ratio).
+See `docs/ROADMAP.md` → Phase 7 for the full step-by-step plan.
 
-### Step C: Hyperspherical Normalization + Storage
-L2-normalize all vectors to unit length. Store S_k rows in `symbol_latent`
-table (symbol_id, latent_vec BLOB, dim). Store T_k as the shared projection
-basis.
+### Quick Summary
 
-**Deliverable**: DB schema, storage, retrieval functions.
-**Verify**: All vectors have unit L2 norm.
-
-### Step D: Query Projection + Angular Scoring
-At query time: project query terms through T_k^T, normalize to unit length,
-compute angular distance to all symbol vectors. Return as relevance scores.
-
-**Deliverable**: `angular_search(query, top_k) -> Vec<(symbol_id, angle)>`
-**Verify**: Manual spot-checks on known queries.
-
-### Step E: LSA Reranker Integration
-Wire into the search pipeline as a reranker (replaces embed reranker).
-Hybrid scoring: blend BM25 score with (1 - angle/π) relevance.
-Activate for NL queries and low-confidence BM25 results.
-
-**Deliverable**: `lsa_rerank()` in search pipeline.
-**Benchmark**: Full 3-codebase NDCG comparison.
-
-### Step F: Structural Augmentation (Pre-SVD)
-Inject graph structure into the term-symbol matrix before SVD:
-- Call-graph mixing: propagate terms along call edges
-- Type hierarchy: mix interface terms into implementations
-- Import neighborhood: co-located symbols share term distributions
-
-This is the novel part — the SVD discovers structural semantics, not just
-lexical co-occurrence.
-
-**Deliverable**: `augment_matrix(matrix, edges) -> augmented_matrix`
-**Benchmark**: Compare F (without augmentation) vs F (with augmentation).
-
-### Step G: Geometric Expansion for MISS Recovery
-When BM25 returns zero relevant candidates:
-1. Project query onto hypersphere
-2. Find all symbols within angular radius θ
-3. These are the "semantic neighborhood" — pure geometric recovery
-
-**Deliverable**: `geometric_expand(query, theta) -> Vec<symbol_id>`
-**Benchmark**: Track MISS→HIT conversion rate.
-
-### Step H: Centroid Projection for Multi-Concept Queries
-For NL queries like "split tcp stream read write":
-1. Decompose into sub-concepts
-2. Project each independently
-3. Compute spherical centroid
-4. Weight by distance to each sub-concept
-
-**Deliverable**: Multi-concept query handling.
-**Benchmark**: Per-query NDCG on nl-descriptive/abstract categories.
+| Step | What | Key Change |
+|---|---|---|
+| A | Per-dimension discriminativity analysis | Compute discᵢ = 1 - |mean|/std per dimension |
+| B | Diagonal weight matrix | wᵢ = (specᵢ/max(spec))^α + ε |
+| C | Anisotropic normalization | `normalize_anisotropic(vecs, weights)` |
+| D | Anisotropic angular search | Wire warped vectors into search functions |
+| E | Reranker integration | LSA reranker behind GooberV5 |
+| F | Alpha tuning + ablation | Systematic α sweep |
+| G | Geometric MISS recovery | Spherical cap on warped sphere |
+| H | Centroid projection | Multi-concept queries on warped sphere |
 
 ## Success Criteria
 
@@ -91,17 +47,12 @@ For NL queries like "split tcp stream read write":
 | Storage overhead | < 15MB for signetai |
 | Query latency | < 2ms additional |
 
-## Dependencies
-
-- Rust linear algebra: `nalgebra` or `ndarray` + `ndarray-linalg`
-- No model downloads, no network calls, no GPU
-
 ## Key Files
 
-- `crates/graphiq-core/src/lsa.rs` — New: SVD, matrix ops, angular distance
-- `crates/graphiq-core/src/lsa_matrix.rs` — New: TF-IDF extraction, augmentation
-- `crates/graphiq-core/src/search.rs` — Modified: LSA reranker replaces embed
+- `crates/graphiq-core/src/lsa.rs` — Modified: anisotropic weights, warped normalization
+- `crates/graphiq-core/src/search.rs` — Modified: LSA reranker behind GooberV5
+- `crates/graphiq-core/src/cruncher.rs` — Modified: expose S_k and sigma for anisotropy
 - `crates/graphiq-core/src/db.rs` — Modified: latent vector storage
-- `crates/graphiq-core/src/index.rs` — Modified: LSA computation after indexing
-- `crates/graphiq-core/Cargo.toml` — Modified: add linalg dependency
-- `docs/DESIGN-LSA.md` — The full design document
+- `crates/graphiq-core/src/index.rs` — Modified: anisotropic LSA computation after indexing
+- `docs/DESIGN-LSA.md` — The full design document (updated for anisotropic model)
+- `docs/ROADMAP.md` — The full roadmap (Phases 7-9)

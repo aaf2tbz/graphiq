@@ -306,9 +306,19 @@ impl<'a> Indexer<'a> {
             let _ = self.db.update_importance(*symbol_id, *importance);
         }
 
+        self.compute_edge_evidence()?;
         self.generate_search_hints()?;
 
         Ok(stats)
+    }
+
+    fn compute_edge_evidence(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::edge_evidence::{infer_edge_evidence, write_edge_evidence};
+
+        let evidence = infer_edge_evidence(self.db).map_err(|e| e)?;
+        let updated = write_edge_evidence(self.db, &evidence).map_err(|e| e)?;
+        eprintln!("  inferred evidence for {} edges", updated);
+        Ok(())
     }
 
     fn generate_search_hints(&self) -> Result<(), Box<dyn std::error::Error>> {

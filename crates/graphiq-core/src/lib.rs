@@ -9,6 +9,7 @@ pub mod db;
 pub mod decompose;
 pub mod directory_expand;
 pub mod edge;
+pub mod edge_evidence;
 #[cfg(feature = "embed")]
 pub mod embed;
 pub mod evidence;
@@ -34,6 +35,7 @@ pub mod search;
 pub mod sec;
 pub mod windtunnel;
 pub mod spectral;
+pub mod subsystems;
 pub mod symbol;
 pub mod tokenize;
 pub mod topo;

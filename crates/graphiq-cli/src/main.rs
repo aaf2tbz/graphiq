@@ -56,6 +56,24 @@ enum Commands {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
+    Lsa {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+    },
+    Subsystems {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+        #[arg(long)]
+        roles: bool,
+    },
+    Roles {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+        #[arg(long)]
+        subsystem: Option<usize>,
+        #[arg(short, long, default_value_t = 30)]
+        top: usize,
+    },
     Demo,
     Setup {
         #[arg(long, value_name = "PATH")]
@@ -96,6 +114,9 @@ fn main() {
         } => cmd_blast(&symbol, &db, depth, &direction),
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
+        Commands::Lsa { db } => cmd_lsa(&db),
+        Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
+        Commands::Roles { db, subsystem, top } => cmd_roles(&db, subsystem, top),
         Commands::Demo => cmd_demo(),
         Commands::Setup {
             project,
@@ -369,6 +390,187 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+fn cmd_lsa(db_path: &std::path::Path) {
+    if !db_path.exists() {
+        eprintln!("database not found: {}", db_path.display());
+        eprintln!("run `graphiq index` first to create the database");
+        std::process::exit(1);
+    }
+
+    let db = match graphiq_core::db::GraphDb::open(db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error opening database: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("Computing LSA (anisotropic hypersphere)...");
+    let lsa = match graphiq_core::lsa::compute_lsa(&db) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("LSA computation failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("Storing LSA vectors...");
+    match graphiq_core::lsa::store_lsa_vectors(&db, &lsa.symbol_ids, &lsa.symbol_vecs) {
+        Ok(n) => eprintln!("  {} symbol vectors stored", n),
+        Err(e) => eprintln!("  vector store failed: {e}"),
+    }
+
+    match graphiq_core::lsa::store_lsa_basis(&db, &lsa.term_basis, &lsa.term_index, &lsa.term_idf) {
+        Ok(()) => eprintln!("  {} term basis vectors stored", lsa.term_index.len()),
+        Err(e) => eprintln!("  basis store failed: {e}"),
+    }
+
+    match graphiq_core::lsa::store_lsa_sigma(&db, &lsa.singular_values) {
+        Ok(()) => eprintln!("  {} singular values stored", lsa.singular_values.len()),
+        Err(e) => eprintln!("  sigma store failed: {e}"),
+    }
+
+    match graphiq_core::lsa::store_anisotropy_weights(&db, &lsa.anisotropy_weights) {
+        Ok(()) => eprintln!("  {} anisotropy weights stored", lsa.anisotropy_weights.len()),
+        Err(e) => eprintln!("  anisotropy store failed: {e}"),
+    }
+
+    eprintln!("LSA done.");
+}
+
+fn cmd_subsystems(db_path: &std::path::Path, compute_roles: bool) {
+    if !db_path.exists() {
+        eprintln!("database not found: {}", db_path.display());
+        std::process::exit(1);
+    }
+
+    let db = match graphiq_core::db::GraphDb::open(db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error opening database: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("Detecting subsystems...");
+    let index = match graphiq_core::subsystems::detect_subsystems(&db) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("subsystem detection failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("Storing subsystems...");
+    if let Err(e) = graphiq_core::subsystems::store_subsystems(&db, &index) {
+        eprintln!("store failed: {e}");
+    }
+
+    if compute_roles {
+        eprintln!("Materializing structural roles...");
+        let roles = match graphiq_core::subsystems::materialize_structural_roles(&db, &index) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("role materialization failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        eprintln!("Storing structural roles ({} symbols)...", roles.len());
+        if let Err(e) = graphiq_core::subsystems::store_structural_roles(&db, &roles) {
+            eprintln!("role store failed: {e}");
+        }
+    }
+
+    let mut sorted: Vec<&graphiq_core::subsystems::Subsystem> = index.subsystems.iter().collect();
+    sorted.sort_by(|a, b| b.cohesion.partial_cmp(&a.cohesion).unwrap());
+
+    println!("\n=== Subsystems ({}) ===\n", index.subsystems.len());
+    println!("{:<40} {:>6} {:>10} {:>10} {:>8}", "Name", "Symbols", "Internal", "Boundary", "Cohesion");
+    println!("{}", "-".repeat(78));
+    for s in sorted.iter().take(30) {
+        println!(
+            "{:<40} {:>6} {:>10} {:>10} {:>8.2}",
+            s.name, s.symbol_ids.len(), s.internal_edge_count, s.boundary_edge_count, s.cohesion
+        );
+    }
+}
+
+fn cmd_roles(db_path: &std::path::Path, subsystem_filter: Option<usize>, top: usize) {
+    use graphiq_core::subsystems::StructuralRole;
+
+    if !db_path.exists() {
+        eprintln!("database not found: {}", db_path.display());
+        std::process::exit(1);
+    }
+
+    let db = match graphiq_core::db::GraphDb::open(db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error opening database: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let table_exists: bool = db
+        .conn()
+        .prepare("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='symbol_structural_roles'")
+        .unwrap()
+        .query_row([], |row| row.get::<_, i64>(0))
+        .unwrap() > 0;
+
+    if !table_exists {
+        eprintln!("No structural roles found. Run `graphiq subsystems --roles` first.");
+        std::process::exit(1);
+    }
+
+    let query = if let Some(sub_id) = subsystem_filter {
+        format!("SELECT symbol_name, roles, subsystem_id, internal_degree, boundary_degree, external_callers, external_callees FROM symbol_structural_roles WHERE subsystem_id = {} ORDER BY external_callers DESC, internal_degree DESC LIMIT {}", sub_id, top)
+    } else {
+        format!("SELECT symbol_name, roles, subsystem_id, internal_degree, boundary_degree, external_callers, external_callees FROM symbol_structural_roles ORDER BY external_callers DESC, internal_degree DESC LIMIT {}", top)
+    };
+
+    let conn = db.conn();
+    let mut stmt = conn.prepare(&query).unwrap();
+    let rows: Vec<(String, String, i64, i64, i64, i64, i64)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?, row.get(1)?, row.get(2)?,
+                row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?,
+            ))
+        })
+        .unwrap()
+        .flatten()
+        .collect();
+
+    println!("\n=== Structural Roles (top {}) ===\n", rows.len().min(top));
+    println!("{:<45} {:<30} {:>8} {:>6} {:>6} {:>5} {:>5}", "Symbol", "Roles", "Subsystem", "IntDeg", "BndDeg", "ExtIn", "ExtOut");
+    println!("{}", "-".repeat(112));
+
+    for (name, roles_str, sub_id, int_deg, bnd_deg, ext_in, ext_out) in &rows {
+        let role_icons: Vec<String> = roles_str
+            .split(',')
+            .filter_map(|r| match r.trim() {
+                "entry_point" => Some("EP".to_string()),
+                "orchestrator" => Some("ORC".to_string()),
+                "hub" => Some("HUB".to_string()),
+                "boundary" => Some("BND".to_string()),
+                "leaf" => Some("LEAF".to_string()),
+                _ => None,
+            })
+            .collect();
+        println!(
+            "{:<45} {:<30} {:>8} {:>6} {:>6} {:>5} {:>5}",
+            name,
+            role_icons.join(", "),
+            sub_id,
+            int_deg,
+            bnd_deg,
+            ext_in,
+            ext_out,
+        );
     }
 }
 

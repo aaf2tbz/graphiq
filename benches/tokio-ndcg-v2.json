@@ -1,0 +1,135 @@
+[
+  {
+    "query": "add_permits",
+    "category": "symbol-exact",
+    "relevance": {"add_permits": 3}
+  },
+  {
+    "query": "poll_write_ready",
+    "category": "symbol-exact",
+    "relevance": {"poll_write_ready": 3}
+  },
+  {
+    "query": "CtrlCStream",
+    "category": "symbol-exact",
+    "relevance": {"CtrlCStream": 3}
+  },
+  {
+    "query": "ReadyEvent",
+    "category": "symbol-exact",
+    "relevance": {"ReadyEvent": 3}
+  },
+  {
+    "query": "spawn_blocking",
+    "category": "symbol-exact",
+    "relevance": {"spawn_blocking": 3}
+  },
+  {
+    "query": "TryRecvError",
+    "category": "symbol-exact",
+    "relevance": {"TryRecvError": 3}
+  },
+  {
+    "query": "threaded",
+    "category": "symbol-exact",
+    "relevance": {"threaded": 3}
+  },
+  {
+    "query": "acquire",
+    "category": "symbol-exact",
+    "relevance": {"acquire": 3}
+  },
+  {
+    "query": "disconnect_reader",
+    "category": "symbol-exact",
+    "relevance": {"disconnect_reader": 3}
+  },
+  {
+    "query": "compact_remove_empty",
+    "category": "symbol-exact",
+    "relevance": {"compact_remove_empty": 3}
+  },
+  {
+    "query": "add permits to a semaphore",
+    "category": "nl-descriptive",
+    "relevance": {
+      "add_permits": 3,
+      "Semaphore": 2,
+      "acquire": 1
+    }
+  },
+  {
+    "query": "poll until a write is ready on async io",
+    "category": "nl-descriptive",
+    "relevance": {
+      "poll_write_ready": 3,
+      "poll_write": 2,
+      "poll_shutdown": 1
+    }
+  },
+  {
+    "query": "listen for ctrl c signal",
+    "category": "nl-descriptive",
+    "relevance": {
+      "CtrlCStream": 3,
+      "signal_realtime": 1
+    }
+  },
+  {
+    "query": "event that is ready when polled",
+    "category": "nl-descriptive",
+    "relevance": {
+      "ReadyEvent": 3,
+      "is_ready": 1
+    }
+  },
+  {
+    "query": "run a blocking task on the runtime",
+    "category": "nl-descriptive",
+    "relevance": {
+      "spawn_blocking": 3,
+      "spawn": 2,
+      "worker_index_from_spawn_blocking": 1
+    }
+  },
+  {
+    "query": "receive error when channel is empty",
+    "category": "nl-descriptive",
+    "relevance": {
+      "TryRecvError": 3,
+      "Receiver": 2
+    }
+  },
+  {
+    "query": "configure multi threaded runtime",
+    "category": "nl-descriptive",
+    "relevance": {
+      "threaded": 3,
+      "multi_thread": 3,
+      "Handle": 1
+    }
+  },
+  {
+    "query": "acquire a permit from a semaphore",
+    "category": "nl-descriptive",
+    "relevance": {
+      "acquire": 3,
+      "Semaphore": 2,
+      "add_permits": 1
+    }
+  },
+  {
+    "query": "disconnect the read half of a split stream",
+    "category": "nl-descriptive",
+    "relevance": {
+      "disconnect_reader": 3
+    }
+  },
+  {
+    "query": "compact by removing empty entries",
+    "category": "nl-descriptive",
+    "relevance": {
+      "compact_remove_empty": 3
+    }
+  }
+]
