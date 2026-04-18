@@ -1,0 +1,22 @@
+[
+  {"query": "extractFromConversation", "category": "symbol-exact", "relevance": {"extractFromConversation": 3, "extractFromConversations": 2}},
+  {"query": "searchGraph", "category": "symbol-exact", "relevance": {"searchGraph": 3}},
+  {"query": "fetchMarketplaceMcpCatalog", "category": "symbol-exact", "relevance": {"fetchMarketplaceMcpCatalog": 3}},
+  {"query": "recover stale leases", "category": "symbol-partial", "relevance": {"recoverStaleLeases": 3}},
+  {"query": "compute permission footprint", "category": "symbol-partial", "relevance": {"computePermissionFootprint": 3}},
+  {"query": "constellation dependency", "category": "symbol-partial", "relevance": {"ConstellationDependency": 3, "constellation": 2}},
+  {"query": "how does memory extraction process conversation transcripts", "category": "nl-descriptive", "relevance": {"extractFromConversation": 3, "process_extract": 3, "extractFromConversations": 2, "enqueueExtractionJob": 2}},
+  {"query": "what checks if a connector is healthy", "category": "nl-descriptive", "relevance": {"getEntityHealth": 3, "scoreStatus": 3, "isDaemonHealthyAt": 2, "HealthState": 2}},
+  {"query": "retrieve memories using vector similarity search", "category": "nl-descriptive", "relevance": {"searchMemories": 3, "vector_search": 3, "hybrid_search": 2, "query_memories": 2}},
+  {"query": "how are entity relationships stored and queried", "category": "nl-abstract", "relevance": {"searchGraph": 3, "getEntityAspects": 3, "ConstellationDependency": 2, "getProjection": 2}},
+  {"query": "what determines the retention and compaction of memories", "category": "nl-abstract", "relevance": {"condenseToEpoch": 3, "RetentionHandle": 2, "preCompaction": 2, "forgetMemory": 2}},
+  {"query": "how does the predictor scoring model get trained", "category": "nl-abstract", "relevance": {"PredictorTrainingRunRow": 3, "evaluate_model": 3, "scenario_to_training_pair": 2, "effectiveScore": 2}},
+  {"query": "daemon failed to start port already in use", "category": "error-debug", "relevance": {"doStart": 3, "doRestart": 2, "sessionStartTimeout": 2, "waitForPidExit": 2}},
+  {"query": "embedding provider returned invalid dimensions", "category": "error-debug", "relevance": {"checkProviderAvailable": 3, "EmbeddingProvider": 2, "resolveEmbeddingBaseUrl": 2, "setNativeFallbackProvider": 2}},
+  {"query": "rate limit exceeded on memory recall endpoint", "category": "error-debug", "relevance": {"createRateLimiter": 3, "partitionRecallRows": 2, "POST /api/memory/recall": 2}},
+  {"query": "connector-opencode auth", "category": "file-path", "relevance": {"parseAuthConfig": 3}},
+  {"query": "mcp marketplace catalog", "category": "file-path", "relevance": {"fetchMarketplaceMcpCatalog": 3, "filterCatalog": 2, "ParsedCatalogPage": 2}},
+  {"query": "retention compaction epoch", "category": "file-path", "relevance": {"condenseToEpoch": 3, "preCompaction": 2}},
+  {"query": "all embedding provider status values", "category": "cross-cutting", "relevance": {"NativeProviderStatus": 3, "EmbeddingProvider": 2, "checkProviderAvailable": 2, "UpdateHealth": 1}},
+  {"query": "all plugin lifecycle hooks", "category": "cross-cutting", "relevance": {"HookDeps": 3, "replaceTriggers": 2, "find_tool_with_subagent": 2, "pendingInjectSet": 2}}
+]

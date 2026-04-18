@@ -1,0 +1,22 @@
+[
+  {"query": "how does the runtime scheduler decide which task to run next", "category": "behavioral", "expected_symbol": "runtime"},
+  {"query": "read bytes from a TCP stream", "category": "behavioral", "expected_symbol": "try_read_buf"},
+  {"query": "spawn a blocking task on a separate thread pool", "category": "behavioral", "expected_symbol": "spawn_blocking"},
+  {"query": "create a periodic interval timer", "category": "behavioral", "expected_symbol": "interval"},
+  {"query": "send a message through a bounded channel", "category": "behavioral", "expected_symbol": "send_modify"},
+  {"query": "wait for multiple concurrent tasks to complete", "category": "behavioral", "expected_symbol": "join_with_select"},
+  {"query": "acquire a semaphore permit with a timeout", "category": "behavioral", "expected_symbol": "poll_acquire_many_available"},
+  {"query": "what happens when a channel receiver is dropped while sender is still active", "category": "behavioral", "expected_symbol": "close_rx"},
+  {"query": "how does the notification system wake up waiting tasks", "category": "behavioral", "expected_symbol": "clone_waker"},
+  {"query": "what tracks spawned task backtraces for panic reporting", "category": "behavioral", "expected_symbol": "task_id_inside_block_on_panic_caller"},
+  {"query": "how does the timer wheel expire and process deadlines", "category": "behavioral", "expected_symbol": "process_expired_timers"},
+  {"query": "shutdown the runtime with active blocking threads", "category": "behavioral", "expected_symbol": "blocking_shutdown"},
+  {"query": "read from a source until not all bytes are ready", "category": "behavioral", "expected_symbol": "read_until_not_all_ready"},
+  {"query": "peek at data from a channel without removing it", "category": "behavioral", "expected_symbol": "poll_peek_from"},
+  {"query": "how does cooperative task yielding prevent starvation", "category": "behavioral", "expected_symbol": "non_cooperative_task"},
+  {"query": "write all data from a buffer to an async sink", "category": "behavioral", "expected_symbol": "write_all_buf"},
+  {"query": "what happens when rwlock read blocks on a blocking context", "category": "behavioral", "expected_symbol": "rwlock_blocking_read_panic_caller"},
+  {"query": "connect to a remote TCP endpoint asynchronously", "category": "behavioral", "expected_symbol": "connect"},
+  {"query": "how does a driver shutdown affect pending operations", "category": "behavioral", "expected_symbol": "driver_shutdown_wakes_currently_pending_polls"},
+  {"query": "kill a process after waiting for exit", "category": "behavioral", "expected_symbol": "kill_after_wait"}
+]

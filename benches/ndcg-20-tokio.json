@@ -1,0 +1,22 @@
+[
+  {"query": "spawn_blocking", "category": "symbol-exact", "relevance": {"spawn_blocking": 3, "spawn_pending_tasks": 2}},
+  {"query": "process_expired_timers", "category": "symbol-exact", "relevance": {"process_expired_timers": 3}},
+  {"query": "ReadBuf", "category": "symbol-exact", "relevance": {"ReadBuf": 3, "try_read_buf": 2}},
+  {"query": "read bytes from TCP stream", "category": "symbol-partial", "relevance": {"try_read_buf": 3, "connect": 2, "writable_by_poll": 2}},
+  {"query": "blocking shutdown", "category": "symbol-partial", "relevance": {"blocking_shutdown": 3, "DisallowBlockInPlaceGuard": 2}},
+  {"query": "acquire semaphore permit", "category": "symbol-partial", "relevance": {"poll_acquire_many_available": 3, "across_tasks": 2}},
+  {"query": "how does tokio spawn blocking tasks on a separate thread pool", "category": "nl-descriptive", "relevance": {"spawn_blocking": 3, "spawn_pending_tasks": 2, "spawn_index_tasks": 2}},
+  {"query": "what reads data asynchronously from a source into a buffer", "category": "nl-descriptive", "relevance": {"try_read_buf": 3, "ReadBuf": 3, "read_until_not_all_ready": 2}},
+  {"query": "how are RwLock permits acquired and released", "category": "nl-descriptive", "relevance": {"RwLock": 3, "rwlock_blocking_read_panic_caller": 2}},
+  {"query": "what happens when a runtime shuts down with active blocking tasks", "category": "nl-abstract", "relevance": {"blocking_shutdown": 3, "num_idle_blocking_threads_is_zero_after_shutdown": 2, "unawaited_blocking_task_wakes_paused_runtime": 2}},
+  {"query": "how does the timer wheel process expired deadlines", "category": "nl-abstract", "relevance": {"process_expired_timers": 3, "deadline_now_elapses": 2}},
+  {"query": "what mechanism handles cooperative task yielding", "category": "nl-abstract", "relevance": {"non_cooperative_task": 3, "task_big_spawn_sizes_recorded": 2}},
+  {"query": "panic in blocking task after runtime shutdown", "category": "error-debug", "relevance": {"drop_join_handle_slow": 3, "unsplit_panic_caller": 2, "task_id_inside_block_on_panic_caller": 2}},
+  {"query": "rwlock read deadlock on blocking thread", "category": "error-debug", "relevance": {"rwlock_blocking_read_panic_caller": 3, "DisallowBlockInPlaceGuard": 2}},
+  {"query": "driver shutdown wakes pending polls unexpectedly", "category": "error-debug", "relevance": {"driver_shutdown_wakes_currently_pending_polls": 3, "reset_writable": 2}},
+  {"query": "tokio sync mpsc", "category": "file-path", "relevance": {"async_send_recv_unbounded": 3, "poll_peek_sender": 2, "sender_count": 2}},
+  {"query": "tokio io readbuf", "category": "file-path", "relevance": {"try_read_buf": 3, "ReadBuf": 3}},
+  {"query": "tokio runtime blocking", "category": "file-path", "relevance": {"spawn_blocking": 3, "blocking_shutdown": 2, "DisallowBlockInPlaceGuard": 2}},
+  {"query": "all ways to send data across tokio channels", "category": "cross-cutting", "relevance": {"async_send_recv_unbounded": 3, "send_modify": 2, "poll_peek_sender": 2, "recv_timeout": 2}},
+  {"query": "all task spawn and join patterns", "category": "cross-cutting", "relevance": {"spawn_blocking": 3, "spawn_index_tasks": 2, "spawn_pending_tasks": 2, "join_with_select": 2}}
+]

@@ -1,0 +1,22 @@
+[
+  {"query": "ParseBuildOptions", "category": "symbol-exact", "relevance": {"ParseBuildOptions": 3, "flagsForBuildOptions": 2}},
+  {"query": "AppendSourceMapChunk", "category": "symbol-exact", "relevance": {"AppendSourceMapChunk": 3}},
+  {"query": "Renamer", "category": "symbol-exact", "relevance": {"Renamer": 3}},
+  {"query": "validate build options", "category": "symbol-partial", "relevance": {"ParseBuildOptions": 3, "flagsForBuildOptions": 2}},
+  {"query": "generate binary hashes", "category": "symbol-partial", "relevance": {"generateBinaryHashes": 3}},
+  {"query": "remove dead CSS rules", "category": "symbol-partial", "relevance": {"RemoveDeadRulesInPlace": 3}},
+  {"query": "how does esbuild parse and validate build configuration options", "category": "nl-descriptive", "relevance": {"ParseBuildOptions": 3, "flagsForBuildOptions": 2, "ParseServeOptions": 2}},
+  {"query": "what converts CSS font family declarations for minified output", "category": "nl-descriptive", "relevance": {"mangleFontFamily": 3}},
+  {"query": "how does esbuild handle source map generation and appending", "category": "nl-descriptive", "relevance": {"AppendSourceMapChunk": 3, "CanHaveSourceMap": 2}},
+  {"query": "what mechanism renames symbols during tree shaking and minification", "category": "nl-abstract", "relevance": {"Renamer": 3, "cloneKeyForLowerClass": 2, "lowerNullishCoalescingAssignmentOperator": 1}},
+  {"query": "how does the resolver determine if a path is an npm package", "category": "nl-abstract", "relevance": {"ParseYarnPnPVirtualPath": 3, "maybeOptimizePackage": 2, "findReachableFiles": 2}},
+  {"query": "what strategy lowers TypeScript class fields for ESNext targets", "category": "nl-abstract", "relevance": {"cloneKeyForLowerClass": 3, "lowerLogicalAssignmentOperator": 2, "lowerNullishCoalescingAssignmentOperator": 2}},
+  {"query": "esbuild panic during AST traversal unexpected node type", "category": "error-debug", "relevance": {"maybeCorrectObviousTypo": 3, "keyNameForError": 2, "AddError": 2}},
+  {"query": "invalid escape sequence in template literal parsing", "category": "error-debug", "relevance": {"isValidEscape": 3, "parseTemplateParts": 2}},
+  {"query": "binary version mismatch in esbuild WASM", "category": "error-debug", "relevance": {"validateBinaryVersion": 3}},
+  {"query": "esbuild parser lexer", "category": "file-path", "relevance": {"NewLexerJSON": 3, "parseFnExpr": 2, "parseTemplateParts": 2}},
+  {"query": "esbuild printer formatter", "category": "file-path", "relevance": {"printSpaceBeforeIdentifier": 3, "printQuotedUTF16": 2, "printFnArgs": 2}},
+  {"query": "esbuild resolver package", "category": "file-path", "relevance": {"maybeOptimizePackage": 3, "ParseYarnPnPVirtualPath": 2, "findReachableFiles": 2}},
+  {"query": "all AST lowering transformations in esbuild", "category": "cross-cutting", "relevance": {"lowerLogicalAssignmentOperator": 3, "lowerNullishCoalescingAssignmentOperator": 3, "cloneKeyForLowerClass": 2, "maybeTransposeIfExprChain": 2}},
+  {"query": "all source map handling functions", "category": "cross-cutting", "relevance": {"AppendSourceMapChunk": 3, "CanHaveSourceMap": 3, "parseStackLinesV8": 2}}
+]

@@ -1,0 +1,22 @@
+[
+  {"query": "how does the extraction pipeline process conversations into memories", "category": "behavioral", "expected_symbol": "extractFromConversation"},
+  {"query": "what controls which permissions a token has", "category": "behavioral", "expected_symbol": "computePermissionFootprint"},
+  {"query": "what determines if a connector is healthy", "category": "behavioral", "expected_symbol": "getEntityHealth"},
+  {"query": "what manages the lifecycle of daemon processes", "category": "behavioral", "expected_symbol": "DaemonManager"},
+  {"query": "how are entity dependencies tracked across memories", "category": "behavioral", "expected_symbol": "ConstellationDependency"},
+  {"query": "failed to start daemon", "category": "debugging", "expected_symbol": "doStart"},
+  {"query": "list installed MCP servers from marketplace", "category": "behavioral", "expected_symbol": "InstalledMarketplaceMcpServer"},
+  {"query": "run full text search query against memory index", "category": "behavioral", "expected_symbol": "query_memories"},
+  {"query": "how does the hybrid search combine vector and text results", "category": "behavioral", "expected_symbol": "hybrid_search"},
+  {"query": "what happens when embedding provider returns an error", "category": "debugging", "expected_symbol": "checkProviderAvailable"},
+  {"query": "find stale leases and recover them", "category": "behavioral", "expected_symbol": "recoverStaleLeases"},
+  {"query": "compact and condense old memories into epochs", "category": "behavioral", "expected_symbol": "condenseToEpoch"},
+  {"query": "train and evaluate the relevance predictor model", "category": "behavioral", "expected_symbol": "evaluate_model"},
+  {"query": "search the knowledge graph for entity relationships", "category": "behavioral", "expected_symbol": "searchGraph"},
+  {"query": "fetch marketplace MCP server catalog entries", "category": "behavioral", "expected_symbol": "fetchMarketplaceMcpCatalog"},
+  {"query": "create a rate limiter for API endpoints", "category": "behavioral", "expected_symbol": "createRateLimiter"},
+  {"query": "check if the daemon health badge is active", "category": "behavioral", "expected_symbol": "isDaemonHealthyAt"},
+  {"query": "configure the search index for memory queries", "category": "behavioral", "expected_symbol": "configureSearch"},
+  {"query": "resolve agent skills from plugin registry", "category": "behavioral", "expected_symbol": "resolveAgentSkills"},
+  {"query": "get active session keys for cleanup", "category": "behavioral", "expected_symbol": "getActiveSessionKeys"}
+]

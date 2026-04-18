@@ -695,6 +695,333 @@ pub fn sec_rerank_debug(
     scored
 }
 
+pub struct SecInvertedIndex {
+    postings: HashMap<String, Vec<Posting>>,
+}
+
+#[derive(Clone)]
+struct Posting {
+    symbol_idx: usize,
+    channel_mask: u8,
+    max_weight: f64,
+}
+
+const CH_SELF: u8 = 0x01;
+const CH_OUT: u8 = 0x02;
+const CH_IN: u8 = 0x04;
+const CH_OUT2: u8 = 0x08;
+const CH_IN2: u8 = 0x10;
+const CH_TYPE: u8 = 0x20;
+const CH_PATH: u8 = 0x40;
+
+pub fn build_sec_inverted_index(sec: &SecIndex) -> SecInvertedIndex {
+    let n = sec.symbol_ids.len();
+    let mut term_postings: HashMap<String, Vec<Posting>> = HashMap::new();
+
+    let channels: [(&Vec<HashMap<String, f64>>, u8); 7] = [
+        (&sec.ch_self, CH_SELF),
+        (&sec.ch_calls_out, CH_OUT),
+        (&sec.ch_calls_in, CH_IN),
+        (&sec.ch_calls_out_2hop, CH_OUT2),
+        (&sec.ch_calls_in_2hop, CH_IN2),
+        (&sec.ch_type_ret, CH_TYPE),
+        (&sec.ch_file_path, CH_PATH),
+    ];
+
+    for i in 0..n {
+        let mut term_channels: HashMap<&str, (u8, f64)> = HashMap::new();
+        for (channel, mask) in &channels {
+            for (term, &weight) in channel[i].iter() {
+                let entry = term_channels.entry(term.as_str()).or_insert((0, 0.0));
+                entry.0 |= mask;
+                entry.1 = entry.1.max(weight);
+            }
+        }
+        for (term, (mask, weight)) in term_channels {
+            term_postings
+                .entry(term.to_string())
+                .or_default()
+                .push(Posting {
+                    symbol_idx: i,
+                    channel_mask: mask,
+                    max_weight: weight,
+                });
+        }
+    }
+
+    for postings in term_postings.values_mut() {
+        postings.sort_by_key(|p| p.symbol_idx);
+    }
+
+    eprintln!(
+        "  SEC inverted index: {} terms, {} total postings",
+        term_postings.len(),
+        term_postings.values().map(|v| v.len()).sum::<usize>()
+    );
+
+    SecInvertedIndex {
+        postings: term_postings,
+    }
+}
+
+pub fn sec_standalone_search(
+    query: &str,
+    sec: &SecIndex,
+    inv: &SecInvertedIndex,
+    top_k: usize,
+) -> Vec<(i64, f64)> {
+    let query_terms = build_query_terms(query, sec);
+    if query_terms.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidate_set: HashSet<usize> = HashSet::new();
+    for qt in &query_terms {
+        for variant in &qt.variants {
+            if let Some(postings) = inv.postings.get(variant) {
+                for p in postings {
+                    candidate_set.insert(p.symbol_idx);
+                }
+            }
+            for term in inv.postings.keys() {
+                if term.contains(variant.as_str()) || variant.contains(term.as_str()) {
+                    if let Some(postings) = inv.postings.get(term) {
+                        for p in postings {
+                            candidate_set.insert(p.symbol_idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if candidate_set.is_empty() {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(usize, f64)> = Vec::with_capacity(candidate_set.len());
+
+    for &i in &candidate_set {
+        let cs = ChannelScores {
+            ch_self: channel_overlap(&query_terms, &sec.ch_self[i]),
+            ch_calls_out: channel_overlap(&query_terms, &sec.ch_calls_out[i]),
+            ch_calls_in: channel_overlap(&query_terms, &sec.ch_calls_in[i]),
+            ch_calls_out_2hop: channel_overlap(&query_terms, &sec.ch_calls_out_2hop[i]),
+            ch_calls_in_2hop: channel_overlap(&query_terms, &sec.ch_calls_in_2hop[i]),
+            ch_type_ret: channel_overlap(&query_terms, &sec.ch_type_ret[i]),
+            ch_file_path: channel_overlap(&query_terms, &sec.ch_file_path[i]),
+        };
+
+        let mut channels_hitting = 0usize;
+        if cs.ch_self > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_calls_out > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_calls_in > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_calls_out_2hop > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_calls_in_2hop > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_type_ret > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_file_path > 0.01 {
+            channels_hitting += 1;
+        }
+
+        let weighted_sum = W_SELF * cs.ch_self
+            + W_CALLS_OUT * cs.ch_calls_out
+            + W_CALLS_IN * cs.ch_calls_in
+            + W_CALLS_OUT_2HOP * cs.ch_calls_out_2hop
+            + W_CALLS_IN_2HOP * cs.ch_calls_in_2hop
+            + W_TYPE_RET * cs.ch_type_ret
+            + W_FILE_PATH * cs.ch_file_path;
+
+        let diversity_mult = if channels_hitting >= 3 {
+            1.0 + DIVERSITY_BONUS * (channels_hitting as f64 - 2.0).ln_1p()
+        } else if channels_hitting >= 2 {
+            1.0 + DIVERSITY_BONUS * 0.3
+        } else {
+            1.0
+        };
+
+        let sec_score = weighted_sum * diversity_mult;
+
+        let kind_boost = match sec.symbol_kinds[i].as_str() {
+            "function" | "method" | "constructor" => 1.3,
+            "class" | "struct" | "interface" | "trait" => 1.2,
+            "enum" | "type_alias" => 1.1,
+            "constant" | "field" | "property" => 0.9,
+            "module" | "section" => 0.7,
+            _ => 1.0,
+        };
+
+        let path_lower = sec
+            .file_paths
+            .get(&sec.symbol_file_ids[i])
+            .map(|p| p.to_lowercase())
+            .unwrap_or_default();
+        let test_penalty = if path_lower.contains("/test")
+            || path_lower.contains("_test.")
+            || path_lower.contains("/benches/")
+            || path_lower.contains("/spec/")
+        {
+            0.3
+        } else {
+            1.0
+        };
+
+        let final_score = sec_score * kind_boost * test_penalty;
+
+        if final_score > 0.001 {
+            scored.push((i, final_score));
+        }
+    }
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+
+    scored
+        .into_iter()
+        .map(|(i, s)| (sec.symbol_ids[i], s))
+        .collect()
+}
+
+pub fn sec_standalone_search_debug(
+    query: &str,
+    sec: &SecIndex,
+    inv: &SecInvertedIndex,
+    top_k: usize,
+) -> Vec<(i64, f64, ChannelScores)> {
+    let query_terms = build_query_terms(query, sec);
+    if query_terms.is_empty() {
+        return Vec::new();
+    }
+
+    let mut candidate_set: HashSet<usize> = HashSet::new();
+    for qt in &query_terms {
+        for variant in &qt.variants {
+            if let Some(postings) = inv.postings.get(variant) {
+                for p in postings {
+                    candidate_set.insert(p.symbol_idx);
+                }
+            }
+            for term in inv.postings.keys() {
+                if term.contains(variant.as_str()) || variant.contains(term.as_str()) {
+                    if let Some(postings) = inv.postings.get(term) {
+                        for p in postings {
+                            candidate_set.insert(p.symbol_idx);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if candidate_set.is_empty() {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(usize, f64, ChannelScores)> = Vec::with_capacity(candidate_set.len());
+
+    for &i in &candidate_set {
+        let cs = ChannelScores {
+            ch_self: channel_overlap(&query_terms, &sec.ch_self[i]),
+            ch_calls_out: channel_overlap(&query_terms, &sec.ch_calls_out[i]),
+            ch_calls_in: channel_overlap(&query_terms, &sec.ch_calls_in[i]),
+            ch_calls_out_2hop: channel_overlap(&query_terms, &sec.ch_calls_out_2hop[i]),
+            ch_calls_in_2hop: channel_overlap(&query_terms, &sec.ch_calls_in_2hop[i]),
+            ch_type_ret: channel_overlap(&query_terms, &sec.ch_type_ret[i]),
+            ch_file_path: channel_overlap(&query_terms, &sec.ch_file_path[i]),
+        };
+
+        let mut channels_hitting = 0usize;
+        if cs.ch_self > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_calls_out > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_calls_in > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_calls_out_2hop > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_calls_in_2hop > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_type_ret > 0.01 {
+            channels_hitting += 1;
+        }
+        if cs.ch_file_path > 0.01 {
+            channels_hitting += 1;
+        }
+
+        let weighted_sum = W_SELF * cs.ch_self
+            + W_CALLS_OUT * cs.ch_calls_out
+            + W_CALLS_IN * cs.ch_calls_in
+            + W_CALLS_OUT_2HOP * cs.ch_calls_out_2hop
+            + W_CALLS_IN_2HOP * cs.ch_calls_in_2hop
+            + W_TYPE_RET * cs.ch_type_ret
+            + W_FILE_PATH * cs.ch_file_path;
+
+        let diversity_mult = if channels_hitting >= 3 {
+            1.0 + DIVERSITY_BONUS * (channels_hitting as f64 - 2.0).ln_1p()
+        } else if channels_hitting >= 2 {
+            1.0 + DIVERSITY_BONUS * 0.3
+        } else {
+            1.0
+        };
+
+        let sec_score = weighted_sum * diversity_mult;
+
+        let kind_boost = match sec.symbol_kinds[i].as_str() {
+            "function" | "method" | "constructor" => 1.3,
+            "class" | "struct" | "interface" | "trait" => 1.2,
+            "enum" | "type_alias" => 1.1,
+            "constant" | "field" | "property" => 0.9,
+            "module" | "section" => 0.7,
+            _ => 1.0,
+        };
+
+        let path_lower = sec
+            .file_paths
+            .get(&sec.symbol_file_ids[i])
+            .map(|p| p.to_lowercase())
+            .unwrap_or_default();
+        let test_penalty = if path_lower.contains("/test")
+            || path_lower.contains("_test.")
+            || path_lower.contains("/benches/")
+            || path_lower.contains("/spec/")
+        {
+            0.3
+        } else {
+            1.0
+        };
+
+        let final_score = sec_score * kind_boost * test_penalty;
+
+        if final_score > 0.001 {
+            scored.push((i, final_score, cs));
+        }
+    }
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+
+    scored
+        .into_iter()
+        .map(|(i, s, cs)| (sec.symbol_ids[i], s, cs))
+        .collect()
+}
+
 pub fn sec_search(query: &str, index: &SecIndex, top_k: usize) -> Vec<(i64, f64)> {
     let query_terms = build_query_terms(query, index);
     if query_terms.is_empty() {
