@@ -1,0 +1,12 @@
+[
+  {"query": "spawn_blocking", "category": "symbol-exact", "relevance": {"spawn_blocking": 3, "spawn_pending_tasks": 2}},
+  {"query": "process_expired_timers", "category": "symbol-exact", "relevance": {"process_expired_timers": 3}},
+  {"query": "read bytes from TCP stream", "category": "symbol-partial", "relevance": {"try_read_buf": 3, "connect": 2}},
+  {"query": "how does tokio spawn blocking tasks on a separate thread pool", "category": "nl-descriptive", "relevance": {"spawn_blocking": 3, "spawn_pending_tasks": 2}},
+  {"query": "what reads data asynchronously from a source into a buffer", "category": "nl-descriptive", "relevance": {"try_read_buf": 3, "ReadBuf": 3}},
+  {"query": "how does the timer wheel process expired deadlines", "category": "nl-abstract", "relevance": {"process_expired_timers": 3, "deadline_now_elapses": 2}},
+  {"query": "panic in blocking task after runtime shutdown", "category": "error-debug", "relevance": {"drop_join_handle_slow": 3, "task_id_inside_block_on_panic_caller": 2}},
+  {"query": "tokio sync mpsc", "category": "file-path", "relevance": {"async_send_recv_unbounded": 3, "poll_peek_sender": 2}},
+  {"query": "all ways to send data across tokio channels", "category": "cross-cutting", "relevance": {"async_send_recv_unbounded": 3, "send_modify": 2, "recv_timeout": 2}},
+  {"query": "all task spawn and join patterns", "category": "cross-cutting", "relevance": {"spawn_blocking": 3, "spawn_index_tasks": 2, "join_with_select": 2}}
+]

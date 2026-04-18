@@ -1,0 +1,12 @@
+[
+  {"query": "ParseBuildOptions", "category": "symbol-exact", "relevance": {"ParseBuildOptions": 3, "flagsForBuildOptions": 2}},
+  {"query": "Renamer", "category": "symbol-exact", "relevance": {"Renamer": 3}},
+  {"query": "validate build options", "category": "symbol-partial", "relevance": {"ParseBuildOptions": 3, "flagsForBuildOptions": 2}},
+  {"query": "remove dead CSS rules", "category": "symbol-partial", "relevance": {"RemoveDeadRulesInPlace": 3}},
+  {"query": "how does esbuild parse and validate build configuration options", "category": "nl-descriptive", "relevance": {"ParseBuildOptions": 3, "flagsForBuildOptions": 2}},
+  {"query": "how does the resolver determine if a path is an npm package", "category": "nl-abstract", "relevance": {"ParseYarnPnPVirtualPath": 3, "maybeOptimizePackage": 2}},
+  {"query": "invalid escape sequence in template literal parsing", "category": "error-debug", "relevance": {"isValidEscape": 3, "parseTemplateParts": 2}},
+  {"query": "esbuild parser lexer", "category": "file-path", "relevance": {"NewLexerJSON": 3, "parseFnExpr": 2}},
+  {"query": "all AST lowering transformations in esbuild", "category": "cross-cutting", "relevance": {"lowerLogicalAssignmentOperator": 3, "lowerNullishCoalescingAssignmentOperator": 3, "cloneKeyForLowerClass": 2}},
+  {"query": "all source map handling functions", "category": "cross-cutting", "relevance": {"AppendSourceMapChunk": 3, "CanHaveSourceMap": 3, "parseStackLinesV8": 2}}
+]

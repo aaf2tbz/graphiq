@@ -1117,3 +1117,38 @@ pub fn sec_search(query: &str, index: &SecIndex, top_k: usize) -> Vec<(i64, f64)
         .map(|(i, s)| (index.symbol_ids[i], s))
         .collect()
 }
+
+pub fn sec_fusion_rerank(
+    query: &str,
+    bm25_candidates: &[(i64, f64)],
+    sec: &SecIndex,
+    inv: &SecInvertedIndex,
+    top_k: usize,
+) -> Vec<(i64, f64)> {
+    let sec_solo = sec_standalone_search(query, sec, inv, 50);
+
+    let mut merged: HashMap<i64, f64> = HashMap::new();
+    let bm25_max = bm25_candidates
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+    for (id, score) in bm25_candidates {
+        *merged.entry(*id).or_default() += score / bm25_max;
+    }
+    let sec_max = sec_solo
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+    for (id, score) in sec_solo {
+        *merged.entry(id).or_default() += 0.5 * score / sec_max;
+    }
+
+    let mut candidates: Vec<(i64, f64)> = merged.into_iter().collect();
+    candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let cids: Vec<i64> = candidates.iter().map(|(id, _)| *id).collect();
+    let cscores: Vec<f64> = candidates.iter().map(|(_, s)| *s).collect();
+
+    sec_rerank(query, &cids, &cscores, sec, top_k)
+}

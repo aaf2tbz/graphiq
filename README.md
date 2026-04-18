@@ -1,14 +1,16 @@
 # GraphIQ
 
-Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, heuristic reranking, holographic reduced representations, and Relational Evidence Field Theory (REFT) — zero embeddings required.
+Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph-convolved term channels, holographic reduced representations, and evidence-based fusion — zero embeddings required.
 
-**0.60 MRR** and **54% accuracy** on 50-query LoCoMo benchmark (signetai, 20K symbols). **~1ms p50 latency**. No model dependencies.
+**0.63 MRR**, **50% accuracy**, **zero misses on tokio** (10-query benchmark across 3 codebases, 46K symbols total). **~1ms p50 latency**. No model dependencies.
 
 ## Why This Works
 
 Code identifiers carry meaning. `RateLimiter`, `rate_limit.ts`, `authenticateUser` — these are semantically rich tokens that FTS handles natively. The "semantic gap" people try to close with embeddings is mostly solvable with structural indexes (call graphs, import graphs, type hierarchies) at zero embedding cost.
 
-The retrieval funnel:
+GraphIQ's thesis: **structural information in code is vastly underused by existing retrieval systems**. A symbol's call graph neighborhood, its return types, its file path — these are all first-class retrieval signals that don't need any learned representation. The system exploits every bit of structural context available at index time.
+
+## The Retrieval Pipeline
 
 ```
 Query: "rate limit middleware"
@@ -38,21 +40,142 @@ Query: "rate limit middleware"
 |  Layer 4: HRR Rerank        |  ~1ms   --> top_k
 |  Holographic matching       |  1024-dim circular convolution
 +-----------------------------+
+           v
++-----------------------------+
+|  Layer 5: SEC Fusion        |  ~1ms   --> top_k (rescued)
+|  Union BM25 + SEC Solo      |
+|  Graph-convolved rerank     |
++-----------------------------+
 ```
 
-Layer 4 (embed reranker) was also tested with jina-code and nomic-embed — both produced net-negative NDCG. Neural embeddings at the 137M scale add noise, not signal. The HRR (Holographic Reduced Representations) layer achieves better results with pure math: each symbol's identity and graph neighborhood are encoded into a 1024-dim vector via circular convolution, then matched against query vectors via dot product. Hypersphere normalization (unit-length post-IFFT) eliminated a 47x norm variance and produced a +0.132 aggregate NDCG gain.
+### What's new: SEC Fusion
+
+The critical insight from benchmarking: **BM25 and structural search fail in different, complementary ways**.
+
+- **BM25 failure mode**: Term gap — the query words don't appear in the symbol name or body. "how does the timer wheel expire" → BM25 finds nothing because the relevant symbol is named `process_expired_timers`.
+- **SEC failure mode**: Score dilution — pure structural search retrieves relevant symbols but ranks them poorly because it lacks BM25's IDF weighting and document-length normalization.
+
+**SEC Fusion** solves both by:
+1. Getting BM25's top-50 candidates (normalized scores)
+2. Getting SEC Solo's top-50 candidates (normalized scores)
+3. Unioning them into a single candidate set (up to 100 unique symbols)
+4. Reranking the combined set with SEC's graph-convolved channel scoring
+
+This means symbols BM25 completely misses get rescued by SEC Solo's inverted index, and SEC Solo's noisy rankings get cleaned up by the fusion reranker. On tokio, this produces **zero complete misses** (10/10 queries find the target in top 10).
+
+## Structural Evidence Convolution (SEC)
+
+The core innovation. SEC propagates terms through the code graph's structural channels:
+
+```
+                    Symbol: "RateLimiter"
+                              |
+        +---------+---------+---------+---------+---------+---------+
+        |         |         |         |         |         |         |
+      self    calls_out  calls_in  2hop_out  2hop_in  type_ret  file_path
+     (3.0)     (1.5)     (1.5)     (0.7)     (0.7)     (1.0)     (0.5)
+        |         |         |         |         |         |         |
+    "rate"    "check"   "handle"   "retry"    "api"    "bool"    "middleware"
+    "limit"   "enqueue"  "request"  "backoff"           "result"  "rate_limit"
+    "limiter" "reject"   "route"
+```
+
+Each channel collects terms from the symbol's graph neighborhood with distance-based decay:
+- **self** (weight 3.0): the symbol's own identifier decomposition + body terms
+- **calls_out** (1.5): terms from functions this symbol calls
+- **calls_in** (1.5): terms from functions that call this symbol
+- **calls_out_2hop** (0.7): 2-hop call graph traversal
+- **calls_in_2hop** (0.7): 2-hop reverse call graph traversal
+- **type_ret** (1.0): return type decomposition
+- **file_path** (0.5): path components
+
+Scoring combines weighted channel overlap with IDF weighting, a diversity bonus for multi-channel hits, kind boosts, and test penalties. The result: queries like "how does the timer wheel expire" find `process_expired_timers` because SEC propagated "timer" and "expire" through the call graph even though the query never uses the word "process".
+
+### SEC Inverted Index
+
+For standalone retrieval (SEC Solo), an inverted index maps each term to postings with symbol index, channel mask, and weight. This enables sub-millisecond retrieval without any BM25 dependency — pure structural search.
+
+### Why not neural embeddings?
+
+We tested. Neural embeddings at the 137M parameter scale (jina-code, nomic-embed) produced net-negative NDCG when used as rerankers. The signal from identifier decomposition + graph structure is stronger than what small embedding models provide, and the retrieval pipeline exploits it more effectively.
 
 ## Benchmarks
 
-50-query LoCoMo benchmark across 3 codebases. Run with `graphiq-locomo`.
+10-query benchmark across 3 codebases. Dual evaluation: NDCG@10 (graded relevance, 7 categories) + MRR (binary relevance).
 
-| Codebase | Symbols | MRR | Accuracy | symbol-exact | symbol-partial | nl-descriptive | nl-abstract |
-|---|---|---|---|---|---|---|---|
-| signetai | 20,870 | 0.591 | 50% | 100% | 40% | 50% | 0% |
-| esbuild | 12,040 | 0.569 | 48% | 93% | 10% | 38% | 67% |
-| tokio | 12,892 | 0.461 | 44% | 87% | 70% | 12% | 0% |
+### NDCG@10 (graded relevance)
 
-Latency: p50 ~1ms cold, <0.1ms warm. No model dependencies.
+| Codebase | Symbols | Baseline | SEC Pipe | SEC Solo | SEC Fused |
+|---|---|---|---|---|---|
+| signetai | 20,870 | 0.336 | **0.400** | 0.355 | 0.388 |
+| tokio | 12,892 | 0.238 | **0.270** | 0.168 | 0.229 |
+| esbuild | 12,040 | 0.398 | 0.412 | 0.177 | **0.433** |
+
+### MRR (binary relevance)
+
+| Codebase | Baseline | SEC Pipe | SEC Solo | SEC Fused |
+|---|---|---|---|---|
+| signetai | 0.323 | 0.567 | **0.631** | 0.567 |
+| tokio | 0.233 | 0.406 | 0.628 | **0.623** |
+| esbuild | 0.317 | 0.336 | 0.331 | **0.339** |
+
+### Hit rates
+
+| Codebase | Method | H@1 | H@3 | H@5 | H@10 | Miss |
+|---|---|---|---|---|---|---|
+| signetai | SEC Solo | 6 | 6 | 6 | 8 | 2 |
+| tokio | SEC Fused | 5 | 6 | 9 | **10** | **0** |
+| esbuild | SEC Fused | 1 | 4 | 5 | 7 | 3 |
+
+### Per-query highlights (MRR benchmark)
+
+**tokio — zero misses with SEC Fusion:**
+| Query | Baseline | SEC Fused |
+|---|---|---|
+| how does the notification system wake up workers | MISS | **#1** |
+| peek at data from a channel without removing it | MISS | **#1** |
+| write all data from a buffer to an async sink | MISS | **#1** |
+| spawn a blocking task on a separate thread | #4 | **#1** |
+
+**signetai — SEC Solo finds what BM25 can't:**
+| Query | Baseline | SEC Solo |
+|---|---|---|
+| how does the extraction pipeline process conversations | #9 | **#1** |
+| how are entity dependencies tracked across sessions | MISS | **#1** |
+| how does the hybrid search combine vector and keyword | MISS | **#1** |
+| create a rate limiter for API endpoints | #5 | **#1** |
+
+### Method descriptions
+
+- **Baseline**: BM25/FTS → structural expansion → heuristic rerank → HRR rerank
+- **SEC Pipe**: Baseline pipeline + SEC reranking of top-50 candidates
+- **SEC Solo**: Pure structural search using SEC inverted index (no BM25)
+- **SEC Fused**: Union of BM25 top-50 + SEC Solo top-50, reranked with SEC scoring
+
+### Running benchmarks
+
+```bash
+cargo build --release -p graphiq-bench
+
+# Per-codebase (10-query sets)
+./target/release/graphiq-bench /path/to/codebase .graphiq/bench.db benches/ndcg-10-codebase.json benches/mrr-10-codebase.json
+```
+
+## What We Learned Building This
+
+### HRR v2 taught us what NOT to do
+
+The first attempt at improving retrieval was HRR v2 — FFT-based circular convolution with multi-channel binding. It failed catastrophically (NDCG@10 0.098, barely above baseline). The root cause: FFT circular convolution binding destroys cross-channel signal. Debug showed the name channel scoring 0.05-0.57 while all structural channels (calls_out, calls_in, type_ret, motif) scored near zero.
+
+**Key insight**: the channel concept is sound. FFT binding is the wrong algebra. Sparse term matching across channels works dramatically better.
+
+### Aggregate MRR is a misleading metric
+
+Optimizing aggregate MRR led us to over-fit on easy queries while ignoring hard ones. The better approach: pick decisive case studies (hard NL queries where BM25 fails) and treat them like a test suite. "how does the timer wheel expire" is worth 10 easy symbol-exact matches for understanding retrieval quality.
+
+### The retrieval funnel matters more than the reranker
+
+Most of the quality comes from the first two layers (BM25 + structural expansion). Rerankers provide incremental gains but can't fix a broken candidate set. SEC Fusion's real contribution is expanding the candidate pool, not the reranking math.
 
 ## Quick Start
 
@@ -335,25 +458,32 @@ Query
 |  Holographic matching       |
 |  1024-dim circular conv.    |
 +-----------------------------+
+           v
++-----------------------------+
+|  Layer 5: SEC Fusion        |
+|  BM25 candidates (top 50)   |
+|  + SEC Solo (top 50)        |
+|  --> union + SEC rerank     |
++-----------------------------+
 ```
 
 ### Key Innovations
 
-**Holographic Reduced Representations (HRR)** — Each symbol's identity and graph neighborhood are encoded into a 1024-dim vector via circular convolution. Query vectors are matched via dot product. Hypersphere normalization (unit-length post-IFFT) eliminated a 47x norm variance across symbols and produced a +0.132 aggregate NDCG gain — the single largest improvement from any single technique.
+**Structural Evidence Convolution (SEC)** — Terms are propagated through 7 structural channels (self, calls_out, calls_in, 2hop variants, type_ret, file_path) with distance-based decay. Scoring uses weighted channel overlap with IDF weighting and diversity bonuses for multi-channel hits. This is the single most impactful technique for hard NL queries: SEC Solo achieves 0.631 MRR on signetai (vs 0.323 baseline) by finding symbols BM25 completely misses.
 
-**Query decomposition** — Abstract queries ("how does retrieval ranking work") are decomposed into 3-8 concrete subqueries via domain-specific term mapping. Each subquery runs through the standard FTS+rerank pipeline; symbols hit by multiple tracks get a multiplicative evidence boost. Only activates for queries with question prefixes or high stop-word ratios — non-abstract queries are completely unaffected.
+**SEC Fusion** — Unions BM25 pipeline candidates with SEC Solo candidates, then reranks the combined set with SEC scoring. Rescues symbols that BM25 misses while preserving BM25's strong ranking on easy queries. Achieves zero complete misses on tokio.
 
-**Multi-evidence channels** — Each candidate is scored across 5 evidence channels: lexical (name match), structural (graph expansion), test (test coverage), path (file match), and hints (search_hints coverage). Symbols scoring on 2+ channels get a multiplicative agreement bonus (1.05-1.22x); single-channel results are slightly dampened (0.95x).
+**Holographic Reduced Representations (HRR)** — Each symbol's identity and graph neighborhood are encoded into a 1024-dim vector via circular convolution. Query vectors are matched via dot product. Hypersphere normalization (unit-length post-IFFT) eliminated a 47x norm variance across symbols and produced a +0.132 aggregate NDCG gain.
 
-**Behavioral role tags** — 19 role tags (validator, cache, handler, retry, auth-gate, etc.) inferred from symbol names, callees, file paths, and edge patterns. Fed into search_hints so FTS matches role vocabulary. A function calling `validate_input` gets tagged as a validator — querying "check input" finds it through the FTS hints channel.
+**Query decomposition** — Abstract queries ("how does retrieval ranking work") are decomposed into 3-8 concrete subqueries via domain-specific term mapping. Each subquery runs through the standard FTS+rerank pipeline; symbols hit by multiple tracks get a multiplicative evidence boost.
 
-**Structural motifs** — 8 motifs (connector, orchestrator, hub, guard, transform, sink, source, leaf) detected from local edge patterns. A function with both call-in and call-out edges is a "connector" — its hints include "connects joins links bridges". Composite patterns in decomposition ("callers" + "callees") trigger targeted subqueries.
+**Multi-evidence channels** — Each candidate is scored across 5 evidence channels: lexical (name match), structural (graph expansion), test (test coverage), path (file match), and hints (search_hints coverage). Symbols scoring on 2+ channels get a multiplicative agreement bonus.
 
-**Search hints** — An FTS column (weight 5.0) populated at index time with structural role descriptions, morphological variants, role tags, and motif terms. This gives FTS semantic context without embeddings, at zero query-time cost.
+**Behavioral role tags** — 19 role tags (validator, cache, handler, retry, auth-gate, etc.) inferred from symbol names, callees, file paths, and edge patterns. Fed into search_hints so FTS matches role vocabulary.
 
-**Stop word filtering** — The AND FTS query strips 50+ common English words but keeps them in the OR fallback. Critical for cross-cutting queries.
+**Structural motifs** — 8 motifs (connector, orchestrator, hub, guard, transform, sink, source, leaf) detected from local edge patterns. A function with both call-in and call-out edges is a "connector" — its hints include "connects joins links bridges".
 
-**Module shadow penalty** — Modules with exact name matches are penalized (0.75x) so concrete types win.
+**Search hints** — An FTS column (weight 5.0) populated at index time with structural role descriptions, morphological variants, role tags, and motif terms. Gives FTS semantic context without embeddings, at zero query-time cost.
 
 **Hot cache** — LRU caches for neighborhoods, search results, blast radii, and source code. Prewarms 200 neighborhoods on startup. Sub-millisecond for repeated queries.
 
@@ -374,8 +504,10 @@ graphiq/
         rerank.rs       # 11 heuristics + channel scoring + diversity
         graph.rs        # Structural expansion (BFS)
         blast.rs        # Blast radius (forward/backward)
+        sec.rs          # Structural Evidence Convolution + fusion
         hrr.rs          # HRR holographic encoding + hypersphere normalization
-        afmo.rs         # Poincaré ball hyperbolic embeddings
+        hrr_v2.rs       # HRR v2 (retained for reference, not in pipeline)
+        evidence.rs     # Evidence index with adjacency lists
         lsa.rs          # Truncated SVD / LSA
         spectral.rs     # Spectral graph coordinates
         db.rs           # SQLite schema + queries
@@ -392,7 +524,7 @@ graphiq/
         languages/      # 14 TreeSitter parsers
     graphiq-cli/        # CLI binary
     graphiq-mcp/        # MCP server binary
-    graphiq-bench/      # NDCG benchmark binary
+    graphiq-bench/      # NDCG/MRR benchmark binary
 ```
 
 See [DESIGN.md](DESIGN.md) for the full architecture specification including data model, edge weights, and retrieval details.

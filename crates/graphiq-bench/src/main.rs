@@ -104,17 +104,18 @@ struct EngineSet<'a> {
     db: &'a GraphDb,
 }
 
-fn run_searches(es: &EngineSet, query: &str, top_k: usize) -> [Vec<(i64, f64)>; 3] {
-    let base = {
+fn run_searches(es: &EngineSet, query: &str, top_k: usize) -> [Vec<(i64, f64)>; 4] {
+    let base: Vec<(i64, f64)> = {
         let r = es.baseline.search(&SearchQuery::new(query).top_k(top_k));
         r.results.iter().map(|r| (r.symbol.id, r.score)).collect()
     };
-    let sec_pipe = {
+    let sec_pipe: Vec<(i64, f64)> = {
         let r = es.sec_engine.search(&SearchQuery::new(query).top_k(top_k));
         r.results.iter().map(|r| (r.symbol.id, r.score)).collect()
     };
     let sec_solo = sec::sec_standalone_search(query, es.sec_idx, es.sec_inv, top_k);
-    [base, sec_pipe, sec_solo]
+    let sec_fusion = sec::sec_fusion_rerank(query, &base, es.sec_idx, es.sec_inv, top_k);
+    [base, sec_pipe, sec_solo, sec_fusion]
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -132,12 +133,12 @@ fn run_ndcg_benchmark(es: &EngineSet, queries: &[BenchQuery]) {
     println!("  NDCG@10 BENCHMARK  ({} queries)", queries.len());
     println!("{}", "=".repeat(60));
 
-    let methods = ["Baseline", "SEC Pipe", "SEC Solo"];
+    let methods = ["Baseline", "SEC Pipe", "SEC Solo", "SEC Fused"];
     let n = queries.len();
 
-    let mut all_ndcg: [Vec<f64>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    let mut all_hits: [Vec<[bool; 5]>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-    let mut cat_data: std::collections::HashMap<String, [Vec<f64>; 3]> =
+    let mut all_ndcg: [Vec<f64>; 4] = Default::default();
+    let mut all_hits: [Vec<[bool; 5]>; 4] = Default::default();
+    let mut cat_data: std::collections::HashMap<String, [Vec<f64>; 4]> =
         std::collections::HashMap::new();
 
     for q in queries {
@@ -190,10 +191,10 @@ fn run_ndcg_benchmark(es: &EngineSet, queries: &[BenchQuery]) {
     let mut cats: Vec<&String> = cat_data.keys().collect();
     cats.sort();
     println!(
-        "{:<20} {:>8} {:>8} {:>8}",
-        "Category", "Baseline", "SEC Pipe", "SEC Solo"
+        "{:<20} {:>8} {:>8} {:>8} {:>8}",
+        "Category", "Baseline", "SEC Pipe", "SEC Solo", "SEC Fused"
     );
-    println!("{}", "-".repeat(48));
+    println!("{}", "-".repeat(56));
     for cat in &cats {
         let d = &cat_data[*cat];
         let avg: Vec<f64> = d
@@ -201,27 +202,29 @@ fn run_ndcg_benchmark(es: &EngineSet, queries: &[BenchQuery]) {
             .map(|v| v.iter().sum::<f64>() / v.len() as f64)
             .collect();
         println!(
-            "{:<20} {:>8.3} {:>8.3} {:>8.3}",
-            cat, avg[0], avg[1], avg[2]
+            "{:<20} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
+            cat, avg[0], avg[1], avg[2], avg[3]
         );
     }
 
     println!("\n--- Per-Query ---\n");
     println!(
-        "{:<45} {:>8} {:>8} {:>8}",
-        "Query", "Baseline", "SEC Pipe", "SEC Solo"
+        "{:<45} {:>8} {:>8} {:>8} {:>8}",
+        "Query", "Baseline", "SEC Pipe", "SEC Solo", "SEC Fused"
     );
-    println!("{}", "-".repeat(75));
+    println!("{}", "-".repeat(85));
     for (i, q) in queries.iter().enumerate() {
         let b = all_ndcg[0][i];
         let p = all_ndcg[1][i];
         let s = all_ndcg[2][i];
+        let f = all_ndcg[3][i];
         println!(
-            "{:<45} {:>8.3} {:>8.3} {:>8.3}",
+            "{:<45} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
             truncate(&q.query, 45),
             b,
             p,
-            s
+            s,
+            f
         );
     }
 }
@@ -233,7 +236,7 @@ fn run_mrr_benchmark(es: &EngineSet, queries: &[BenchQuery]) {
     println!("  MRR BENCHMARK  ({} queries)", queries.len());
     println!("{}", "=".repeat(60));
 
-    let methods = ["Baseline", "SEC Pipe", "SEC Solo"];
+    let methods = ["Baseline", "SEC Pipe", "SEC Solo", "SEC Fused"];
     let n = queries.len();
 
     struct MrrResult {
@@ -245,7 +248,7 @@ fn run_mrr_benchmark(es: &EngineSet, queries: &[BenchQuery]) {
         found_rank: Option<usize>,
     }
 
-    let mut all: [Vec<MrrResult>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut all: [Vec<MrrResult>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
 
     for q in queries {
         let results = run_searches(es, &q.query, 10);
@@ -318,27 +321,30 @@ fn run_mrr_benchmark(es: &EngineSet, queries: &[BenchQuery]) {
 
     println!("\n--- Per-Query ---\n");
     println!(
-        "{:<45} {:>6} {:>6} {:>6}  {:>6} {:>6} {:>6}",
-        "Query", "B_rr", "P_rr", "S_rr", "B_rnk", "P_rnk", "S_rnk"
+        "{:<45} {:>6} {:>6} {:>6} {:>6}  {:>6} {:>6} {:>6} {:>6}",
+        "Query", "B_rr", "P_rr", "S_rr", "F_rr", "B_rnk", "P_rnk", "S_rnk", "F_rnk"
     );
-    println!("{}", "-".repeat(85));
+    println!("{}", "-".repeat(105));
     for (i, q) in queries.iter().enumerate() {
         let br = all[0][i].found_rank;
         let pr = all[1][i].found_rank;
         let sr = all[2][i].found_rank;
+        let fr = all[3][i].found_rank;
         let fmt = |r: Option<usize>| -> String {
             r.map(|v| format!("{}", v + 1))
                 .unwrap_or_else(|| "MISS".into())
         };
         println!(
-            "{:<45} {:>6.3} {:>6.3} {:>6.3}  {:>6} {:>6} {:>6}",
+            "{:<45} {:>6.3} {:>6.3} {:>6.3} {:>6.3}  {:>6} {:>6} {:>6} {:>6}",
             truncate(&q.query, 45),
             all[0][i].rr,
             all[1][i].rr,
             all[2][i].rr,
+            all[3][i].rr,
             fmt(br),
             fmt(pr),
-            fmt(sr)
+            fmt(sr),
+            fmt(fr)
         );
     }
 }
