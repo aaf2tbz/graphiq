@@ -19,6 +19,15 @@ pub enum RoleTag {
     Cleanup,
     Config,
     Logger,
+    ErrorProducer,
+    ErrorPropagator,
+    ErrorHandler,
+    ErrorType,
+    EntryPoint,
+    Scheduler,
+    Factory,
+    Transformer,
+    IO,
 }
 
 impl RoleTag {
@@ -43,6 +52,15 @@ impl RoleTag {
             RoleTag::Cleanup => "cleanup",
             RoleTag::Config => "config",
             RoleTag::Logger => "logger",
+            RoleTag::ErrorProducer => "error producer",
+            RoleTag::ErrorPropagator => "error propagator",
+            RoleTag::ErrorHandler => "error handler",
+            RoleTag::ErrorType => "error type",
+            RoleTag::EntryPoint => "entry point",
+            RoleTag::Scheduler => "scheduler",
+            RoleTag::Factory => "factory",
+            RoleTag::Transformer => "transformer",
+            RoleTag::IO => "io",
         }
     }
 
@@ -67,6 +85,15 @@ impl RoleTag {
             RoleTag::Cleanup => "cleanup teardown shutdown dispose",
             RoleTag::Config => "config configuration setting options",
             RoleTag::Logger => "log logging logger trace debug info warn error",
+            RoleTag::ErrorProducer => "error err fail failure throw raise panic abort",
+            RoleTag::ErrorPropagator => "propagate bubble rethrow map_err chain error",
+            RoleTag::ErrorHandler => "catch recover handle rescue error fallback graceful",
+            RoleTag::ErrorType => "error exception fault errortype customerror apperror",
+            RoleTag::EntryPoint => "entry main start init serve run bootstrap launch",
+            RoleTag::Scheduler => "schedule dispatch queue enqueue defer spawn timer interval",
+            RoleTag::Factory => "factory create construct new build instantiate make spawn",
+            RoleTag::Transformer => "transform convert adapt map translate compose pipe",
+            RoleTag::IO => "read write send recv connect accept open close socket stream file",
         }
     }
 }
@@ -80,6 +107,8 @@ pub struct RoleEvidence {
     pub caller_names: Vec<String>,
     pub outgoing_edge_kinds: Vec<String>,
     pub container_name: Option<String>,
+    pub signature: Option<String>,
+    pub source_text: Option<String>,
 }
 
 pub fn infer_roles(evidence: &RoleEvidence) -> Vec<RoleTag> {
@@ -263,7 +292,144 @@ pub fn infer_roles(evidence: &RoleEvidence) -> Vec<RoleTag> {
         roles.push(RoleTag::Logger);
     }
 
-    roles.truncate(5);
+    {
+        let sig_lower = evidence.signature.as_deref().unwrap_or("").to_lowercase();
+        let src_lower = evidence.source_text.as_deref().unwrap_or("").to_lowercase();
+
+        let has_result_return = sig_lower.contains("result<")
+            || sig_lower.contains("-> result")
+            || sig_lower.contains("-> Result")
+            || sig_lower.contains(": Result")
+            || sig_lower.contains("throws")
+            || sig_lower.contains(": Error");
+        let has_err_construction = src_lower.contains("result::err")
+            || src_lower.contains("result::from")
+            || src_lower.contains("error::new")
+            || src_lower.contains("throw ")
+            || src_lower.contains("throw new")
+            || src_lower.contains("raise ")
+            || src_lower.contains("panic!(")
+            || src_lower.contains("abort(")
+            || src_lower.contains("anyhow!")
+            || src_lower.contains("bail!")
+            || src_lower.contains("ensure!(");
+        let callee_err = callee_has(
+            &callee_lower,
+            &["error", "fail", "panic", "abort", "raise", "throw"],
+        );
+        if (has_err_construction || callee_err) && has_result_return {
+            roles.push(RoleTag::ErrorProducer);
+        }
+
+        let has_propagation = src_lower.contains("?;")
+            || src_lower.contains("? ")
+            || src_lower.contains("?)")
+            || src_lower.contains("?\n")
+            || src_lower.contains("map_err")
+            || src_lower.contains("try!")
+            || src_lower.contains("catch")
+            || src_lower.contains("except:");
+        if has_propagation && has_result_return {
+            roles.push(RoleTag::ErrorPropagator);
+        }
+
+        let has_err_param = sig_lower.contains("error")
+            || sig_lower.contains(": err")
+            || sig_lower.contains(": e)")
+            || sig_lower.contains("exception");
+        let has_err_match = src_lower.contains("match") && src_lower.contains("err")
+            || src_lower.contains("ok(")
+            || src_lower.contains("catch (")
+            || src_lower.contains("except ");
+        if (has_err_param || has_err_match) && !has_propagation {
+            roles.push(RoleTag::ErrorHandler);
+        }
+    }
+
+    {
+        let kind_lower = evidence
+            .outgoing_edge_kinds
+            .iter()
+            .map(|k| k.to_lowercase())
+            .collect::<Vec<_>>();
+        let has_calls_out = kind_lower.iter().any(|k| k == "calls");
+        let has_calls_in = evidence.caller_names.len() > 0;
+        let call_out_count = evidence.callee_names.len();
+        if !has_calls_in && has_calls_out && call_out_count >= 3 {
+            roles.push(RoleTag::EntryPoint);
+        }
+
+        if has_calls_out {
+            let callee_files: std::collections::HashSet<&str> = evidence
+                .callee_names
+                .iter()
+                .take(10)
+                .filter_map(|n| n.split('.').next())
+                .collect();
+            let unique_file_roots = callee_files.len();
+            if unique_file_roots >= 3 && call_out_count >= 3 {
+                roles.push(RoleTag::Scheduler);
+            }
+        }
+    }
+
+    {
+        let sig_lower = evidence.signature.as_deref().unwrap_or("").to_lowercase();
+        let returns_new = sig_lower.contains("-> self")
+            || sig_lower.contains("-> struct")
+            || sig_lower.contains(": Self")
+            || sig_lower.contains("-> new")
+            || matches_name(
+                &name_lower,
+                &decomp_lower,
+                &["new", "create", "from", "spawn"],
+            );
+        if returns_new || callee_has(&callee_lower, &["new", "create", "default", "alloc"]) {
+            roles.push(RoleTag::Factory);
+        }
+
+        let has_transform = sig_lower.contains("-> &")
+            || sig_lower.contains("-> option")
+            || sig_lower.contains("-> result")
+            || sig_lower.contains("-> vec")
+            || sig_lower.contains("-> string")
+            || sig_lower.contains("-> map");
+        if has_transform
+            && !matches_name(
+                &name_lower,
+                &decomp_lower,
+                &["get", "set", "is", "has", "can"],
+            )
+        {
+            roles.push(RoleTag::Transformer);
+        }
+    }
+
+    {
+        let callee_lower_io: Vec<String> = evidence
+            .callee_names
+            .iter()
+            .map(|n| n.to_lowercase())
+            .collect();
+        if callee_has(
+            &callee_lower_io,
+            &[
+                "read", "write", "send", "recv", "connect", "accept", "open", "close", "socket",
+                "stream", "flush", "tcp", "udp", "http", "fetch", "request", "query", "execute",
+                "stdin", "stdout", "stderr",
+            ],
+        ) || matches_name(
+            &name_lower,
+            &decomp_lower,
+            &[
+                "read", "write", "send", "recv", "connect", "listen", "fetch", "request",
+            ],
+        ) {
+            roles.push(RoleTag::IO);
+        }
+    }
+
+    roles.truncate(8);
     roles
 }
 
@@ -301,6 +467,8 @@ mod tests {
             caller_names: Vec::new(),
             outgoing_edge_kinds: Vec::new(),
             container_name: None,
+            signature: None,
+            source_text: None,
         }
     }
 
@@ -345,7 +513,7 @@ mod tests {
             ..make_evidence("doEverything")
         };
         let roles = infer_roles(&ev);
-        assert!(roles.len() <= 5);
+        assert!(roles.len() <= 8);
     }
 
     #[test]
@@ -354,5 +522,61 @@ mod tests {
         assert!(hints.contains("validate"));
         assert!(hints.contains("cache"));
         assert!(hints.contains("role:"));
+    }
+
+    #[test]
+    fn test_error_producer_from_source() {
+        let ev = RoleEvidence {
+            signature: Some("fn foo() -> Result<(), Error>".into()),
+            source_text: Some("Result::Err(Error::new(\"bad\"))".into()),
+            callee_names: vec!["fail".into()],
+            ..make_evidence("processData")
+        };
+        let roles = infer_roles(&ev);
+        assert!(roles.contains(&RoleTag::ErrorProducer));
+    }
+
+    #[test]
+    fn test_error_propagator_from_source() {
+        let ev = RoleEvidence {
+            signature: Some("fn fetch(url: &str) -> Result<Data, Error>".into()),
+            source_text: Some("let resp = client.get(url)?;".into()),
+            ..make_evidence("fetchData")
+        };
+        let roles = infer_roles(&ev);
+        assert!(roles.contains(&RoleTag::ErrorPropagator));
+    }
+
+    #[test]
+    fn test_error_handler_from_match() {
+        let ev = RoleEvidence {
+            signature: Some("fn handle(result: Result<T, E>)".into()),
+            source_text: Some("match result { Ok(v) => v, Err(e) => fallback(e) }".into()),
+            ..make_evidence("process")
+        };
+        let roles = infer_roles(&ev);
+        assert!(roles.contains(&RoleTag::ErrorHandler));
+    }
+
+    #[test]
+    fn test_entry_point() {
+        let ev = RoleEvidence {
+            caller_names: vec![],
+            callee_names: vec!["init".into(), "load_config".into(), "start_server".into()],
+            outgoing_edge_kinds: vec!["calls".into(), "calls".into(), "calls".into()],
+            ..make_evidence("main")
+        };
+        let roles = infer_roles(&ev);
+        assert!(roles.contains(&RoleTag::EntryPoint));
+    }
+
+    #[test]
+    fn test_io_from_callees() {
+        let ev = RoleEvidence {
+            callee_names: vec!["tcp_connect".into(), "send".into()],
+            ..make_evidence("networkCall")
+        };
+        let roles = infer_roles(&ev);
+        assert!(roles.contains(&RoleTag::IO));
     }
 }

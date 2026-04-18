@@ -9,6 +9,10 @@ pub struct HrrIndex {
     pub symbol_ids: Vec<i64>,
     pub symbol_names: Vec<String>,
     pub holograms: Vec<Vec<f64>>,
+    pub identity_holograms: Vec<Vec<f64>>,
+    boundary_freq_re: Vec<Vec<f64>>,
+    boundary_freq_im: Vec<Vec<f64>>,
+    boundary_areas: Vec<f64>,
     shared_holograms: Vec<Vec<f64>>,
     lang_centroids: HashMap<String, Vec<f64>>,
     symbol_langs: Vec<String>,
@@ -223,6 +227,10 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         .collect();
 
     let mut freq_identities: Vec<(Vec<f64>, Vec<f64>)> = Vec::with_capacity(n);
+    let mut boundary_freq_re: Vec<Vec<f64>> = Vec::with_capacity(n);
+    let mut boundary_freq_im: Vec<Vec<f64>> = Vec::with_capacity(n);
+    let mut boundary_areas: Vec<f64> = Vec::with_capacity(n);
+    let mut identity_holograms: Vec<Vec<f64>> = Vec::with_capacity(n);
     for term_set in &symbol_term_sets {
         let mut identity = vec![0.0; dim];
         for t in term_set {
@@ -232,7 +240,10 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
                 }
             }
         }
-        let norm: f64 = identity.iter().map(|x| x * x).sum::<f64>().sqrt();
+        let raw_norm: f64 = identity.iter().map(|x| x * x).sum::<f64>().sqrt();
+        identity_holograms.push(identity.clone());
+
+        let norm = raw_norm;
         if norm > 1e-10 {
             for x in identity.iter_mut() {
                 *x /= norm;
@@ -241,7 +252,26 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         let mut re = identity;
         let mut im = vec![0.0; dim];
         fft_inplace(&mut re, &mut im);
-        freq_identities.push((re, im));
+        freq_identities.push((re.clone(), im.clone()));
+
+        let mut bnd_re = if raw_norm > 1e-10 {
+            identity_holograms.last().unwrap().clone()
+        } else {
+            vec![0.0; dim]
+        };
+        let mut bnd_im = vec![0.0; dim];
+        if raw_norm > 1e-10 {
+            fft_inplace(&mut bnd_re, &mut bnd_im);
+        }
+        let area = bnd_re
+            .iter()
+            .zip(bnd_im.iter())
+            .map(|(r, i)| r * r + i * i)
+            .sum::<f64>()
+            .sqrt();
+        boundary_freq_re.push(bnd_re);
+        boundary_freq_im.push(bnd_im);
+        boundary_areas.push(area);
     }
 
     let mut outgoing: Vec<Vec<(usize, String, f64)>> = vec![Vec::new(); n];
@@ -494,6 +524,10 @@ pub fn compute_hrr(db: &GraphDb) -> Result<HrrIndex, String> {
         symbol_ids,
         symbol_names,
         holograms,
+        identity_holograms,
+        boundary_freq_re,
+        boundary_freq_im,
+        boundary_areas,
         shared_holograms,
         lang_centroids,
         symbol_langs,
@@ -527,6 +561,14 @@ impl HrrIndex {
 
     pub fn hologram_neighbors(&self, idx: usize) -> &[(usize, f64)] {
         self.adjacency.get(idx).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    pub fn boundary_freq(&self, idx: usize) -> (&[f64], &[f64]) {
+        (&self.boundary_freq_re[idx], &self.boundary_freq_im[idx])
+    }
+
+    pub fn boundary_area(&self, idx: usize) -> f64 {
+        self.boundary_areas[idx]
     }
 
     pub fn has_fibers(&self) -> bool {
@@ -1284,4 +1326,175 @@ pub fn hrr_quantum_rerank(
 
 pub fn hrr_biv17_search(query: &str, index: &HrrIndex, top_k: usize) -> Vec<(i64, f64)> {
     hrr_search(query, index, top_k)
+}
+
+pub fn hrr_boundary_rerank(
+    query: &str,
+    candidate_ids: &[i64],
+    candidate_scores: &[f64],
+    index: &HrrIndex,
+) -> Vec<(i64, f64)> {
+    let id_to_idx: HashMap<i64, usize> = index
+        .symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let q = build_query_vec(query, &index.term_vectors, &index.term_idf, index.dim);
+    let q_empty = q.iter().all(|x| x.abs() < 1e-10);
+
+    let mut sims: Vec<(usize, f64)> = Vec::new();
+    for (i, &id) in candidate_ids.iter().enumerate() {
+        if q_empty {
+            continue;
+        }
+        if let Some(&idx) = id_to_idx.get(&id) {
+            let s = dot(&q, &index.holograms[idx]);
+            if s > 0.0 {
+                sims.push((i, s));
+            }
+        }
+    }
+
+    if sims.is_empty() {
+        return candidate_ids
+            .iter()
+            .zip(candidate_scores.iter())
+            .map(|(&id, &s)| (id, s))
+            .filter(|(_, s)| *s > 0.0)
+            .collect();
+    }
+
+    sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let top_sim = sims[0].1;
+    let threshold = top_sim * 0.3;
+
+    let mut scored: Vec<(i64, f64)> = candidate_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            let base = candidate_scores.get(i).copied().unwrap_or(0.0);
+            if base <= 0.0 || q_empty {
+                return (id, base);
+            }
+            if let Some(&idx) = id_to_idx.get(&id) {
+                let hrr_sim = dot(&q, &index.holograms[idx]);
+
+                if hrr_sim >= threshold {
+                    let boost = 1.0 + 0.10 * hrr_sim;
+                    (id, base * boost)
+                } else {
+                    (id, base)
+                }
+            } else {
+                (id, base)
+            }
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored
+}
+
+fn complex_dot(a_re: &[f64], a_im: &[f64], b_re: &[f64], b_im: &[f64]) -> f64 {
+    a_re.iter()
+        .zip(a_im.iter())
+        .zip(b_re.iter())
+        .zip(b_im.iter())
+        .map(|(((ar, ai), br), bi)| ar * br + ai * bi)
+        .sum()
+}
+
+pub fn hrr_holographic_rerank(
+    query: &str,
+    candidate_ids: &[i64],
+    candidate_scores: &[f64],
+    index: &HrrIndex,
+) -> Vec<(i64, f64)> {
+    let id_to_idx: HashMap<i64, usize> = index
+        .symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let q_time = build_query_vec(query, &index.term_vectors, &index.term_idf, index.dim);
+    let q_empty = q_time.iter().all(|x| x.abs() < 1e-10);
+    if q_empty {
+        return candidate_ids
+            .iter()
+            .zip(candidate_scores.iter())
+            .map(|(&id, &s)| (id, s))
+            .filter(|(_, s)| *s > 0.0)
+            .collect();
+    }
+
+    let mut q_freq_re = q_time.clone();
+    let mut q_freq_im = vec![0.0; index.dim];
+    fft_inplace(&mut q_freq_re, &mut q_freq_im);
+
+    let mut scored: Vec<(i64, f64)> = candidate_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| {
+            let base = candidate_scores.get(i).copied().unwrap_or(0.0);
+            if base <= 0.0 {
+                return (id, base);
+            }
+            if let Some(&idx) = id_to_idx.get(&id) {
+                let (bnd_re, bnd_im) = index.boundary_freq(idx);
+                let boundary_sim = complex_dot(&q_freq_re, &q_freq_im, bnd_re, bnd_im);
+
+                let boundary_score = if boundary_sim > 0.0 {
+                    boundary_sim
+                } else {
+                    0.0
+                };
+
+                let edge_tiebreak = {
+                    let hrr_sim = dot(&q_time, &index.holograms[idx]).max(0.0);
+                    hrr_sim * 0.1
+                };
+
+                let final_score = base * (1.0 + 0.15 * boundary_score + edge_tiebreak);
+                (id, final_score)
+            } else {
+                (id, base)
+            }
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored
+}
+
+pub fn hrr_holographic_search(query: &str, index: &HrrIndex, top_k: usize) -> Vec<(i64, f64)> {
+    let q_time = build_query_vec(query, &index.term_vectors, &index.term_idf, index.dim);
+    if q_time.iter().all(|x| x.abs() < 1e-10) {
+        return Vec::new();
+    }
+
+    let mut q_freq_re = q_time.clone();
+    let mut q_freq_im = vec![0.0; index.dim];
+    fft_inplace(&mut q_freq_re, &mut q_freq_im);
+
+    let mut scored: Vec<(usize, f64)> = (0..index.symbol_ids.len())
+        .map(|i| {
+            let (bnd_re, bnd_im) = index.boundary_freq(i);
+            let boundary_sim = complex_dot(&q_freq_re, &q_freq_im, bnd_re, bnd_im);
+            (i, boundary_sim)
+        })
+        .filter(|(_, s)| *s > 0.0)
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+
+    scored
+        .into_iter()
+        .map(|(i, s)| (index.symbol_ids[i], s))
+        .collect()
 }

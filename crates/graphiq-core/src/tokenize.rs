@@ -81,6 +81,91 @@ pub fn decompose_identifier(name: &str) -> String {
         .join(" ")
 }
 
+pub fn stem_word(word: &str) -> String {
+    let w = word.to_lowercase();
+    if w.len() < 4 {
+        return w;
+    }
+
+    let mut s = w.clone();
+
+    if s.ends_with("ies") && s.len() > 4 {
+        s = s[..s.len() - 3].to_string() + "i";
+    } else if s.ends_with("es") && s.len() > 4 {
+        let stem = &s[..s.len() - 2];
+        if stem.ends_with("ss")
+            || stem.ends_with("sh")
+            || stem.ends_with("ch")
+            || stem.ends_with("x")
+            || stem.ends_with("z")
+        {
+            s = stem.to_string() + "e";
+        } else {
+            s = stem.to_string();
+        }
+    } else if s.ends_with("ed") && s.len() > 4 {
+        let stem = &s[..s.len() - 2];
+        if stem.ends_with("e") {
+            s = stem.to_string();
+        } else {
+            s = stem.to_string();
+        }
+    } else if s.ends_with("ing") && s.len() > 5 {
+        let stem = &s[..s.len() - 3];
+        if stem.ends_with("e") {
+            s = stem.to_string();
+        } else if stem.len() >= 3 {
+            s = stem.to_string();
+        }
+    } else if s.ends_with("tion") {
+        s = s[..s.len() - 4].to_string() + "t";
+    } else if s.ends_with("sion") {
+        s = s[..s.len() - 4].to_string() + "s";
+    } else if s.ends_with("ment") {
+        s = s[..s.len() - 4].to_string();
+    } else if s.ends_with("ness") {
+        s = s[..s.len() - 4].to_string();
+    } else if s.ends_with("able") || s.ends_with("ible") {
+        s = s[..s.len() - 4].to_string();
+    } else if s.ends_with("ful") {
+        s = s[..s.len() - 3].to_string();
+    } else if s.ends_with("less") {
+        s = s[..s.len() - 4].to_string();
+    } else if s.ends_with("ous") {
+        s = s[..s.len() - 3].to_string();
+    } else if s.ends_with("ive") {
+        s = s[..s.len() - 3].to_string();
+    } else if s.ends_with("er") && s.len() > 4 {
+        s = s[..s.len() - 2].to_string();
+    } else if s.ends_with("ly") && s.len() > 4 {
+        s = s[..s.len() - 2].to_string();
+    } else if s.ends_with("al") && s.len() > 4 {
+        s = s[..s.len() - 2].to_string();
+    }
+
+    if s.ends_with("at") || s.ends_with("bl") || s.ends_with("iz") {
+        s.push('e');
+    }
+
+    if s.len() >= 3 && s.ends_with("y") && !s.ends_with("ay") && !s.ends_with("ey") {
+        s = s[..s.len() - 1].to_string() + "i";
+    }
+
+    if s.is_empty() {
+        w
+    } else {
+        s
+    }
+}
+
+pub fn stem_text(text: &str) -> String {
+    text.split_whitespace()
+        .filter(|w| w.len() >= 2)
+        .map(|w| stem_word(w))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

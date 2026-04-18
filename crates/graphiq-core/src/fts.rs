@@ -59,23 +59,30 @@ impl<'a> FtsSearch<'a> {
             return Vec::new();
         }
 
-        let content_tokens: Vec<String> = tokens
+        let expanded = expand_query(&tokens);
+        let all_tokens: Vec<String> = tokens.iter().chain(expanded.iter()).cloned().collect();
+
+        let content_tokens: Vec<String> = all_tokens
             .iter()
             .filter(|t| !is_stop_word(t))
             .cloned()
             .collect();
 
+        if content_tokens.is_empty() {
+            return Vec::new();
+        }
+
         let and_tokens = if content_tokens.len() >= 2 {
             &content_tokens
         } else {
-            &tokens
+            &all_tokens
         };
         let and_query = build_fts_query(and_tokens, false);
         let results = self.run_fts_query(&and_query, limit);
 
         let fallback_threshold = if content_tokens.len() >= 3 { 30 } else { 10 };
         if results.len() < fallback_threshold {
-            let or_query = build_fts_query(&tokens, true);
+            let or_query = build_fts_query(&all_tokens, true);
             let or_results = self.run_fts_query(&or_query, limit);
             let mut merged = results;
             for r in or_results {
@@ -256,6 +263,194 @@ fn build_fts_query(tokens: &[String], is_or: bool) -> String {
         .collect::<Vec<_>>()
         .join(joiner)
 }
+
+fn expand_query(tokens: &[String]) -> Vec<String> {
+    let mut expanded = Vec::new();
+
+    for token in tokens {
+        let stemmed = crate::tokenize::stem_word(token);
+        if stemmed != *token {
+            expanded.push(stemmed);
+        }
+    }
+
+    expanded
+}
+
+fn get_synonyms(word: &str) -> Option<&'static [&'static str]> {
+    let entries = SYNONYM_ENTRIES.get_or_init(synonym_entries);
+    let lower = word.to_lowercase();
+    entries
+        .iter()
+        .find(|(k, _)| k == &lower)
+        .map(|(_, v)| v.as_slice())
+}
+
+fn synonym_entries() -> Vec<(&'static str, Vec<&'static str>)> {
+    vec![
+        ("error", vec!["err", "failure", "exception", "fault", "bug"]),
+        (
+            "errors",
+            vec!["error", "err", "failure", "exception", "fault"],
+        ),
+        ("err", vec!["error", "failure", "exception"]),
+        ("exception", vec!["error", "err", "fault", "failure"]),
+        ("failure", vec!["error", "err", "exception", "fault"]),
+        ("fault", vec!["error", "err", "exception", "failure"]),
+        (
+            "propagate",
+            vec!["bubble", "chain", "forward", "pass", "throw", "spread"],
+        ),
+        (
+            "propagated",
+            vec!["propagate", "bubble", "chain", "forward", "pass"],
+        ),
+        (
+            "propagation",
+            vec!["propagate", "propagated", "chain", "spread"],
+        ),
+        (
+            "handle",
+            vec!["catch", "process", "manage", "deal", "recover"],
+        ),
+        ("handler", vec!["handle", "catch", "process", "recover"]),
+        ("handling", vec!["handle", "handler", "catch", "process"]),
+        (
+            "create",
+            vec!["new", "init", "make", "build", "construct", "from"],
+        ),
+        (
+            "delete",
+            vec!["remove", "drop", "clear", "purge", "destroy"],
+        ),
+        ("remove", vec!["delete", "drop", "clear", "purge"]),
+        ("update", vec!["modify", "change", "edit", "set"]),
+        (
+            "search",
+            vec!["find", "lookup", "query", "retrieve", "fetch"],
+        ),
+        ("parse", vec!["tokenizer", "scan", "lex", "read"]),
+        ("parser", vec!["parse", "tokenizer", "lexer", "scanner"]),
+        ("tokenize", vec!["parse", "split", "scan"]),
+        ("validate", vec!["check", "verify", "ensure", "assert"]),
+        (
+            "transform",
+            vec!["convert", "map", "translate", "adapt", "modify"],
+        ),
+        ("serialize", vec!["encode", "marshal", "write", "save"]),
+        (
+            "deserialize",
+            vec!["decode", "unmarshal", "read", "load", "parse"],
+        ),
+        ("encode", vec!["serialize", "convert", "write"]),
+        ("decode", vec!["deserialize", "parse", "read", "convert"]),
+        ("connect", vec!["join", "link", "attach", "dial"]),
+        ("schedule", vec!["queue", "dispatch", "enqueue", "defer"]),
+        ("cache", vec!["memo", "store", "save", "buffer"]),
+        ("retry", vec!["backoff", "reattempt", "repeat"]),
+        (
+            "auth",
+            vec!["authenticate", "login", "verify", "token", "credential"],
+        ),
+        ("authenticate", vec!["auth", "login", "verify", "token"]),
+        (
+            "middleware",
+            vec!["interceptor", "chain", "filter", "guard"],
+        ),
+        (
+            "config",
+            vec!["setting", "option", "configuration", "preference"],
+        ),
+        ("log", vec!["trace", "debug", "info", "warn", "record"]),
+        (
+            "init",
+            vec!["setup", "bootstrap", "create", "start", "begin"],
+        ),
+        (
+            "cleanup",
+            vec!["teardown", "shutdown", "dispose", "destroy", "close"],
+        ),
+        (
+            "shutdown",
+            vec!["cleanup", "teardown", "close", "stop", "exit"],
+        ),
+        (
+            "send",
+            vec!["write", "emit", "dispatch", "transmit", "post"],
+        ),
+        ("receive", vec!["read", "recv", "listen", "accept", "get"]),
+        (
+            "timer",
+            vec!["interval", "timeout", "delay", "schedule", "clock"],
+        ),
+        ("mutex", vec!["lock", "semaphore", "synchronization"]),
+        ("semaphore", vec!["mutex", "lock", "counter", "permit"]),
+        ("spawn", vec!["create", "start", "fork", "launch", "init"]),
+        ("runtime", vec!["executor", "scheduler", "driver", "engine"]),
+        ("task", vec!["job", "work", "operation", "unit", "future"]),
+        ("channel", vec!["queue", "pipe", "stream", "buffer"]),
+        ("stream", vec!["channel", "pipe", "flow", "sequence"]),
+        ("buffer", vec!["queue", "cache", "stream", "batch"]),
+        ("resolve", vec!["lookup", "find", "map", "translate"]),
+        ("import", vec!["require", "include", "load", "use"]),
+        ("export", vec!["publish", "provide", "expose", "share"]),
+        (
+            "compile",
+            vec!["build", "transform", "translate", "assemble"],
+        ),
+        (
+            "test",
+            vec!["spec", "verify", "check", "assert", "validate"],
+        ),
+        ("tree", vec!["ast", "syntax", "structure", "parse"]),
+        ("ast", vec!["tree", "syntax", "structure", "node"]),
+        ("embed", vec!["vectorize", "encode", "represent", "index"]),
+        ("embedding", vec!["vector", "representation", "encode"]),
+        (
+            "memory",
+            vec!["store", "storage", "cache", "db", "database"],
+        ),
+        ("daemon", vec!["server", "service", "process", "background"]),
+        (
+            "connector",
+            vec!["plugin", "integration", "adapter", "bridge"],
+        ),
+        (
+            "permission",
+            vec!["access", "auth", "authorization", "role", "scope"],
+        ),
+        (
+            "lifecycle",
+            vec!["create", "init", "start", "stop", "destroy", "manage"],
+        ),
+        ("dependency", vec!["import", "require", "use", "reference"]),
+        (
+            "track",
+            vec!["monitor", "observe", "record", "log", "watch"],
+        ),
+        ("extract", vec!["parse", "pull", "get", "retrieve", "scan"]),
+        ("chunk", vec!["split", "segment", "partition", "divide"]),
+        ("minify", vec!["compress", "shrink", "optimize", "reduce"]),
+        (
+            "bundle",
+            vec!["package", "pack", "link", "assemble", "build"],
+        ),
+        (
+            "link",
+            vec!["connect", "reference", "import", "join", "resolve"],
+        ),
+        ("mangle", vec!["rename", "obfuscate", "minify", "transform"]),
+        ("sourcemap", vec!["source_map", "map", "debug", "debuginfo"]),
+        ("prefix", vec!["pre", "prepend", "before", "header"]),
+        ("suffix", vec!["post", "append", "after", "tail"]),
+        ("acl", vec!["permission", "access", "authorization", "role"]),
+        ("migration", vec!["schema", "database", "upgrade", "alter"]),
+        ("provider", vec!["source", "backend", "service", "adapter"]),
+    ]
+}
+
+static SYNONYM_ENTRIES: std::sync::OnceLock<Vec<(&'static str, Vec<&'static str>)>> =
+    std::sync::OnceLock::new();
 
 #[cfg(test)]
 mod tests {

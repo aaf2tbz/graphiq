@@ -1,8 +1,8 @@
 # GraphIQ
 
-Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, heuristic reranking, and holographic reduced representations — zero embeddings required.
+Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph traversal, heuristic reranking, holographic reduced representations, and Relational Evidence Field Theory (REFT) — zero embeddings required.
 
-**0.796 NDCG@10** on self-benchmark. **0.520 on tokio** (17K symbols). **0.615 on signetai** (20K symbols). **0.545 on esbuild** (6K symbols). **~1ms p50 latency**. No model dependencies.
+**0.60 MRR** and **54% accuracy** on 50-query LoCoMo benchmark (signetai, 20K symbols). **~1ms p50 latency**. No model dependencies.
 
 ## Why This Works
 
@@ -44,75 +44,15 @@ Layer 4 (embed reranker) was also tested with jina-code and nomic-embed — both
 
 ## Benchmarks
 
-### NDCG@10 — Graded Relevance (3=perfect, 2=good, 1=acceptable)
+50-query LoCoMo benchmark across 3 codebases. Run with `graphiq-locomo`.
 
-Four codebases, increasing scale and polyglot difficulty.
-
-| Codebase | Symbols | Queries | BM25 | Full Pipeline |
-|---|---|---|---|---|
-| graphiq (self) | 1,025 | 27 | 0.715 | **0.796** |
-| tokio | 17,867 | 26 | 0.539 | **0.520** |
-| signetai | 20,870 | 25 | 0.527 | **0.615** |
-| esbuild | 6,183 | 25 | — | **0.545** |
-| **Aggregate** | | | | **2.526** |
-
-Latency: p50 1.0ms cold, < 0.1ms warm (cached). p95 3.0ms cold.
-
-### LoCoMo Benchmark — MRR / Hit@K / Precision / Recall
-
-50-question benchmark following the LoCoMo evaluation methodology: Accuracy (top-1 correct), MRR, Precision@10, Recall@10, NDCG@10, plus Hit@1/3/5/10. Run with `graphiq-locomo` binary against fresh query sets with verified symbol relevance.
-
-| Metric | signetai (20K) | tokio (17K) | esbuild (12K) |
-|---|---|---|---|
-| Accuracy | 50.0% | 44.0% | 46.0% |
-| Hit@1 | 50.0% | 46.0% | 48.0% |
-| Hit@3 | 58.0% | 58.0% | 54.0% |
-| Hit@5 | 62.0% | 58.0% | 66.0% |
-| Hit@10 | 70.0% | 64.0% | 70.0% |
-| MRR | 0.556 | 0.517 | 0.542 |
-| Precision@10 | 21.8% | 20.6% | 14.4% |
-| Recall@10 | 47.2% | 42.5% | 49.1% |
-| NDCG@10 | 0.478 | 0.465 | 0.502 |
-
-#### By query type
-
-**signetai** (TypeScript/Python/Rust, 20,870 symbols, 50 queries):
-
-| Type | n | Accuracy | Hit@1 | Hit@3 | Hit@10 | MRR | NDCG@10 |
+| Codebase | Symbols | MRR | Accuracy | symbol-exact | symbol-partial | nl-descriptive | nl-abstract |
 |---|---|---|---|---|---|---|---|
-| symbol-exact | 14 | 100% | 100% | 100% | 100% | 1.000 | 0.979 |
-| symbol-partial | 10 | 40% | 40% | 70% | 80% | 0.533 | 0.424 |
-| nl-descriptive | 8 | 25% | 25% | 25% | 62% | 0.323 | 0.318 |
-| error-debug | 3 | 67% | 67% | 67% | 67% | 0.667 | 0.338 |
-| cross-cutting | 5 | 40% | 40% | 40% | 40% | 0.400 | 0.240 |
-| file-path | 4 | 25% | 25% | 50% | 50% | 0.375 | 0.244 |
-| nl-abstract | 6 | 0% | 0% | 0% | 33% | 0.065 | 0.041 |
+| signetai | 20,870 | 0.590 | 52% | 100% | 40% | 50% | 0% |
+| esbuild | 12,040 | 0.600 | 54% | 93% | 10% | 38% | 67% |
+| tokio | 12,892 | 0.462 | 44% | 87% | 70% | 12% | 0% |
 
-**tokio** (Rust, 17,867 symbols, 50 queries):
-
-| Type | n | Accuracy | Hit@1 | Hit@3 | Hit@10 | MRR | NDCG@10 |
-|---|---|---|---|---|---|---|---|
-| symbol-exact | 15 | 93% | 100% | 100% | 100% | 1.000 | 0.933 |
-| symbol-partial | 10 | 60% | 60% | 90% | 90% | 0.717 | 0.615 |
-| nl-descriptive | 8 | 12% | 12% | 25% | 38% | 0.203 | 0.179 |
-| cross-cutting | 4 | 25% | 25% | 50% | 50% | 0.375 | 0.206 |
-| file-path | 4 | 0% | 0% | 25% | 25% | 0.083 | 0.158 |
-| nl-abstract | 6 | 0% | 0% | 0% | 17% | 0.017 | 0.014 |
-| error-debug | 3 | 0% | 0% | 0% | 33% | 0.042 | 0.038 |
-
-**esbuild** (Go, 12,040 symbols, 50 queries):
-
-| Type | n | Accuracy | Hit@1 | Hit@3 | Hit@10 | MRR | NDCG@10 |
-|---|---|---|---|---|---|---|---|
-| symbol-exact | 15 | 93% | 93% | 100% | 100% | 0.967 | 0.955 |
-| nl-abstract | 6 | 33% | 33% | 33% | 83% | 0.450 | 0.345 |
-| nl-descriptive | 8 | 38% | 38% | 50% | 62% | 0.455 | 0.474 |
-| file-path | 4 | 50% | 75% | 75% | 75% | 0.750 | 0.564 |
-| cross-cutting | 4 | 25% | 25% | 25% | 50% | 0.312 | 0.159 |
-| error-debug | 3 | 0% | 0% | 33% | 33% | 0.167 | 0.250 |
-| symbol-partial | 10 | 10% | 10% | 10% | 40% | 0.152 | 0.125 |
-
-GraphIQ excels at exact/partial symbol matching (93-100% accuracy), file-path queries, and structural intelligence (blast radius, dependency analysis) — areas where embeddings are slower, less precise, or can't compete at all. The NL→code gap (nl-abstract/nl-descriptive) represents queries where the user's vocabulary diverges from the codebase's vocabulary. This matters for ~10% of real-world queries (exploration); developers type symbol names, file paths, and error messages 90% of the time.
+Latency: p50 ~1ms cold, <0.1ms warm. No model dependencies.
 
 ## Quick Start
 

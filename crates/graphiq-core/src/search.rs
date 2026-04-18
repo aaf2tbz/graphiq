@@ -5,6 +5,7 @@ use crate::cache::HotCache;
 use crate::db::GraphDb;
 use crate::directory_expand::DirectoryExpander;
 use crate::edge::{BlastDirection, BlastRadius};
+use crate::evidence::{self, EvidenceIndex};
 use crate::fts::FtsSearch;
 use crate::graph::StructuralExpander;
 use crate::hrr::HrrIndex;
@@ -71,6 +72,7 @@ pub struct SearchEngine<'a> {
     db: &'a GraphDb,
     cache: &'a HotCache,
     hrr_index: Option<&'a HrrIndex>,
+    evidence_index: Option<&'a EvidenceIndex>,
 }
 
 impl<'a> SearchEngine<'a> {
@@ -79,11 +81,17 @@ impl<'a> SearchEngine<'a> {
             db,
             cache,
             hrr_index: None,
+            evidence_index: None,
         }
     }
 
     pub fn with_hrr(mut self, hrr: &'a HrrIndex) -> Self {
         self.hrr_index = Some(hrr);
+        self
+    }
+
+    pub fn with_evidence(mut self, ev: &'a EvidenceIndex) -> Self {
+        self.evidence_index = Some(ev);
         self
     }
 
@@ -104,7 +112,97 @@ impl<'a> SearchEngine<'a> {
         let mut total_fts: usize;
         let mut total_expanded: usize;
 
-        if let Some(decomposed) = crate::decompose::decomposed_search(
+        let q_tokens: Vec<String> = query
+            .query
+            .split_whitespace()
+            .map(|t| t.to_lowercase())
+            .filter(|t| t.len() >= 2)
+            .collect();
+        let is_nl = crate::rerank::is_nl_query(&q_tokens)
+            && !query.query.to_lowercase().starts_with("all ")
+            && !query.query.to_lowercase().starts_with("every ");
+
+        if is_nl && self.evidence_index.is_some() {
+            let ev_idx = self.evidence_index.unwrap();
+            let file_paths = self.load_file_paths();
+            let evidence_hits =
+                crate::evidence::evidence_search(&query.query, ev_idx, query.top_k * 3);
+
+            let fts = FtsSearch::new(self.db);
+            let fts_results = fts.search(&query.query, Some(200));
+            total_fts = fts_results.len();
+
+            let expander = StructuralExpander::new(self.db);
+            let expanded = expander.expand(
+                &fts_results,
+                query.expansion_seeds,
+                query.max_expansion_depth,
+            );
+            total_expanded = expanded.len();
+
+            let reranker = Reranker::new(self.db, query.debug).for_query(&query.query);
+            results = reranker.rerank(&fts_results, &expanded, &[], &file_paths, query.top_k);
+
+            let bm25_ids: Vec<i64> = results.iter().take(10).map(|r| r.symbol.id).collect();
+            let bm25_scores: Vec<f64> = results.iter().take(10).map(|r| r.score).collect();
+
+            let evidence_reranked =
+                crate::evidence::evidence_rerank(&query.query, &bm25_ids, &bm25_scores, ev_idx);
+
+            let mut fused: std::collections::HashMap<i64, f64> = std::collections::HashMap::new();
+
+            let ev_max = evidence_hits
+                .iter()
+                .map(|(_, s)| *s)
+                .fold(0.0f64, f64::max)
+                .max(1e-10);
+            for (rank, (id, score)) in evidence_hits.iter().enumerate() {
+                let normalized = score / ev_max;
+                let rank_decay = 1.0 / (1.0 + rank as f64 * 0.3);
+                *fused.entry(*id).or_insert(0.0) += 3.0 * normalized * rank_decay;
+            }
+
+            let ev_rerank_max = evidence_reranked
+                .iter()
+                .map(|(_, s)| *s)
+                .fold(0.0f64, f64::max)
+                .max(1e-10);
+            for (rank, (id, score)) in evidence_reranked.iter().enumerate() {
+                let normalized = score / ev_rerank_max;
+                let rank_decay = 1.0 / (1.0 + rank as f64 * 0.3);
+                *fused.entry(*id).or_insert(0.0) += 2.0 * normalized * rank_decay;
+            }
+
+            let bm25_max = bm25_scores
+                .iter()
+                .cloned()
+                .fold(0.0f64, f64::max)
+                .max(1e-10);
+            for (rank, (&id, &score)) in bm25_ids.iter().zip(bm25_scores.iter()).enumerate() {
+                let normalized = score / bm25_max;
+                let rank_decay = 1.0 / (1.0 + rank as f64 * 0.3);
+                *fused.entry(id).or_insert(0.0) += 1.0 * normalized * rank_decay;
+            }
+
+            let mut merged: Vec<(i64, f64)> = fused.into_iter().collect();
+            merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+            results = merged
+                .into_iter()
+                .take(query.top_k)
+                .filter_map(|(id, score)| {
+                    let sym = self.db.get_symbol(id).ok()??;
+                    let fp = file_paths.get(&sym.file_id).cloned();
+                    Some(ScoredSymbol {
+                        symbol: sym,
+                        score,
+                        breakdown: None,
+                        is_fts_hit: false,
+                        file_path: fp,
+                    })
+                })
+                .collect();
+        } else if let Some(decomposed) = crate::decompose::decomposed_search(
             self.db,
             &query.query,
             query.top_k,
@@ -184,68 +282,75 @@ impl<'a> SearchEngine<'a> {
                 }
             }
 
-            if let Some(hrr_idx) = self.hrr_index {
-                let file_paths = self.load_file_paths();
-                let bm25_ids: Vec<i64> = results.iter().take(5).map(|r| r.symbol.id).collect();
+            if let Some(ev_idx) = self.evidence_index {
+                let q_tokens: Vec<String> = query
+                    .query
+                    .split_whitespace()
+                    .map(|t| t.to_lowercase())
+                    .filter(|t| t.len() >= 2)
+                    .collect();
+                let is_nl = crate::rerank::is_nl_query(&q_tokens)
+                    && !query.query.to_lowercase().starts_with("all ")
+                    && !query.query.to_lowercase().starts_with("every ");
 
-                if bm25_ids.len() >= 2 {
-                    let (biv_expanded, _) =
-                        crate::hrr::hrr_bivector_expand_scored(&bm25_ids, hrr_idx, 50);
+                if is_nl {
+                    let file_paths = self.load_file_paths();
+                    let evidence_hits =
+                        crate::evidence::evidence_search(&query.query, ev_idx, query.top_k * 3);
 
-                    let mut rrf: std::collections::HashMap<i64, f64> =
+                    let bm25_ids: Vec<i64> = results.iter().take(10).map(|r| r.symbol.id).collect();
+                    let bm25_scores: Vec<f64> = results.iter().take(10).map(|r| r.score).collect();
+
+                    let evidence_reranked = crate::evidence::evidence_rerank(
+                        &query.query,
+                        &bm25_ids,
+                        &bm25_scores,
+                        ev_idx,
+                    );
+
+                    let mut fused: std::collections::HashMap<i64, f64> =
                         std::collections::HashMap::new();
-                    let k = 60.0;
-                    for (rank, &id) in bm25_ids.iter().enumerate() {
-                        *rrf.entry(id).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
-                    }
-                    for (rank, (id, _)) in biv_expanded.iter().enumerate() {
-                        *rrf.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
-                    }
 
-                    let q_tokens: Vec<String> = query
-                        .query
-                        .split_whitespace()
-                        .map(|t| t.to_lowercase())
-                        .filter(|t| t.len() >= 2)
-                        .collect();
-                    let is_nl = crate::rerank::is_nl_query(&q_tokens)
-                        && !query.query.to_lowercase().starts_with("all ")
-                        && !query.query.to_lowercase().starts_with("every ");
-
-                    if is_nl {
-                        let all_seed_ids: Vec<i64> =
-                            results.iter().take(20).map(|r| r.symbol.id).collect();
-                        let fractal_results =
-                            crate::hrr::hrr_fractal_attract(&all_seed_ids, hrr_idx, 3, 30);
-                        for (rank, (id, _)) in fractal_results.iter().enumerate() {
-                            *rrf.entry(*id).or_insert(0.0) += 0.3 / (k + rank as f64 + 1.0);
-                        }
-
-                        let top_score = results.first().map(|r| r.score).unwrap_or(0.0);
-                        if top_score < 5.0 {
-                            let concrete_terms =
-                                crate::decompose::extract_concrete_terms(&query.query);
-                            if !concrete_terms.is_empty() {
-                                let hrr_query = concrete_terms.join(" ");
-                                let hrr_hits = crate::hrr::hrr_search(&hrr_query, hrr_idx, 30);
-                                for (rank, (id, _)) in hrr_hits.iter().enumerate() {
-                                    *rrf.entry(*id).or_insert(0.0) += 0.8 / (k + rank as f64 + 1.0);
-                                }
-                            }
-                        }
+                    let ev_max = evidence_hits
+                        .iter()
+                        .map(|(_, s)| *s)
+                        .fold(0.0f64, f64::max)
+                        .max(1e-10);
+                    for (rank, (id, score)) in evidence_hits.iter().enumerate() {
+                        let normalized = score / ev_max;
+                        let rank_decay = 1.0 / (1.0 + rank as f64 * 0.3);
+                        *fused.entry(*id).or_insert(0.0) += 3.0 * normalized * rank_decay;
                     }
 
-                    let mut merged: Vec<(i64, f64)> = rrf.into_iter().collect();
+                    let ev_rerank_max = evidence_reranked
+                        .iter()
+                        .map(|(_, s)| *s)
+                        .fold(0.0f64, f64::max)
+                        .max(1e-10);
+                    for (rank, (id, score)) in evidence_reranked.iter().enumerate() {
+                        let normalized = score / ev_rerank_max;
+                        let rank_decay = 1.0 / (1.0 + rank as f64 * 0.3);
+                        *fused.entry(*id).or_insert(0.0) += 2.0 * normalized * rank_decay;
+                    }
+
+                    let bm25_max = bm25_scores
+                        .iter()
+                        .cloned()
+                        .fold(0.0f64, f64::max)
+                        .max(1e-10);
+                    for (rank, (&id, &score)) in bm25_ids.iter().zip(bm25_scores.iter()).enumerate()
+                    {
+                        let normalized = score / bm25_max;
+                        let rank_decay = 1.0 / (1.0 + rank as f64 * 0.3);
+                        *fused.entry(id).or_insert(0.0) += 1.0 * normalized * rank_decay;
+                    }
+
+                    let mut merged: Vec<(i64, f64)> = fused.into_iter().collect();
                     merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-                    let merged_ids: Vec<i64> = merged.iter().take(50).map(|(id, _)| *id).collect();
-                    let merged_scores: Vec<f64> = merged.iter().take(50).map(|(_, s)| *s).collect();
 
-                    let reranked =
-                        crate::hrr::hrr_rerank(&query.query, &merged_ids, &merged_scores, hrr_idx);
-                    let top_n: Vec<(i64, f64)> = reranked.into_iter().take(query.top_k).collect();
-
-                    results = top_n
+                    results = merged
                         .into_iter()
+                        .take(query.top_k)
                         .filter_map(|(id, score)| {
                             let sym = self.db.get_symbol(id).ok()??;
                             let fp = file_paths.get(&sym.file_id).cloned();
@@ -258,7 +363,182 @@ impl<'a> SearchEngine<'a> {
                             })
                         })
                         .collect();
-                    total_expanded += biv_expanded.len();
+                } else if let Some(hrr_idx) = self.hrr_index {
+                    let file_paths = self.load_file_paths();
+                    let bm25_ids: Vec<i64> = results.iter().take(5).map(|r| r.symbol.id).collect();
+
+                    if bm25_ids.len() >= 2 {
+                        let (biv_expanded, _) =
+                            crate::hrr::hrr_bivector_expand_scored(&bm25_ids, hrr_idx, 50);
+
+                        let mut rrf: std::collections::HashMap<i64, f64> =
+                            std::collections::HashMap::new();
+                        let k_rrf = 60.0;
+                        for (rank, &id) in bm25_ids.iter().enumerate() {
+                            *rrf.entry(id).or_insert(0.0) += 1.0 / (k_rrf + rank as f64 + 1.0);
+                        }
+                        for (rank, (id, _)) in biv_expanded.iter().enumerate() {
+                            *rrf.entry(*id).or_insert(0.0) += 1.0 / (k_rrf + rank as f64 + 1.0);
+                        }
+
+                        let mut merged: Vec<(i64, f64)> = rrf.into_iter().collect();
+                        merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                        let merged_ids: Vec<i64> =
+                            merged.iter().take(50).map(|(id, _)| *id).collect();
+                        let merged_scores: Vec<f64> =
+                            merged.iter().take(50).map(|(_, s)| *s).collect();
+
+                        let reranked = crate::hrr::hrr_rerank(
+                            &query.query,
+                            &merged_ids,
+                            &merged_scores,
+                            hrr_idx,
+                        );
+                        let top_n: Vec<(i64, f64)> =
+                            reranked.into_iter().take(query.top_k).collect();
+
+                        results = top_n
+                            .into_iter()
+                            .filter_map(|(id, score)| {
+                                let sym = self.db.get_symbol(id).ok()??;
+                                let fp = file_paths.get(&sym.file_id).cloned();
+                                Some(ScoredSymbol {
+                                    symbol: sym,
+                                    score,
+                                    breakdown: None,
+                                    is_fts_hit: false,
+                                    file_path: fp,
+                                })
+                            })
+                            .collect();
+                    }
+                }
+            } else if let Some(hrr_idx) = self.hrr_index {
+                let file_paths = self.load_file_paths();
+                let bm25_ids: Vec<i64> = results.iter().take(5).map(|r| r.symbol.id).collect();
+
+                if bm25_ids.len() >= 2 {
+                    let q_tokens: Vec<String> = query
+                        .query
+                        .split_whitespace()
+                        .map(|t| t.to_lowercase())
+                        .filter(|t| t.len() >= 2)
+                        .collect();
+                    let is_nl = crate::rerank::is_nl_query(&q_tokens)
+                        && !query.query.to_lowercase().starts_with("all ")
+                        && !query.query.to_lowercase().starts_with("every ");
+
+                    if is_nl {
+                        let concrete_terms = crate::decompose::extract_concrete_terms(&query.query);
+                        let holo_hits = if !concrete_terms.is_empty() {
+                            let hrr_query = concrete_terms.join(" ");
+                            crate::hrr::hrr_holographic_search(&hrr_query, hrr_idx, 50)
+                        } else {
+                            crate::hrr::hrr_holographic_search(&query.query, hrr_idx, 50)
+                        };
+
+                        let all_seed_ids: Vec<i64> =
+                            results.iter().take(20).map(|r| r.symbol.id).collect();
+                        let (biv_expanded, coherence) =
+                            crate::hrr::hrr_bivector_expand_scored(&all_seed_ids, hrr_idx, 50);
+
+                        let fractal_results =
+                            crate::hrr::hrr_fractal_attract(&all_seed_ids, hrr_idx, 3, 30);
+
+                        let mut rrf: std::collections::HashMap<i64, f64> =
+                            std::collections::HashMap::new();
+                        let k = 60.0;
+                        for (rank, &id) in bm25_ids.iter().enumerate() {
+                            *rrf.entry(id).or_insert(0.0) += 2.0 / (k + rank as f64 + 1.0);
+                        }
+                        for (rank, (id, _)) in holo_hits.iter().enumerate() {
+                            *rrf.entry(*id).or_insert(0.0) += 1.5 / (k + rank as f64 + 1.0);
+                        }
+                        for (rank, (id, _)) in biv_expanded.iter().enumerate() {
+                            let weight = 0.3 + 0.7 * coherence.max(0.0).min(1.0);
+                            *rrf.entry(*id).or_insert(0.0) += weight / (k + rank as f64 + 1.0);
+                        }
+                        for (rank, (id, _)) in fractal_results.iter().enumerate() {
+                            *rrf.entry(*id).or_insert(0.0) += 0.3 / (k + rank as f64 + 1.0);
+                        }
+
+                        let mut merged: Vec<(i64, f64)> = rrf.into_iter().collect();
+                        merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                        let merged_ids: Vec<i64> =
+                            merged.iter().take(50).map(|(id, _)| *id).collect();
+                        let merged_scores: Vec<f64> =
+                            merged.iter().take(50).map(|(_, s)| *s).collect();
+
+                        let reranked = crate::hrr::hrr_holographic_rerank(
+                            &query.query,
+                            &merged_ids,
+                            &merged_scores,
+                            hrr_idx,
+                        );
+                        let top_n: Vec<(i64, f64)> =
+                            reranked.into_iter().take(query.top_k).collect();
+
+                        results = top_n
+                            .into_iter()
+                            .filter_map(|(id, score)| {
+                                let sym = self.db.get_symbol(id).ok()??;
+                                let fp = file_paths.get(&sym.file_id).cloned();
+                                Some(ScoredSymbol {
+                                    symbol: sym,
+                                    score,
+                                    breakdown: None,
+                                    is_fts_hit: false,
+                                    file_path: fp,
+                                })
+                            })
+                            .collect();
+                        total_expanded += biv_expanded.len() + holo_hits.len();
+                    } else {
+                        let (biv_expanded, _) =
+                            crate::hrr::hrr_bivector_expand_scored(&bm25_ids, hrr_idx, 50);
+
+                        let mut rrf: std::collections::HashMap<i64, f64> =
+                            std::collections::HashMap::new();
+                        let k = 60.0;
+                        for (rank, &id) in bm25_ids.iter().enumerate() {
+                            *rrf.entry(id).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+                        }
+                        for (rank, (id, _)) in biv_expanded.iter().enumerate() {
+                            *rrf.entry(*id).or_insert(0.0) += 1.0 / (k + rank as f64 + 1.0);
+                        }
+
+                        let mut merged: Vec<(i64, f64)> = rrf.into_iter().collect();
+                        merged.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+                        let merged_ids: Vec<i64> =
+                            merged.iter().take(50).map(|(id, _)| *id).collect();
+                        let merged_scores: Vec<f64> =
+                            merged.iter().take(50).map(|(_, s)| *s).collect();
+
+                        let reranked = crate::hrr::hrr_rerank(
+                            &query.query,
+                            &merged_ids,
+                            &merged_scores,
+                            hrr_idx,
+                        );
+                        let top_n: Vec<(i64, f64)> =
+                            reranked.into_iter().take(query.top_k).collect();
+
+                        results = top_n
+                            .into_iter()
+                            .filter_map(|(id, score)| {
+                                let sym = self.db.get_symbol(id).ok()??;
+                                let fp = file_paths.get(&sym.file_id).cloned();
+                                Some(ScoredSymbol {
+                                    symbol: sym,
+                                    score,
+                                    breakdown: None,
+                                    is_fts_hit: false,
+                                    file_path: fp,
+                                })
+                            })
+                            .collect();
+                        total_expanded += biv_expanded.len();
+                    }
                 }
             }
         }

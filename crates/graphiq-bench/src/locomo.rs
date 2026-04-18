@@ -3,6 +3,7 @@ use std::path::Path;
 
 use graphiq_core::cache::HotCache;
 use graphiq_core::db::GraphDb;
+use graphiq_core::holo;
 use graphiq_core::hrr;
 use graphiq_core::index::Indexer;
 use graphiq_core::search::{SearchEngine, SearchQuery};
@@ -163,6 +164,18 @@ fn main() {
         }
     };
 
+    print!("Computing Evidence Index ... ");
+    let evidence_index = match graphiq_core::evidence::build_evidence_index(&db) {
+        Ok(idx) => {
+            println!("done ({} symbols)", idx.symbol_ids.len());
+            Some(idx)
+        }
+        Err(e) => {
+            println!("failed: {e}");
+            None
+        }
+    };
+
     let queries: Vec<LocomoQuery> = if let Some(qf) = args.get(3) {
         let content = std::fs::read_to_string(qf).unwrap_or_else(|e| {
             eprintln!("error reading query file: {e}");
@@ -178,18 +191,20 @@ fn main() {
     };
 
     let cache = HotCache::with_defaults();
-    let engine = if let Some(ref hrr_idx) = hrr_index {
-        SearchEngine::new(&db, &cache).with_hrr(hrr_idx)
-    } else {
-        SearchEngine::new(&db, &cache)
-    };
+    let mut engine = SearchEngine::new(&db, &cache);
+    if let Some(ref ev_idx) = evidence_index {
+        engine = engine.with_evidence(ev_idx);
+    }
+    if let Some(ref hrr_idx) = hrr_index {
+        engine = engine.with_hrr(hrr_idx);
+    }
 
     println!("\nRunning {} queries ...\n", queries.len());
 
     let mut results: Vec<LocomoResult> = Vec::new();
 
     for q in &queries {
-        let search_result = engine.search(&SearchQuery::new(&q.query).top_k(10));
+        let search_result = engine.search(&SearchQuery::new(&q.query).top_k(10).debug(true));
         let result_rels: Vec<u32> = search_result
             .results
             .iter()

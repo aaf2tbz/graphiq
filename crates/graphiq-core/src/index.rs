@@ -370,6 +370,11 @@ impl<'a> Indexer<'a> {
 
             hints.push(name_decomposed.clone());
 
+            let stemmed_decomposed = crate::tokenize::stem_text(name_decomposed);
+            if stemmed_decomposed != *name_decomposed {
+                hints.push(stemmed_decomposed);
+            }
+
             let morph_hints: Vec<String> = name_decomposed
                 .split_whitespace()
                 .filter_map(|w| morphological_variants(w))
@@ -497,6 +502,8 @@ impl<'a> Indexer<'a> {
                     .map(|v| v.iter().map(|(k, _)| k.clone()).collect())
                     .unwrap_or_default(),
                 container_name: self.db.container_for(*id).ok().flatten().map(|(_, n)| n),
+                signature: signature.clone(),
+                source_text: source.clone(),
             };
             let symbol_roles = infer_roles(&role_evidence);
             if !symbol_roles.is_empty() {
