@@ -93,13 +93,23 @@ We tested. Neural embeddings at the 137M parameter scale (jina-code, nomic-embed
 
 ### MRR (rank-1 correctness — primary metric)
 
+**10-query benchmark:**
+
 | Codebase | BM25 | Cruncher v1 | Cruncher v2 | **Goober** |
 |---|---|---|---|---|
 | signetai | 0.720 | 0.696 | 0.733 | **0.764** |
-| tokio | 0.508 | 0.329 | 0.310 | **0.343** |
-| esbuild | 0.562 | 0.304 | 0.528 | **0.631** |
+| tokio | 0.508 | 0.329 | 0.310 | **0.393** |
+| esbuild | 0.562 | 0.304 | 0.528 | **0.681** |
 
-Goober beats BM25 MRR on signetai (+0.044) and esbuild (+0.069). Tokio remains the hard case — generic function names (`run`, `handle`, `poll`) make graph walks counterproductive. Goober reduces tokio regression from CruncherV2's -0.198 to -0.165.
+**30-query benchmark (more statistically stable):**
+
+| Codebase | BM25 | CR v1 | CR v2 | **Goober** | Goober vs BM25 |
+|---|---|---|---|---|---|
+| signetai | 0.556 | 0.603 | 0.622 | **0.625** | **+0.069** |
+| tokio | 0.583 | 0.498 | 0.510 | **0.513** | -0.070 |
+| esbuild | 0.675 | 0.588 | 0.740 | **0.777** | **+0.102** |
+
+Goober beats BM25 MRR on signetai and esbuild on both benchmarks. Tokio remains the hard case — generic function names (`run`, `handle`, `poll`) make graph walks counterproductive. The 30-query benchmark shows the tokio regression is smaller (-0.070) than the 10-query set suggested (-0.115).
 
 ### NDCG@10 (graded relevance)
 
@@ -144,8 +154,11 @@ NDCG and MRR use **completely different query sets** targeting different symbols
 ```bash
 cargo build --release -p graphiq-bench
 
-# Per-codebase (10-query sets)
-./target/release/graphiq-bench /path/to/codebase .graphiq/bench.db benches/ndcg-10-codebase.json benches/mrr-10-codebase.json
+# 10-query benchmark (fast)
+./target/release/graphiq-bench .graphiq/bench.db benches/ndcg-10-codebase.json benches/mrr-10-codebase.json
+
+# 30-query benchmark (more stable)
+./target/release/graphiq-bench .graphiq/bench.db benches/ndcg-10-codebase.json benches/mrr-30-codebase.json
 ```
 
 ## What We Learned Building This

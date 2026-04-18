@@ -1,24 +1,38 @@
 # GraphIQ Roadmap
 
-## Current State (Goober v1)
+## Current State (Goober v2)
+
+### 10-query benchmark
 
 | Codebase | BM25 MRR | Goober MRR | Delta |
 |---|---|---|---|
 | signetai | 0.720 | 0.764 | **+0.044** |
-| tokio | 0.508 | 0.343 | -0.165 |
-| esbuild | 0.562 | 0.631 | **+0.069** |
+| tokio | 0.508 | 0.393 | -0.115 |
+| esbuild | 0.562 | 0.681 | **+0.119** |
 
-Goober beats BM25 on 2/3 codebases and beats CruncherV2 on all 3. The primary unsolved problem is tokio's regression from BM25.
+### 30-query benchmark (more stable)
+
+| Codebase | BM25 MRR | Goober MRR | Delta |
+|---|---|---|---|
+| signetai | 0.556 | 0.625 | **+0.069** |
+| tokio | 0.583 | 0.513 | -0.070 |
+| esbuild | 0.675 | 0.777 | **+0.102** |
+
+Goober beats BM25 on 2/3 codebases and beats CruncherV2 on all 3. The tokio regression is -0.070 on the 30-query benchmark (smaller than the 10-query -0.115 suggested).
 
 ---
 
-## Priority 1: Fix the Tokio Regression
+## Priority 1: Fix the Tokio Regression — PARTIALLY DONE
 
-The tokio regression (-0.165 MRR vs BM25) is caused by seed-on-seed competition: the BM25-dominant scoring formula (3.0 * bm25 + 1.5 * coverage + 2.0 * name) can still be overridden when a wrong seed has substantially better coverage + name scores than the correct BM25 rank-1 seed.
+**Completed**: Capped structural norms at 0.5 to prevent BM25 override when seed scores are close. This improved tokio from 0.343 to 0.393 (+0.050 on 10-query) and esbuild from 0.631 to 0.681 (+0.050).
 
-**Root cause**: For "configure TCP socket linger timeout", the correct seed (`set_tcp_linger`, BM25 rank 1) matches "tcp" and "linger" (high IDF, 2 terms). A wrong seed matches "configure", "socket", "timeout" (low IDF, 3 terms). Despite IDF weighting, 3 low-IDF name matches accumulate more score than 2 high-IDF matches.
+**Tested and reverted** (no improvement or regression):
+- sqrt(name_norm) — no effect on tokio
+- Adaptive BM25 weight by gap ratio — no effect (BM25 gap already tiny)
+- Multiplicative BM25 formula — hurt esbuild
+- Confidence lock threshold 1.05 (from 1.2) — hurt esbuild
 
-### Actionable experiments (in order):
+### Remaining actionable experiments:
 
 1. **Non-linear name scoring** — Replace additive name score with `sqrt(sum)` or `max(term_scores)` to penalize many weak matches vs few strong ones. This directly addresses the 3-weak > 2-strong problem.
 
@@ -30,11 +44,14 @@ The tokio regression (-0.165 MRR vs BM25) is caused by seed-on-seed competition:
 
 ---
 
-## Priority 2: Expand the Benchmark
+## Priority 2: Expand the Benchmark — DONE
 
-10 queries per codebase is too small for statistical confidence. A single query changing rank shifts MRR by 0.05-0.10.
+Added 30-query MRR benchmark sets for all 3 codebases. The 30-query results confirm Goober's improvements are stable (not artifacts of small sample size):
+- signetai: +0.069 MRR over BM25 (10-query: +0.044)
+- esbuild: +0.102 MRR over BM25 (10-query: +0.119)
+- tokio: regression reduced to -0.070 (10-query suggested -0.115)
 
-### Actions:
+### Remaining actions:
 
 1. **Expand to 30+ queries per codebase** — Cover more query categories: cross-cutting concerns, multi-hop relationships, behavioral queries, error handling patterns.
 
