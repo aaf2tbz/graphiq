@@ -313,20 +313,6 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         })
         .collect();
 
-    let top_idf: HashMap<String, f64> = {
-        let mut scored: Vec<(String, f64)> = global_idf
-            .iter()
-            .map(|(t, &idf)| (t.clone(), idf))
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
-        let cutoff = if scored.len() > 500 { scored[500].1 } else { 0.0 };
-        global_idf
-            .iter()
-            .filter(|(_, &idf)| idf >= cutoff)
-            .map(|(t, &idf)| (t.clone(), idf))
-            .collect()
-    };
-
     let term_sets: Vec<TermSet> = term_sets
         .into_iter()
         .map(|mut ts| {
@@ -650,7 +636,6 @@ pub fn cruncher_search(
 
             let bridge = if c.structural_paths > 0 && n_qt >= 2 {
                 let mut terms_covered_by_neighbors = vec![false; n_qt];
-                let mut check_count = 0usize;
                 for edge in idx.outgoing[c.idx].iter().take(20) {
                     for (ti, qt) in query_terms.iter().enumerate() {
                         if terms_covered_by_neighbors[ti] {
@@ -663,7 +648,6 @@ pub fn cruncher_search(
                             }
                         }
                     }
-                    check_count += 1;
                     if terms_covered_by_neighbors.iter().all(|&b| b) {
                         break;
                     }
@@ -2284,12 +2268,11 @@ fn holo_cosine(a: &[f64], b: &[f64]) -> f64 {
 }
 
 pub struct HoloIndex {
-    name_holos: Vec<Vec<f64>>,
+    pub name_holos: Vec<Vec<f64>>,
     term_freq: HashMap<String, (Vec<f64>, Vec<f64>)>,
 }
 
-pub fn build_holo_index(db: &GraphDb, idx: &CruncherIndex) -> HoloIndex {
-    let conn = db.conn();
+pub fn build_holo_index(_db: &GraphDb, idx: &CruncherIndex) -> HoloIndex {
     let mut all_terms: HashSet<String> = HashSet::new();
     for ts in &idx.term_sets {
         for t in ts.name_terms.iter() { all_terms.insert(t.clone()); }
@@ -2304,8 +2287,6 @@ pub fn build_holo_index(db: &GraphDb, idx: &CruncherIndex) -> HoloIndex {
         term_freq.insert(t.clone(), holo_to_freq(&v));
         term_time.insert(t.clone(), v);
     }
-
-    let rel_name = holo_random_unit(0xDEAD_BEEFu64);
 
     let mut name_holos: Vec<Vec<f64>> = Vec::with_capacity(idx.n);
     for i in 0..idx.n {
@@ -2648,4 +2629,161 @@ pub fn goober_v5_search(
     }
 
     results
+}
+
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+    use crate::db::GraphDb;
+    use crate::fts::FtsSearch;
+    use crate::symbol::{SymbolBuilder, SymbolKind};
+
+    fn build_tiny_db() -> GraphDb {
+        let db = GraphDb::open_in_memory().unwrap();
+        let fid = db
+            .upsert_file("src/app.rs", "rust", "abc", 500, 50)
+            .unwrap();
+        for (name, kind, start, end) in [
+            ("parse_config", SymbolKind::Function, 1, 10),
+            ("validate_input", SymbolKind::Function, 11, 20),
+            ("AppConfig", SymbolKind::Struct, 21, 30),
+            ("handle_request", SymbolKind::Function, 31, 40),
+            ("rate_limit", SymbolKind::Function, 41, 50),
+        ] {
+            let sym = SymbolBuilder::new(fid, name.into(), kind, format!("fn {}()", name), "rust".into())
+                .lines(start, end)
+                .signature(format!("fn {}(x: i32) -> bool", name))
+                .build();
+            db.insert_symbol(&sym).unwrap();
+        }
+        db
+    }
+
+    fn run_fuzz_query(db: &GraphDb, query: &str) {
+        let ci = build_cruncher_index(db).unwrap();
+        let hi = build_holo_index(db, &ci);
+        let fts = FtsSearch::new(db);
+        let bm25: Vec<(i64, f64)> = fts
+            .search(query, Some(30))
+            .into_iter()
+            .map(|r| (r.symbol.id, r.bm25_score))
+            .collect();
+
+        let _ = goober_search(query, &ci, &bm25, 10);
+        let _ = goober_v3_search(query, &ci, &bm25, 10);
+        let _ = goober_v4_search(query, &ci, &bm25, 10);
+        let _ = goober_v5_search(query, &ci, &hi, &bm25, 10);
+        let _ = cruncher_search(query, &ci, &bm25, 10);
+        let _ = cruncher_v2_search(query, &ci, &bm25, 10);
+    }
+
+    #[test]
+    fn fuzz_empty_query() {
+        let db = build_tiny_db();
+        run_fuzz_query(&db, "");
+    }
+
+    #[test]
+    fn fuzz_single_char() {
+        let db = build_tiny_db();
+        for c in &["a", "z", "0", " ", ".", "-", "_", "日本"] {
+            run_fuzz_query(&db, c);
+        }
+    }
+
+    #[test]
+    fn fuzz_whitespace_variants() {
+        let db = build_tiny_db();
+        for q in &[" ", "  ", "\t", "\n", "  parse  config  "] {
+            run_fuzz_query(&db, q);
+        }
+    }
+
+    #[test]
+    fn fuzz_special_chars() {
+        let db = build_tiny_db();
+        for q in &[
+            "parse(config)",
+            "a && b || c",
+            "foo.bar.baz",
+            "rate-limit",
+            "parse+config",
+            "parse*config",
+            "parse[0]",
+            "{json: true}",
+            "<html>",
+            "a->b",
+            "a=>b",
+            "a::b",
+            "a;b",
+            "a,b",
+            "\"quoted\"",
+            "'single'",
+            "\\escaped\\",
+            "null",
+            "undefined",
+            "NaN",
+        ] {
+            run_fuzz_query(&db, q);
+        }
+    }
+
+    #[test]
+    fn fuzz_unicode() {
+        let db = build_tiny_db();
+        for q in &[
+            "парсить",
+            "解析設定",
+            "구성분석",
+            "🦀 rust",
+            "parse_конфиг",
+        ] {
+            run_fuzz_query(&db, q);
+        }
+    }
+
+    #[test]
+    fn fuzz_very_long_query() {
+        let db = build_tiny_db();
+        let long = (0..1000).map(|i| format!("term{}", i)).collect::<Vec<_>>().join(" ");
+        run_fuzz_query(&db, &long);
+    }
+
+    #[test]
+    fn fuzz_repeated_terms() {
+        let db = build_tiny_db();
+        run_fuzz_query(&db, "parse parse parse parse");
+        run_fuzz_query(&db, "a a a a a a a a a a");
+    }
+
+    #[test]
+    fn fuzz_only_stopwords() {
+        let db = build_tiny_db();
+        for q in &["the", "a an the", "is are was were"] {
+            run_fuzz_query(&db, q);
+        }
+    }
+
+    #[test]
+    fn fuzz_camel_snake_kebab() {
+        let db = build_tiny_db();
+        for q in &[
+            "parseConfig",
+            "parse_config",
+            "parse-config",
+            "PascalCase",
+            "UPPER_CASE",
+            "miXeD_CaSe_Name",
+        ] {
+            run_fuzz_query(&db, q);
+        }
+    }
+
+    #[test]
+    fn fuzz_numeric_queries() {
+        let db = build_tiny_db();
+        for q in &["123", "3.14", "0x1F", "1e10", "v2.0", "h264"] {
+            run_fuzz_query(&db, q);
+        }
+    }
 }

@@ -2,13 +2,14 @@
 
 ## Methodology
 
-30-query benchmark across 3 codebases covering different languages and codebase characteristics:
+30-query benchmark across 4 codebases covering different languages and codebase characteristics:
 
 | Codebase | Language | Symbols | Edges | Characteristics |
 |---|---|---|---|---|
 | signetai | TypeScript | 20,870 | 14,547 | Domain-specific names, deep call graphs |
 | tokio | Rust | 12,892 | 11,520 | Generic function names (`run`, `handle`, `poll`) |
 | esbuild | Go | 12,040 | 7,079 | Descriptive names (`convertOKLCHToOKLAB`) |
+| demo | Multi (Rust, TS, Python, Go) | 48 | 17 | Small self-test codebase, 4 languages |
 
 Two evaluation metrics:
 - **MRR** (Mean Reciprocal Rank): rank-1 correctness. 1.0 = perfect (every query's target is rank 1). Primary metric.
@@ -116,3 +117,28 @@ Query files are JSON arrays of objects:
 ```
 
 Query categories: `symbol-exact`, `symbol-partial`, `nl-descriptive`, `nl-abstract`, `file-path`, `error-debug`, `cross-cutting`.
+
+## Latency Profile
+
+30 queries x 10 iterations, release build, macOS:
+
+| Codebase | BM25 p50 | GooberV5 p50 | GooberV5 p99 |
+|---|---|---|---|
+| signetai (20K symbols) | 7.6ms | 17.9ms | 53ms |
+| esbuild (12K symbols) | 4.6ms | 19.1ms | 63ms |
+| tokio (13K symbols) | 4.9ms | 19.9ms | 67ms |
+| demo (48 symbols) | 0.1ms | 0.7ms | 3.2ms |
+
+V5 adds ~2.5ms over V4 from the holographic name computation. FTS is the dominant cost at scale.
+
+## Fuzz Testing
+
+53 adversarial query strings tested across all codebases with zero panics:
+- Empty, whitespace-only, single-character queries
+- Special characters (`()&&||.+-*[]{}<>=::;,\'\"\`)
+- Unicode (CJK, Cyrillic, emoji)
+- 1000-term queries, repeated terms, only-stopword queries
+- CamelCase, snake_case, kebab-case identifiers
+- Numeric strings, hex literals
+
+Run with: `graphiq-bench fuzz <db-path>`

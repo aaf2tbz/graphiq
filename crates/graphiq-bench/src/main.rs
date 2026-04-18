@@ -327,7 +327,19 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("usage: graphiq-bench <db-path> <ndcg-queries.json> <mrr-queries.json>");
+        eprintln!("       graphiq-bench profile <db-path> <mrr-queries.json>");
+        eprintln!("       graphiq-bench fuzz <db-path>");
         std::process::exit(1);
+    }
+
+    if args[1] == "profile" {
+        cmd_profile(&args);
+        return;
+    }
+
+    if args[1] == "fuzz" {
+        cmd_fuzz(&args);
+        return;
     }
 
     let db_path = &args[1];
@@ -389,4 +401,177 @@ fn main() {
     if ndcg_file.is_none() && mrr_file.is_none() {
         eprintln!("no query files provided. usage: graphiq-bench <db> <ndcg.json> <mrr.json>");
     }
+}
+
+fn cmd_profile(args: &[String]) {
+    if args.len() < 4 {
+        eprintln!("usage: graphiq-bench profile <db-path> <mrr-queries.json>");
+        std::process::exit(1);
+    }
+    let db_path = &args[2];
+    let query_file = &args[3];
+
+    let db = match GraphDb::open(Path::new(db_path)) {
+        Ok(d) => d,
+        Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+    };
+    let stats = db.stats().unwrap();
+    println!("=== Latency Profile ===");
+    println!("Database: {} files, {} symbols, {} edges\n", stats.files, stats.symbols, stats.edges);
+
+    let fts = FtsSearch::new(&db);
+    let ci = match cruncher::build_cruncher_index(&db) {
+        Ok(idx) => idx,
+        Err(e) => { eprintln!("cruncher build failed: {e}"); std::process::exit(1); }
+    };
+    let hi = cruncher::build_holo_index(&db, &ci);
+
+    let content = std::fs::read_to_string(query_file).unwrap_or_else(|e| {
+        eprintln!("error reading query file: {e}"); std::process::exit(1);
+    });
+    let queries: Vec<BenchQuery> = serde_json::from_str(&content).unwrap_or_else(|e| {
+        eprintln!("error parsing query file: {e}"); std::process::exit(1);
+    });
+
+    let n_runs = 10;
+    println!("Running {} queries x {} iterations...\n", queries.len(), n_runs);
+
+    let mut all_durations: Vec<u128> = Vec::new();
+    let methods = ["BM25", "GooberV4", "GooberV5"];
+
+    for method_name in &methods {
+        let mut method_durations: Vec<u128> = Vec::new();
+
+        for _ in 0..n_runs {
+            for q in &queries {
+                let start = std::time::Instant::now();
+
+                match *method_name {
+                    "BM25" => { let _ = fts.search(&q.query, Some(10)); }
+                    "GooberV4" => {
+                        let bm25: Vec<(i64, f64)> = fts
+                            .search(&q.query, Some(30))
+                            .into_iter()
+                            .map(|r| (r.symbol.id, r.bm25_score))
+                            .collect();
+                        let _ = cruncher::goober_v4_search(&q.query, &ci, &bm25, 10);
+                    }
+                    "GooberV5" => {
+                        let bm25: Vec<(i64, f64)> = fts
+                            .search(&q.query, Some(30))
+                            .into_iter()
+                            .map(|r| (r.symbol.id, r.bm25_score))
+                            .collect();
+                        let _ = cruncher::goober_v5_search(&q.query, &ci, &hi, &bm25, 10);
+                    }
+                    _ => {}
+                }
+
+                method_durations.push(start.elapsed().as_micros());
+            }
+        }
+
+        method_durations.sort();
+        let p50 = method_durations[method_durations.len() / 2];
+        let p99 = method_durations[method_durations.len() * 99 / 100];
+        let p_min = method_durations[0];
+        let p_max = method_durations[method_durations.len() - 1];
+        let avg: u128 = method_durations.iter().sum::<u128>() / method_durations.len() as u128;
+
+        all_durations.extend(method_durations.iter());
+
+        println!(
+            "{:<12} min={:>5}us  p50={:>5}us  avg={:>5}us  p99={:>5}us  max={:>5}us",
+            method_name, p_min, p50, avg, p99, p_max
+        );
+    }
+
+    all_durations.sort();
+    let overall_p50 = all_durations[all_durations.len() / 2];
+    let overall_p99 = all_durations[all_durations.len() * 99 / 100];
+    println!("\nOverall: p50={}us  p99={}us", overall_p50, overall_p99);
+
+    let ci_mem_approx = ci.symbol_ids.len() * (
+        std::mem::size_of::<i64>() +
+        std::mem::size_of::<usize>() +
+        std::mem::size_of::<usize>() +
+        std::mem::size_of::<i64>() +
+        std::mem::size_of::<usize>()
+    );
+    println!("\nIndex sizes (rough estimate):");
+    println!("  CruncherIndex: ~{}KB", ci_mem_approx / 1024);
+    println!("  HoloIndex: {} name holograms", hi.name_holos.len());
+}
+
+fn cmd_fuzz(args: &[String]) {
+    if args.len() < 3 {
+        eprintln!("usage: graphiq-bench fuzz <db-path>");
+        std::process::exit(1);
+    }
+    let db_path = &args[2];
+
+    let db = match GraphDb::open(Path::new(db_path)) {
+        Ok(d) => d,
+        Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+    };
+    let stats = db.stats().unwrap();
+    println!("=== Fuzz Test ===");
+    println!("Database: {} files, {} symbols, {} edges\n", stats.files, stats.symbols, stats.edges);
+
+    let fts = FtsSearch::new(&db);
+    let ci = cruncher::build_cruncher_index(&db).expect("cruncher build failed");
+    let hi = cruncher::build_holo_index(&db, &ci);
+
+    let fuzz_queries: Vec<&str> = vec![
+        "", " ", "  ", "\t", "\n",
+        "a", "z", "0", ".", "-", "_",
+        "日本語", "парсить", "解析設定", "🦀",
+        "parse(config)", "a && b || c", "foo.bar.baz",
+        "rate-limit", "parse+config", "parse*config",
+        "parse[0]", "{json: true}", "<html>",
+        "a->b", "a=>b", "a::b", "a;b", "a,b",
+        "\"quoted\"", "'single'", "\\escaped\\",
+        "null", "undefined", "NaN",
+        "the", "a an the", "is are was were",
+        "parse parse parse parse",
+        "a a a a a a a a a a",
+        "parseConfig", "parse_config", "parse-config",
+        "PascalCase", "UPPER_CASE", "miXeD_CaSe_Name",
+        "123", "3.14", "0x1F", "1e10", "v2.0", "h264",
+    ];
+
+    let mut long = String::new();
+    for i in 0..1000 { long.push_str(&format!("term{} ", i)); }
+    let long_trimmed = long.trim_end();
+
+    let mut passed = 0usize;
+    let mut failed = 0usize;
+
+    let all_queries: Vec<&str> = fuzz_queries.iter().chain(std::iter::once(&long_trimmed)).copied().collect();
+
+    for q in &all_queries {
+        let bm25: Vec<(i64, f64)> = fts
+            .search(q, Some(30))
+            .into_iter()
+            .map(|r| (r.symbol.id, r.bm25_score))
+            .collect();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = cruncher::goober_v5_search(q, &ci, &hi, &bm25, 10);
+        }));
+
+        match result {
+            Ok(_) => passed += 1,
+            Err(_) => {
+                failed += 1;
+                eprintln!("PANIC on query: {:?}", q);
+            }
+        }
+    }
+
+    println!("{} passed, {} failed ({} total)", passed, failed, all_queries.len());
+    if failed > 0 {
+        std::process::exit(1);
+    }
+    println!("All fuzz queries handled without panic.");
 }
