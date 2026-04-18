@@ -88,7 +88,7 @@ fn run_searches(
     ci: &cruncher::CruncherIndex,
     query: &str,
     top_k: usize,
-) -> [Vec<(i64, f64)>; 5] {
+) -> [Vec<(i64, f64)>; 6] {
     let bm25: Vec<(i64, f64)> = fts
         .search(query, Some(top_k))
         .into_iter()
@@ -99,8 +99,9 @@ fn run_searches(
     let cr_v2 = cruncher::cruncher_v2_search(query, ci, &bm25, top_k);
     let goober = cruncher::goober_search(query, ci, &bm25, top_k);
     let goober_v3 = cruncher::goober_v3_search(query, ci, &bm25, top_k);
+    let goober_v4 = cruncher::goober_v4_search(query, ci, &bm25, top_k);
 
-    [bm25, cr_v1, cr_v2, goober, goober_v3]
+    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4]
 }
 
 fn run_ndcg_benchmark(
@@ -113,11 +114,11 @@ fn run_ndcg_benchmark(
     println!("  NDCG@10 BENCHMARK  ({} queries)", queries.len());
     println!("{}", "=".repeat(60));
 
-    let methods = ["BM25", "CR v1", "CR v2", "Goober", "GooberV3"];
+    let methods = ["BM25", "CR v1", "CR v2", "Goober", "GooberV3", "GooberV4"];
     let n = queries.len();
-    let mut all_ndcg: [Vec<f64>; 5] = Default::default();
-    let mut all_hits: [Vec<[bool; 5]>; 5] = Default::default();
-    let mut cat_data: std::collections::HashMap<String, [Vec<f64>; 5]> =
+    let mut all_ndcg: [Vec<f64>; 6] = Default::default();
+    let mut all_hits: [Vec<[bool; 5]>; 6] = Default::default();
+    let mut cat_data: std::collections::HashMap<String, [Vec<f64>; 6]> =
         std::collections::HashMap::new();
 
     for q in queries {
@@ -211,7 +212,7 @@ fn run_mrr_benchmark(
     println!("  MRR BENCHMARK  ({} queries)", queries.len());
     println!("{}", "=".repeat(60));
 
-    let methods = ["BM25", "CR v1", "CR v2", "Goober", "GooberV3"];
+    let methods = ["BM25", "CR v1", "CR v2", "Goober", "GooberV3", "GooberV4"];
     let n = queries.len();
 
     struct MrrResult {
@@ -221,7 +222,7 @@ fn run_mrr_benchmark(
         found_rank: Option<usize>,
     }
 
-    let mut all: [Vec<MrrResult>; 5] = Default::default();
+    let mut all: [Vec<MrrResult>; 6] = Default::default();
 
     for q in queries {
         let results = run_searches(fts, ci, &q.query, 10);

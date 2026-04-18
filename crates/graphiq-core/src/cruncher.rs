@@ -1835,3 +1835,345 @@ pub fn goober_v3_search(
 
     results
 }
+
+enum QueryIntent {
+    Navigational,
+    Informational,
+}
+
+fn classify_query(
+    query_terms: &[QueryTerm],
+    idx: &CruncherIndex,
+    bm25_seeds: &[(i64, f64)],
+) -> QueryIntent {
+    if bm25_seeds.is_empty() {
+        return QueryIntent::Informational;
+    }
+
+    let avg_idf = if !query_terms.is_empty() {
+        query_terms.iter().map(|qt| qt.idf).sum::<f64>() / query_terms.len() as f64
+    } else {
+        0.0
+    };
+
+    let n_qt = query_terms.len();
+
+    if n_qt <= 3 {
+        if let Some(&rank1_i) = bm25_seeds
+            .first()
+            .and_then(|(id, _)| idx.id_to_idx.get(id))
+        {
+            let name_terms = &idx.term_sets[rank1_i].name_terms;
+            let name_hits: usize = query_terms
+                .iter()
+                .filter(|qt| qt.variants.iter().any(|v| name_terms.contains(v)))
+                .count();
+            if name_hits >= (n_qt + 1) / 2 {
+                return QueryIntent::Navigational;
+            }
+        }
+    }
+
+    if let Some(&rank1_i) = bm25_seeds
+        .first()
+        .and_then(|(id, _)| idx.id_to_idx.get(id))
+    {
+        let name_terms = &idx.term_sets[rank1_i].name_terms;
+        let high_idf_name_hits: usize = query_terms
+            .iter()
+            .filter(|qt| qt.idf > avg_idf && qt.variants.iter().any(|v| name_terms.contains(v)))
+            .count();
+        let high_idf_total = query_terms.iter().filter(|qt| qt.idf > avg_idf).count();
+        if high_idf_total > 0 && high_idf_name_hits == high_idf_total {
+            return QueryIntent::Navigational;
+        }
+    }
+
+    if bm25_seeds.len() >= 2 {
+        let gap = bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10);
+        if gap > 1.5 {
+            if let Some(&rank1_i) = bm25_seeds
+                .first()
+                .and_then(|(id, _)| idx.id_to_idx.get(id))
+            {
+                let name_terms = &idx.term_sets[rank1_i].name_terms;
+                let any_name_hit = query_terms
+                    .iter()
+                    .any(|qt| qt.variants.iter().any(|v| name_terms.contains(v)));
+                if any_name_hit {
+                    return QueryIntent::Navigational;
+                }
+            }
+        }
+    }
+
+    QueryIntent::Informational
+}
+
+pub fn goober_v4_search(
+    query: &str,
+    idx: &CruncherIndex,
+    bm25_seeds: &[(i64, f64)],
+    top_k: usize,
+) -> Vec<(i64, f64)> {
+    let query_terms = build_query_terms(query, &idx.global_idf);
+    if query_terms.is_empty() {
+        return bm25_seeds.to_vec();
+    }
+
+    let intent = classify_query(&query_terms, idx, bm25_seeds);
+
+    let n_qt = query_terms.len();
+    let idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
+
+    let bm25_max = bm25_seeds
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let mut candidates: HashMap<usize, GooberV3Candidate> = HashMap::new();
+
+    for &(id, score) in bm25_seeds.iter().take(30) {
+        if let Some(&i) = idx.id_to_idx.get(&id) {
+            let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
+            let (name_s, _) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+
+            let channels = compute_sec_channels(&query_terms, idx, i);
+            let ng = negentropy(&channels);
+            let coherence = channel_coherence(&query_terms, idx, i);
+
+            let mut sp = HashSet::new();
+            sp.insert(i);
+
+            candidates.insert(
+                i,
+                GooberV3Candidate {
+                    idx: i,
+                    bm25_score: score / bm25_max,
+                    coverage_score: cov_score,
+                    coverage_count: cov_count,
+                    name_score: name_s,
+                    is_seed: true,
+                    walk_evidence: 0.0,
+                    seed_paths: sp,
+                    ng_score: ng,
+                    coherence_score: coherence,
+                },
+            );
+        }
+    }
+
+    let mut idf_sorted: Vec<f64> = query_terms.iter().map(|qt| qt.idf).collect();
+    idf_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let idf_threshold = idf_sorted[idf_sorted.len() / 2];
+
+    if matches!(intent, QueryIntent::Informational) {
+        let seed_indices: Vec<usize> = candidates.keys().cloned().collect();
+
+        for &seed_i in seed_indices.iter().take(8) {
+            let mut queue: VecDeque<(usize, f64, usize)> = VecDeque::new();
+            let mut visited: HashSet<usize> = HashSet::new();
+            visited.insert(seed_i);
+
+            for edge in idx.outgoing[seed_i].iter().take(10) {
+                if !visited.contains(&edge.target) {
+                    queue.push_back((edge.target, edge.weight, 1));
+                    visited.insert(edge.target);
+                }
+            }
+            for edge in idx.incoming[seed_i].iter().take(10) {
+                if !visited.contains(&edge.target) {
+                    queue.push_back((edge.target, edge.weight, 1));
+                    visited.insert(edge.target);
+                }
+            }
+
+            let mut expanded = 0usize;
+            while let Some((neighbor_i, edge_w, depth)) = queue.pop_front() {
+                if depth > 2 || expanded >= 25 {
+                    break;
+                }
+
+                let has_specific = query_terms
+                    .iter()
+                    .filter(|qt| qt.idf >= idf_threshold)
+                    .any(|qt| per_term_match(&idx.term_sets[neighbor_i], qt) > 0.0);
+
+                if !has_specific {
+                    continue;
+                }
+
+                let (cov_score, cov_count) =
+                    term_match_score(&query_terms, &idx.term_sets[neighbor_i]);
+                if cov_count == 0 {
+                    continue;
+                }
+
+                let proximity = 0.5_f64.powi(depth as i32);
+                let evidence = cov_score * proximity * edge_w;
+
+                let channels = compute_sec_channels(&query_terms, idx, neighbor_i);
+                let ng = negentropy(&channels);
+                let coherence = channel_coherence(&query_terms, idx, neighbor_i);
+
+                let entry = candidates.entry(neighbor_i).or_insert_with(|| {
+                    let (ns, _) =
+                        name_coverage(&query_terms, &idx.term_sets[neighbor_i].name_terms);
+                    GooberV3Candidate {
+                        idx: neighbor_i,
+                        bm25_score: 0.0,
+                        coverage_score: cov_score,
+                        coverage_count: cov_count,
+                        name_score: ns,
+                        is_seed: false,
+                        walk_evidence: 0.0,
+                        seed_paths: HashSet::new(),
+                        ng_score: ng,
+                        coherence_score: coherence,
+                    }
+                });
+
+                if !entry.is_seed {
+                    entry.coverage_score = entry.coverage_score.max(cov_score);
+                    entry.coverage_count = entry.coverage_count.max(cov_count);
+                    entry.ng_score = entry.ng_score.max(ng);
+                    entry.coherence_score = entry.coherence_score.max(coherence);
+                }
+                entry.walk_evidence += evidence;
+                entry.seed_paths.insert(seed_i);
+                expanded += 1;
+
+                if depth < 2 {
+                    let next: Vec<(usize, f64)> = idx.outgoing[neighbor_i]
+                        .iter()
+                        .chain(idx.incoming[neighbor_i].iter())
+                        .take(6)
+                        .filter(|e| !visited.contains(&e.target))
+                        .map(|e| (e.target, e.weight.min(edge_w)))
+                        .collect();
+                    for (next_i, next_w) in next {
+                        visited.insert(next_i);
+                        queue.push_back((next_i, next_w, depth + 1));
+                    }
+                }
+            }
+        }
+    }
+
+    let max_ng = candidates
+        .values()
+        .map(|c| c.ng_score)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let max_coherence = candidates
+        .values()
+        .map(|c| c.coherence_score)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let (bm25_w, cov_w, name_w, ng_w, coh_w) = match intent {
+        QueryIntent::Navigational => (5.0, 0.8, 1.0, 0.1, 0.05),
+        QueryIntent::Informational => (3.0, 1.5, 2.0, 0.25, 0.15),
+    };
+
+    let mut scored: Vec<(usize, f64)> = candidates
+        .values()
+        .filter_map(|c| {
+            if !c.is_seed && c.seed_paths.len() < 2 {
+                return None;
+            }
+
+            let cov_norm = if idf_sum > 0.0 {
+                c.coverage_score / idf_sum
+            } else {
+                0.0
+            };
+            let name_norm = if idf_sum > 0.0 {
+                c.name_score / idf_sum
+            } else {
+                0.0
+            };
+            let walk_norm = if idf_sum > 0.0 {
+                c.walk_evidence / idf_sum
+            } else {
+                0.0
+            };
+
+            let base = if c.is_seed {
+                let cov_cap = if matches!(intent, QueryIntent::Navigational) {
+                    cov_norm.min(0.2)
+                } else {
+                    cov_norm.min(0.5)
+                };
+                let name_cap = if matches!(intent, QueryIntent::Navigational) {
+                    name_norm.min(0.3)
+                } else {
+                    name_norm.min(0.5)
+                };
+                bm25_w * c.bm25_score + cov_w * cov_cap + name_w * name_cap
+            } else {
+                1.5 * cov_norm + 2.0 * name_norm + walk_norm
+            };
+
+            let coverage_frac = if n_qt > 0 {
+                c.coverage_count as f64 / n_qt as f64
+            } else {
+                0.0
+            };
+
+            let ng_norm = c.ng_score / max_ng;
+            let coh_norm = c.coherence_score / max_coherence;
+            let ng_boost = 1.0 + ng_w * ng_norm + coh_w * coh_norm;
+
+            let seed_bonus = if c.is_seed { 1.15 } else { 1.0 };
+            let kb = kind_boost(&idx.symbol_kinds[c.idx]);
+            let tp = test_penalty(&idx.file_paths, idx.symbol_file_ids[c.idx]);
+
+            let raw = base * coverage_frac.powf(0.3) * ng_boost * seed_bonus * kb * tp;
+
+            if raw > 0.0 {
+                Some((c.idx, raw))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let bm25_confident = bm25_seeds.len() >= 2
+        && bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10) > 1.2;
+    if bm25_confident {
+        if let Some(&lock_i) = bm25_seeds
+            .first()
+            .and_then(|(id, _)| idx.id_to_idx.get(id))
+        {
+            if let Some(pos) = scored.iter().position(|(i, _)| *i == lock_i) {
+                if pos > 0 {
+                    let (li, ls) = scored.remove(pos);
+                    scored.insert(0, (li, ls + 1e6));
+                }
+            }
+        }
+    }
+
+    let mut results: Vec<(i64, f64)> = Vec::with_capacity(top_k);
+    let mut file_counts: HashMap<i64, usize> = HashMap::new();
+
+    for (i, score) in scored {
+        let fid = idx.symbol_file_ids[i];
+        let fc = file_counts.entry(fid).or_insert(0);
+        if *fc >= 3 {
+            continue;
+        }
+        *fc += 1;
+        results.push((idx.symbol_ids[i], score));
+        if results.len() >= top_k {
+            break;
+        }
+    }
+
+    results
+}
