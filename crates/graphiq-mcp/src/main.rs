@@ -14,6 +14,8 @@ struct ServerState {
     db_path: PathBuf,
     db: graphiq_core::db::GraphDb,
     cache: graphiq_core::cache::HotCache,
+    cruncher_index: Option<graphiq_core::cruncher::CruncherIndex>,
+    holo_index: Option<graphiq_core::cruncher::HoloIndex>,
 }
 
 fn resolve_project_root(raw: &str) -> PathBuf {
@@ -74,6 +76,16 @@ fn ensure_indexed(state: &mut ServerState) -> Result<(), String> {
     }
 
     state.cache.prewarm(&state.db, 200);
+
+    if state.cruncher_index.is_none() && stats.files > 0 {
+        if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
+            let hi = graphiq_core::cruncher::build_holo_index(&state.db, &ci);
+            state.cruncher_index = Some(ci);
+            state.holo_index = Some(hi);
+            log_err("goober v5 index built");
+        }
+    }
+
     Ok(())
 }
 
@@ -91,6 +103,13 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
 
     state.cache = graphiq_core::cache::HotCache::with_defaults();
     state.cache.prewarm(&state.db, 200);
+
+    if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
+        let hi = graphiq_core::cruncher::build_holo_index(&state.db, &ci);
+        state.cruncher_index = Some(ci);
+        state.holo_index = Some(hi);
+        log_err("goober v5 index rebuilt");
+    }
 
     let msg = format!(
         "Indexed {} in {} files ({} symbols, {} edges)",
@@ -127,11 +146,26 @@ fn main() {
     };
 
     let cache = graphiq_core::cache::HotCache::with_defaults();
+
+    let (cruncher_index, holo_index) = match graphiq_core::cruncher::build_cruncher_index(&db) {
+        Ok(ci) => {
+            let hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
+            log_err("goober v5 index built");
+            (Some(ci), Some(hi))
+        }
+        Err(e) => {
+            log_err(&format!("cruncher build failed (falling back to FTS): {e}"));
+            (None, None)
+        }
+    };
+
     let mut state = ServerState {
         project_root: project_root.clone(),
         db_path: db_path.clone(),
         db,
         cache,
+        cruncher_index,
+        holo_index,
     };
 
     if let Err(e) = ensure_indexed(&mut state) {
@@ -400,7 +434,7 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
                 Ok(s) => s,
                 Err(e) => return tool_error(&format!("lock error: {e}")),
             };
-            tool_search(&s.db, &s.cache, arguments)
+            tool_search(&s.db, &s.cache, s.cruncher_index.as_ref(), s.holo_index.as_ref(), arguments)
         }
         "blast" => {
             let s = match state.lock() {
@@ -453,6 +487,8 @@ fn tool_ok(text: String) -> Value {
 fn tool_search(
     db: &graphiq_core::db::GraphDb,
     cache: &graphiq_core::cache::HotCache,
+    cruncher_index: Option<&graphiq_core::cruncher::CruncherIndex>,
+    holo_index: Option<&graphiq_core::cruncher::HoloIndex>,
     args: Value,
 ) -> Value {
     let query = match args.get("query").and_then(|v| v.as_str()) {
@@ -471,7 +507,10 @@ fn tool_search(
         .min(50) as usize;
     let file_filter = args.get("file_filter").and_then(|v| v.as_str());
 
-    let engine = graphiq_core::search::SearchEngine::new(db, cache);
+    let mut engine = graphiq_core::search::SearchEngine::new(db, cache);
+    if let (Some(ci), Some(hi)) = (cruncher_index, holo_index) {
+        engine = engine.with_goober(ci, hi);
+    }
     let mut q = graphiq_core::search::SearchQuery::new(query).top_k(top_k);
     if let Some(f) = file_filter {
         q = q.file_filter(f);

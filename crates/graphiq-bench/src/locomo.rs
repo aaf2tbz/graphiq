@@ -197,12 +197,15 @@ fn main() {
     };
 
     let cache = HotCache::with_defaults();
+
+    let goober = graphiq_core::cruncher::build_cruncher_index(&db).ok().map(|ci| {
+        let hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
+        (ci, hi)
+    });
+
     let mut engine = SearchEngine::new(&db, &cache);
-    if let Some(ref ev_idx) = evidence_index {
-        engine = engine.with_evidence(ev_idx);
-    }
-    if let Some(ref hrr_idx) = hrr_index {
-        engine = engine.with_hrr(hrr_idx);
+    if let Some((ref ci, ref hi)) = goober {
+        engine = engine.with_goober(ci, hi);
     }
 
     println!("\nRunning {} queries ...\n", queries.len());
