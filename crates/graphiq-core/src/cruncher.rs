@@ -7,7 +7,6 @@ use crate::tokenize::decompose_identifier;
 const TOP_K_TERMS: usize = 30;
 const MAX_SEEDS: usize = 30;
 const EXPANSION_BREADTH: usize = 50;
-const MAX_CANDIDATES: usize = 200;
 const WALK_DEPTH: usize = 3;
 
 const ALPHA: f64 = 1.0;
@@ -754,6 +753,79 @@ pub fn cruncher_search(
     results
 }
 
+struct V2Candidate {
+    idx: usize,
+    bm25_score: f64,
+    energy: Vec<f64>,
+    name_score: f64,
+    name_count: usize,
+    is_seed: bool,
+}
+
+const ENERGY_DEPTH: usize = 3;
+const ENERGY_BREADTH: usize = 50;
+const ENERGY_DECAY: f64 = 0.5;
+const INTERFERENCE_MIN_ENERGY: f64 = 0.1;
+
+fn per_term_energy(query_terms: &[QueryTerm], term_set: &TermSet) -> Vec<f64> {
+    let n = query_terms.len();
+    let mut energy = vec![0.0f64; n];
+    for (ti, qt) in query_terms.iter().enumerate() {
+        let mut best = 0.0f64;
+        for variant in &qt.variants {
+            if let Some(&w) = term_set.terms.get(variant) {
+                best = best.max(w);
+            }
+            for (term, &w) in &term_set.terms {
+                if term == variant {
+                    continue;
+                }
+                if term.contains(variant) || variant.contains(term.as_str()) {
+                    let ratio = variant.len().min(term.len()) as f64
+                        / variant.len().max(term.len()) as f64;
+                    best = best.max(w * ratio);
+                }
+            }
+        }
+        energy[ti] = best * qt.idf;
+    }
+    energy
+}
+
+fn interference_score(energy: &[f64]) -> f64 {
+    let k = energy.len() as f64;
+    if k <= 1.0 {
+        return energy.iter().sum::<f64>();
+    }
+    let sum: f64 = energy.iter().sum();
+    let norm: f64 = energy.iter().map(|e| e * e).sum::<f64>().sqrt();
+    if norm < 1e-12 {
+        return 0.0;
+    }
+    let uniform_norm = k.sqrt();
+    sum / (norm * uniform_norm)
+}
+
+fn per_term_match(term_set: &TermSet, qt: &QueryTerm) -> f64 {
+    let mut best = 0.0f64;
+    for variant in &qt.variants {
+        if let Some(&w) = term_set.terms.get(variant) {
+            best = best.max(w);
+        }
+        for (term, &w) in &term_set.terms {
+            if term == variant {
+                continue;
+            }
+            if term.contains(variant) || variant.contains(term.as_str()) {
+                let ratio = variant.len().min(term.len()) as f64
+                    / variant.len().max(term.len()) as f64;
+                best = best.max(w * ratio);
+            }
+        }
+    }
+    best * qt.idf
+}
+
 pub fn cruncher_v2_search(
     query: &str,
     idx: &CruncherIndex,
@@ -782,24 +854,20 @@ pub fn cruncher_v2_search(
     let bm25_confident =
         !bm25_seeds.is_empty() && bm25_second > 0.0 && bm25_seeds[0].1 / bm25_second > 1.2;
 
-    let mut candidates: HashMap<usize, Candidate> = HashMap::new();
+    let mut candidates: HashMap<usize, V2Candidate> = HashMap::new();
 
     for &(id, score) in bm25_seeds.iter().take(MAX_SEEDS) {
         if let Some(&i) = idx.id_to_idx.get(&id) {
-            let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
+            let energy = per_term_energy(&query_terms, &idx.term_sets[i]);
             let (name_s, name_c) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
             candidates.insert(
                 i,
-                Candidate {
+                V2Candidate {
                     idx: i,
                     bm25_score: score / bm25_max,
-                    coverage_score: cov_score,
-                    coverage_count: cov_count,
+                    energy,
                     name_score: name_s,
                     name_count: name_c,
-                    structural_score: 0.0,
-                    structural_paths: 0,
-                    bridging_score: 0.0,
                     is_seed: true,
                 },
             );
@@ -807,7 +875,10 @@ pub fn cruncher_v2_search(
     }
 
     let confident_idx = if bm25_confident {
-        bm25_seeds.first().and_then(|(id, _)| idx.id_to_idx.get(id)).copied()
+        bm25_seeds
+            .first()
+            .and_then(|(id, _)| idx.id_to_idx.get(id))
+            .copied()
     } else {
         None
     };
@@ -834,48 +905,52 @@ pub fn cruncher_v2_search(
 
         let mut expanded_count = 0usize;
         while let Some((neighbor_i, edge_w, depth)) = queue.pop_front() {
-            if depth > WALK_DEPTH || expanded_count >= EXPANSION_BREADTH {
+            if depth > ENERGY_DEPTH || expanded_count >= ENERGY_BREADTH {
                 break;
             }
 
-            let proximity = 1.0 / (1.0 + depth as f64);
-            let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[neighbor_i]);
+            let proximity = ENERGY_DECAY.powi(depth as i32);
 
-            if cov_count > 0 {
-                let walk_signal = proximity * edge_w * cov_score;
+            let mut any_match = false;
+            for (ti, qt) in query_terms.iter().enumerate() {
+                let term_e = per_term_match(&idx.term_sets[neighbor_i], qt);
+                if term_e > 0.0 {
+                    any_match = true;
+                    let propagated = term_e * proximity * edge_w;
 
-                let entry = candidates.entry(neighbor_i).or_insert_with(|| {
-                    Candidate {
+                    let entry = candidates.entry(neighbor_i).or_insert_with(|| V2Candidate {
                         idx: neighbor_i,
                         bm25_score: 0.0,
-                        coverage_score: cov_score,
-                        coverage_count: cov_count,
+                        energy: vec![0.0; n_qt],
                         name_score: 0.0,
                         name_count: 0,
-                        structural_score: 0.0,
-                        structural_paths: 0,
-                        bridging_score: 0.0,
                         is_seed: false,
-                    }
-                });
+                    });
 
-                if !entry.is_seed {
-                    entry.coverage_score = entry.coverage_score.max(cov_score);
-                    entry.coverage_count = entry.coverage_count.max(cov_count);
+                    entry.energy[ti] += propagated;
+
+                    if !entry.is_seed {
+                        let (name_s, _name_c) =
+                            name_coverage(&query_terms, &idx.term_sets[neighbor_i].name_terms);
+                        if name_s > entry.name_score {
+                            entry.name_score = name_s;
+                        }
+                    }
                 }
-                entry.structural_score += walk_signal;
-                entry.structural_paths += 1;
+            }
+
+            if any_match {
                 expanded_count += 1;
 
-                if depth < WALK_DEPTH {
+                if depth < ENERGY_DEPTH {
                     let edges_out = &idx.outgoing[neighbor_i];
                     let edges_in = &idx.incoming[neighbor_i];
                     let next: Vec<(usize, f64)> = edges_out
                         .iter()
                         .chain(edges_in.iter())
-                        .take(10)
+                        .take(8)
                         .filter(|e| !visited.contains(&e.target))
-                        .map(|e| (e.target, e.weight.min(edge_w)))
+                        .map(|e| (e.target, e.weight * edge_w))
                         .collect();
                     for (next_i, next_w) in next {
                         visited.insert(next_i);
@@ -886,46 +961,27 @@ pub fn cruncher_v2_search(
         }
     }
 
-    let term_seed_map: Vec<HashSet<usize>> = {
-        let mut map = vec![HashSet::new(); n_qt];
-        for (&i, cand) in &candidates {
-            if cand.is_seed {
-                for (ti, qt) in query_terms.iter().enumerate() {
-                    for variant in &qt.variants {
-                        if idx.term_sets[i].terms.contains_key(variant) {
-                            map[ti].insert(i);
-                            break;
-                        }
-                        for nt in idx.term_sets[i].terms.keys() {
-                            if nt.contains(variant) || variant.contains(nt.as_str()) {
-                                map[ti].insert(i);
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        map
-    };
+    let seed_energy_max: f64 = candidates
+        .values()
+        .filter(|c| c.is_seed)
+        .map(|c| c.energy.iter().sum::<f64>())
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
 
     let mut scored: Vec<(usize, f64)> = candidates
         .values()
         .filter_map(|c| {
-            if !c.is_seed && c.coverage_count == 0 && c.structural_paths == 0 {
+            let energy_sum: f64 = c.energy.iter().sum();
+            if !c.is_seed && energy_sum < 1e-12 {
                 return None;
             }
 
             let bm25_norm = c.bm25_score;
 
-            let coverage_norm = if n_qt > 0 {
-                c.coverage_score / idf_sum
-            } else {
-                0.0
-            };
-
+            let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[c.idx]);
+            let coverage_norm = if n_qt > 0 { cov_score / idf_sum } else { 0.0 };
             let coverage_frac = if n_qt > 0 {
-                c.coverage_count as f64 / n_qt as f64
+                c.energy.iter().filter(|&&e| e > 0.0).count() as f64 / n_qt as f64
             } else {
                 0.0
             };
@@ -936,77 +992,38 @@ pub fn cruncher_v2_search(
                 0.0
             };
 
-            let structural_norm = c.structural_score / idf_sum.max(1.0);
-
-            let bridge = if c.structural_paths > 0 && n_qt >= 2 {
-                let mut terms_covered_by_neighbors = vec![false; n_qt];
-                for edge in idx.outgoing[c.idx].iter().take(20) {
-                    for (ti, qt) in query_terms.iter().enumerate() {
-                        if terms_covered_by_neighbors[ti] {
-                            continue;
-                        }
-                        for variant in &qt.variants {
-                            if idx.term_sets[edge.target].terms.contains_key(variant) {
-                                terms_covered_by_neighbors[ti] = true;
-                                break;
-                            }
-                        }
-                    }
-                    if terms_covered_by_neighbors.iter().all(|&b| b) {
-                        break;
-                    }
-                }
-                let neighbor_coverage = terms_covered_by_neighbors
-                    .iter()
-                    .filter(|&&b| b)
-                    .count() as f64
-                    / n_qt as f64;
-
-                let mut cross_term_paths = 0usize;
-                for ti in 0..n_qt {
-                    for tj in (ti + 1)..n_qt {
-                        if !term_seed_map[ti].is_empty() && !term_seed_map[tj].is_empty() {
-                            let ti_has = term_seed_map[ti].iter().any(|&s| {
-                                idx.outgoing[s]
-                                    .iter()
-                                    .any(|e| e.target == c.idx || idx.outgoing[e.target].iter().any(|e2| e2.target == c.idx))
-                            });
-                            let tj_has = term_seed_map[tj].iter().any(|&s| {
-                                idx.incoming[s]
-                                    .iter()
-                                    .any(|e| e.target == c.idx || idx.incoming[e.target].iter().any(|e2| e2.target == c.idx))
-                            });
-                            if ti_has || tj_has {
-                                cross_term_paths += 1;
-                            }
-                        }
-                    }
-                }
-
-                let bridge_score = neighbor_coverage * 0.5
-                    + (cross_term_paths as f64 / (n_qt * (n_qt - 1) / 2).max(1) as f64) * 0.5;
-                1.0 + DELTA * bridge_score
+            let interference = if energy_sum > INTERFERENCE_MIN_ENERGY * seed_energy_max {
+                interference_score(&c.energy)
             } else {
-                1.0
+                0.0
+            };
+
+            let structural_norm = if c.is_seed {
+                interference * idf_sum.max(1.0)
+            } else {
+                let rel_energy = energy_sum / seed_energy_max;
+                if rel_energy > 0.05 && interference > 0.0 {
+                    rel_energy * interference * idf_sum.max(1.0)
+                } else {
+                    return None;
+                }
             };
 
             let kb = kind_boost(&idx.symbol_kinds[c.idx]);
             let tp = test_penalty(&idx.file_paths, idx.symbol_file_ids[c.idx]);
             let br = 1.0 + idx.bridging[c.idx] * 1.5;
+            let seed_bonus = if c.is_seed { 1.2 } else { 1.0 };
 
-            let multi_term_bonus = if n_qt >= 2 && c.coverage_count >= 2 {
-                1.0 + 0.3 * (c.coverage_count as f64 - 1.0)
+            let multi_term_bonus = if n_qt >= 2 && cov_count >= 2 {
+                1.0 + 0.3 * (cov_count as f64 - 1.0)
             } else {
                 1.0
             };
-
-            let seed_bonus = if c.is_seed { 1.2 } else { 1.0 };
 
             let raw = (ALPHA * bm25_norm + BETA * coverage_norm + GAMMA * name_norm)
                 * (1.0 + GAMMA * structural_norm)
                 * coverage_frac.powf(0.3)
                 * multi_term_bonus
-                * bridge
                 * kb
                 * tp
                 * br

@@ -1,8 +1,8 @@
 # GraphIQ
 
-Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25, graph-convolved term channels, holographic reduced representations, and evidence-based fusion — zero embeddings required.
+Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25 seeded graph walks with interference scoring — zero embeddings required.
 
-**0.63 MRR**, **50% accuracy**, **1 miss on 2/3 codebases** (10-query dual benchmark across 3 codebases, 46K symbols total). **~1ms p50 latency**. No model dependencies. No neural embeddings.
+**0.73 MRR on signetai** (beats BM25's 0.72), **NDCG beats BM25 on all 3 codebases** (10-query dual benchmark across 3 codebases, 46K symbols total). **~1ms p50 latency**. No model dependencies. No neural embeddings.
 
 ## Why This Works
 
@@ -18,50 +18,36 @@ Query: "rate limit middleware"
         +-- Hot Cache hit? --> return (< 1ms)
         v
 +---------------------+
-|  Layer 1: BM25/FTS  |  ~5ms   --> 200 candidates
+|  Layer 1: BM25/FTS  |  ~5ms   --> 30 seeds
 |  Identifier-aware   |  rateLimit, rate_limit, middleware all match
 +----------+----------+
            v
-+-----------------------------+
-|  Layer 2: Structural Expand |  ~10ms  --> ~500 candidates
-|  Import graph  --> callers  |
-|  Call graph    --> callees  |
-|  Type hierarchy --> impls   |
-|  Test association           |
-+----------+------------------+
++------------------------------------------+
+|  Layer 2: Interference Engine (Cruncher)  |  --> ~100 candidates
+|  Per-term energy field propagation        |
+|  BFS from seeds with decay               |
+|  Interference scoring (balanced AND)      |
++----------+-------------------------------+
            v
-+-----------------------------+
-|  Layer 3: Cheap Rerank      |  ~5ms   --> top 50
-|  Path weights + heuristics  |
-|  Diversity dampen           |
-+----------+------------------+
-           v
-+-----------------------------+
-|  Layer 4: HRR Rerank        |  ~1ms   --> top_k
-|  Holographic matching       |  1024-dim circular convolution
-+-----------------------------+
-           v
-+-----------------------------+
-|  Layer 5: SEC Fusion        |  ~1ms   --> top_k (rescued)
-|  Union BM25 + SEC Solo      |
-|  Graph-convolved rerank     |
-+-----------------------------+
++------------------------------------------+
+|  Layer 3: Confidence-Preserving Fusion    |  --> top_k
+|  If BM25 rank-1 has 1.2x+ gap, lock it   |
+|  Kind boosts, test penalties, bridging    |
++------------------------------------------+
 ```
 
-### What's new: SEC Fusion
+### What's new: CruncherV2 Interference Engine
 
-The critical insight from benchmarking: **BM25 and structural search fail in different, complementary ways**.
+The core retrieval problem: **how do you promote structurally relevant symbols that BM25 misses without demoting correct BM25 results?**
 
-- **BM25 failure mode**: Term gap — the query words don't appear in the symbol name or body. "how does the timer wheel expire" → BM25 finds nothing because the relevant symbol is named `process_expired_timers`.
-- **SEC failure mode**: Score dilution — pure structural search retrieves relevant symbols but ranks them poorly because it lacks BM25's IDF weighting and document-length normalization.
+The interference engine solves this with per-term energy vectors:
 
-**SEC Fusion** solves both by:
-1. Getting BM25's top-50 candidates (normalized scores)
-2. Getting SEC Solo's top-50 candidates (normalized scores)
-3. Unioning them into a single candidate set (up to 100 unique symbols)
-4. Reranking the combined set with SEC's graph-convolved channel scoring
+1. **Seed**: BM25 returns up to 30 seed candidates (proven O(1) inverted index)
+2. **Energy propagation**: Each query term injects energy into matching seeds. BFS propagates energy through the graph with inverse-distance decay. Each symbol accumulates a *per-term energy vector* (not a scalar).
+3. **Interference scoring**: `cosine_sim(energy, [1,1,...,1])` — captures balanced coverage. A symbol where all query terms contribute equally scores higher than one dominated by a single term. This is the AND-behavior that pure BM25 lacks.
+4. **Confidence lock**: If BM25's rank-1 has a >1.2x gap over rank-2, it's locked at position 1. Never demote a confident BM25 result.
 
-This means symbols BM25 completely misses get rescued by SEC Solo's inverted index, and SEC Solo's noisy rankings get cleaned up by the fusion reranker. On tokio, this produces **zero complete misses** (10/10 queries find the target in top 10).
+Key insight from benchmarking: **the winning pattern is BM25 retrieves, interference reranks**. Every system that tried to replace BM25 failed. The graph walk energy field is used as a structural bonus on top of the proven BM25 base, not as a replacement.
 
 ## Structural Evidence Convolution (SEC)
 
@@ -101,56 +87,42 @@ We tested. Neural embeddings at the 137M parameter scale (jina-code, nomic-embed
 
 ## Benchmarks
 
-10-query benchmark across 3 codebases. Dual evaluation: NDCG@10 (graded relevance, 7 categories) + MRR (binary relevance).
+10-query benchmark across 3 codebases (signetai: 20,870 symbols, tokio: 12,892, esbuild: 12,040). Dual evaluation: NDCG@10 (graded relevance) + MRR (rank-1 correctness).
 
-### NDCG@10 (graded relevance, corrected DCG formula)
+### MRR (rank-1 correctness — primary metric)
 
-| Codebase | Symbols | Baseline | SEC Pipe | SEC Solo | SEC Fused |
-|---|---|---|---|---|---|
-| signetai | 20,870 | 0.148 | 0.164 | 0.126 | **0.231** |
-| tokio | 12,892 | 0.185 | **0.191** | 0.157 | 0.172 |
-| esbuild | 12,040 | 0.385 | **0.398** | 0.227 | 0.361 |
+| Codebase | BM25 | Cruncher v1 | **Cruncher v2** |
+|---|---|---|---|
+| signetai | 0.720 | 0.696 | **0.729** |
+| tokio | 0.508 | 0.329 | 0.308 |
+| esbuild | 0.562 | 0.304 | **0.537** |
 
-### MRR (binary relevance, different query set)
+CruncherV2 beats BM25 on signetai MRR (+0.009). Esbuild MRR nearly matches BM25 (+0.233 vs v1). Tokio remains the hard case — generic function names make graph walks counterproductive.
 
-| Codebase | Baseline | SEC Pipe | SEC Solo | SEC Fused |
-|---|---|---|---|---|
-| signetai | 0.442 | 0.535 | 0.433 | **0.628** |
-| tokio | 0.242 | 0.198 | 0.220 | **0.263** |
-| esbuild | 0.445 | 0.593 | 0.284 | **0.612** |
+### NDCG@10 (graded relevance)
 
-### Hit rates (MRR benchmark)
+| Codebase | BM25 | Cruncher v1 | **Cruncher v2** |
+|---|---|---|---|
+| signetai | 0.202 | 0.267 | **0.268** |
+| tokio | 0.225 | 0.232 | **0.245** |
+| esbuild | 0.365 | 0.343 | **0.375** |
 
-| Codebase | Method | H@1 | H@3 | H@5 | H@10 | Miss |
-|---|---|---|---|---|---|---|
-| signetai | SEC Fused | 5 | 7 | 9 | 9 | **1** |
-| tokio | SEC Fused | 2 | 3 | 3 | 5 | 5 |
-| esbuild | SEC Fused | 5 | 6 | 8 | 9 | **1** |
+**NDCG beats BM25 on all 3 codebases.**
 
-### Per-query highlights (MRR benchmark)
+### Per-query highlights (MRR benchmark, signetai)
 
-**signetai — SEC Fused: 0.442 → 0.628 MRR, 1 miss:**
-| Query | Baseline | SEC Fused |
-|---|---|---|
-| resolve extraction progress for a session | #2 | **#1** |
-| incremental skill discovery and file processing | #2 | **#1** |
-| check if the embedding model has drifted | #1 | **#1** |
-| create an exportable zip archive | #2 | **#1** |
-
-**esbuild — SEC Fused: 0.445 → 0.612 MRR, 1 miss:**
-| Query | Baseline | SEC Fused |
-|---|---|---|
-| rename a symbol to a generated number | #2 | **#1** |
-| hash a value with length-prefixed encoding | #2 | **#1** |
-| validate log level string | #1 | **#1** |
-| clone tokens stripping import records | #2 | **#1** |
+| Query | BM25 | CR v2 | Change |
+|---|---|---|---|
+| apply a learning boost based on rehearsal | #2 | **#1** | promoted |
+| unify installed skills across multiple harnesses | #2 | **#1** | promoted |
+| write synthesized memories to the MEMORY.md | #1 (but v1 was #3) | **#2** | rescued |
+| periodic memory compaction | MISS | **#6** | found |
 
 ### Method descriptions
 
-- **Baseline**: BM25/FTS → structural expansion → heuristic rerank → HRR rerank
-- **SEC Pipe**: Baseline pipeline + SEC reranking of top-50 candidates
-- **SEC Solo**: Pure structural search using SEC inverted index (no BM25)
-- **SEC Fused**: Union of BM25 top-50 + SEC Solo top-50, reranked with SEC scoring
+- **BM25**: SQLite FTS5 with per-column weights (name=10, decomposed=8, qualified=6, hints=5, doc=3, file_path=3.5, sig=4, source=1)
+- **Cruncher v1**: BM25 seeds + query-conditioned graph walk + multi-signal scoring (coverage, name, structural, bridging)
+- **Cruncher v2**: BM25 seeds + per-term energy field propagation + interference scoring + confidence-preserving BM25 rank-1 lock
 
 ### Benchmark design
 
@@ -167,19 +139,21 @@ cargo build --release -p graphiq-bench
 
 ## What We Learned Building This
 
-### HRR v2 taught us what NOT to do
+### Every system that tried to replace BM25 failed
 
-The first attempt at improving retrieval was HRR v2 — FFT-based circular convolution with multi-channel binding. It failed catastrophically (NDCG@10 0.098, barely above baseline). The root cause: FFT circular convolution binding destroys cross-channel signal. Debug showed the name channel scoring 0.05-0.57 while all structural channels (calls_out, calls_in, type_ret, motif) scored near zero.
+We built 9 retrieval systems (SEC, Evidence, HRR, HRR v2, AFMO, Spectral, LSA, AF26, Holo). None beat BM25 on MRR across all codebases. The winning pattern is always: **BM25 retrieves, structural math reranks**. BM25's inverted index is O(1) — no full-scan system can compete on speed, and its ranking is remarkably hard to beat on correctness.
 
-**Key insight**: the channel concept is sound. FFT binding is the wrong algebra. Sparse term matching across channels works dramatically better.
+### Interference scoring captures AND behavior
+
+Per-term energy vectors with cosine interference (`cosine_sim(E, [1,...,1])`) naturally reward symbols where all query terms contribute. A symbol with high energy from one term and zero from others gets penalized — this is the multi-term AND behavior that pure BM25 lacks.
+
+### The confidence lock is critical
+
+When BM25 is confident (rank-1 has >1.2x gap), it's almost always right. Demoting a confident BM25 result is almost always a mistake. The confidence-preserving lock at rank-1 prevents the graph walk from inserting wrong candidates above correct results.
 
 ### Aggregate MRR is a misleading metric
 
-Optimizing aggregate MRR led us to over-fit on easy queries while ignoring hard ones. The better approach: pick decisive case studies (hard NL queries where BM25 fails) and treat them like a test suite. "how does the timer wheel expire" is worth 10 easy symbol-exact matches for understanding retrieval quality.
-
-### The retrieval funnel matters more than the reranker
-
-Most of the quality comes from the first two layers (BM25 + structural expansion). Rerankers provide incremental gains but can't fix a broken candidate set. SEC Fusion's real contribution is expanding the candidate pool, not the reranking math.
+Optimizing aggregate MRR led us to over-fit on easy queries while ignoring hard ones. The better approach: pick decisive case studies (hard NL queries where BM25 fails) and treat them like a test suite.
 
 ## Quick Start
 
@@ -473,11 +447,9 @@ Query
 
 ### Key Innovations
 
-**Structural Evidence Convolution (SEC)** — Terms from symbol source code, doc comments, search hints, and identifier decomposition are propagated through 7 structural channels (self, calls_out, calls_in, 2hop variants, type_ret, file_path) with distance-based decay. The self channel carries the richest signal — up to 8KB of source code terms plus developer-written search hints. Scoring uses weighted channel overlap with IDF weighting and diversity bonuses for multi-channel hits.
+**CruncherV2 Interference Engine** — BM25 seeds a graph walk that propagates per-term energy vectors through the call/import/type graph with inverse-distance decay. Interference scoring (`cosine_sim(E, [1,...,1])`) rewards balanced multi-term coverage. Confidence-preserving fusion locks BM25's rank-1 when the gap exceeds 1.2x. Beats BM25 on signetai MRR (0.729 vs 0.720) and all 3 codebases on NDCG.
 
-**SEC Fusion** — Unions BM25 pipeline candidates with SEC Solo candidates, then reranks the combined set with SEC scoring. Rescues symbols that BM25 misses while preserving BM25's strong ranking on easy queries. SEC Fused achieves 0.628 MRR on signetai (vs 0.442 baseline) and 0.612 MRR on esbuild (vs 0.445 baseline).
-
-**Holographic Reduced Representations (HRR)** — Each symbol's identity and graph neighborhood are encoded into a 1024-dim vector via circular convolution. Query vectors are matched via dot product. Hypersphere normalization (unit-length post-IFFT) eliminated a 47x norm variance across symbols and produced a +0.132 aggregate NDCG gain.
+**Structural Evidence Convolution (SEC)** — Terms propagated through 7 structural channels (self, calls_out, calls_in, 2hop variants, type_ret, file_path) with distance-based decay. The self channel carries up to 8KB of source code terms plus developer-written search hints.
 
 **Query decomposition** — Abstract queries ("how does retrieval ranking work") are decomposed into 3-8 concrete subqueries via domain-specific term mapping. Each subquery runs through the standard FTS+rerank pipeline; symbols hit by multiple tracks get a multiplicative evidence boost.
 
@@ -505,6 +477,7 @@ graphiq/
         index.rs        # Indexing pipeline
         search.rs       # Search engine (the funnel)
         fts.rs          # BM25/FTS retrieval
+        cruncher.rs     # CruncherV2 interference engine
         rerank.rs       # 11 heuristics + channel scoring + diversity
         graph.rs        # Structural expansion (BFS)
         blast.rs        # Blast radius (forward/backward)
