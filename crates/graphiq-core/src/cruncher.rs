@@ -1167,3 +1167,232 @@ pub fn cruncher_search_standalone(
 
     results
 }
+
+struct GooberCandidate {
+    idx: usize,
+    bm25_score: f64,
+    coverage_score: f64,
+    coverage_count: usize,
+    name_score: f64,
+    is_seed: bool,
+    walk_evidence: f64,
+    seed_paths: HashSet<usize>,
+}
+
+pub fn goober_search(
+    query: &str,
+    idx: &CruncherIndex,
+    bm25_seeds: &[(i64, f64)],
+    top_k: usize,
+) -> Vec<(i64, f64)> {
+    let query_terms = build_query_terms(query, &idx.global_idf);
+    if query_terms.is_empty() {
+        return bm25_seeds.to_vec();
+    }
+
+    let n_qt = query_terms.len();
+    let idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
+
+    let bm25_max = bm25_seeds
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let mut candidates: HashMap<usize, GooberCandidate> = HashMap::new();
+
+    for &(id, score) in bm25_seeds.iter().take(30) {
+        if let Some(&i) = idx.id_to_idx.get(&id) {
+            let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
+            let (name_s, _) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+
+            let mut sp = HashSet::new();
+            sp.insert(i);
+
+            candidates.insert(
+                i,
+                GooberCandidate {
+                    idx: i,
+                    bm25_score: score / bm25_max,
+                    coverage_score: cov_score,
+                    coverage_count: cov_count,
+                    name_score: name_s,
+                    is_seed: true,
+                    walk_evidence: 0.0,
+                    seed_paths: sp,
+                },
+            );
+        }
+    }
+
+    let mut idf_sorted: Vec<f64> = query_terms.iter().map(|qt| qt.idf).collect();
+    idf_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let idf_threshold = idf_sorted[idf_sorted.len() / 2];
+
+    let seed_indices: Vec<usize> = candidates.keys().cloned().collect();
+
+    for &seed_i in seed_indices.iter().take(8) {
+        let mut queue: VecDeque<(usize, f64, usize)> = VecDeque::new();
+        let mut visited: HashSet<usize> = HashSet::new();
+        visited.insert(seed_i);
+
+        for edge in idx.outgoing[seed_i].iter().take(10) {
+            if !visited.contains(&edge.target) {
+                queue.push_back((edge.target, edge.weight, 1));
+                visited.insert(edge.target);
+            }
+        }
+        for edge in idx.incoming[seed_i].iter().take(10) {
+            if !visited.contains(&edge.target) {
+                queue.push_back((edge.target, edge.weight, 1));
+                visited.insert(edge.target);
+            }
+        }
+
+        let mut expanded = 0usize;
+        while let Some((neighbor_i, edge_w, depth)) = queue.pop_front() {
+            if depth > 2 || expanded >= 25 {
+                break;
+            }
+
+            let has_specific = query_terms
+                .iter()
+                .filter(|qt| qt.idf >= idf_threshold)
+                .any(|qt| per_term_match(&idx.term_sets[neighbor_i], qt) > 0.0);
+
+            if !has_specific {
+                continue;
+            }
+
+            let (cov_score, cov_count) =
+                term_match_score(&query_terms, &idx.term_sets[neighbor_i]);
+            if cov_count == 0 {
+                continue;
+            }
+
+            let proximity = 0.5_f64.powi(depth as i32);
+            let evidence = cov_score * proximity * edge_w;
+
+            let entry = candidates.entry(neighbor_i).or_insert_with(|| {
+                let (ns, _) = name_coverage(&query_terms, &idx.term_sets[neighbor_i].name_terms);
+                GooberCandidate {
+                    idx: neighbor_i,
+                    bm25_score: 0.0,
+                    coverage_score: cov_score,
+                    coverage_count: cov_count,
+                    name_score: ns,
+                    is_seed: false,
+                    walk_evidence: 0.0,
+                    seed_paths: HashSet::new(),
+                }
+            });
+
+            if !entry.is_seed {
+                entry.coverage_score = entry.coverage_score.max(cov_score);
+                entry.coverage_count = entry.coverage_count.max(cov_count);
+            }
+            entry.walk_evidence += evidence;
+            entry.seed_paths.insert(seed_i);
+            expanded += 1;
+
+            if depth < 2 {
+                let next: Vec<(usize, f64)> = idx.outgoing[neighbor_i]
+                    .iter()
+                    .chain(idx.incoming[neighbor_i].iter())
+                    .take(6)
+                    .filter(|e| !visited.contains(&e.target))
+                    .map(|e| (e.target, e.weight.min(edge_w)))
+                    .collect();
+                for (next_i, next_w) in next {
+                    visited.insert(next_i);
+                    queue.push_back((next_i, next_w, depth + 1));
+                }
+            }
+        }
+    }
+
+    let mut scored: Vec<(usize, f64)> = candidates
+        .values()
+        .filter_map(|c| {
+            if !c.is_seed && c.seed_paths.len() < 2 {
+                return None;
+            }
+
+            let cov_norm = if idf_sum > 0.0 {
+                c.coverage_score / idf_sum
+            } else {
+                0.0
+            };
+            let name_norm = if idf_sum > 0.0 {
+                c.name_score / idf_sum
+            } else {
+                0.0
+            };
+            let walk_norm = if idf_sum > 0.0 {
+                c.walk_evidence / idf_sum
+            } else {
+                0.0
+            };
+
+            let base = if c.is_seed {
+                3.0 * c.bm25_score + 1.5 * cov_norm + 2.0 * name_norm
+            } else {
+                1.5 * cov_norm + 2.0 * name_norm + walk_norm
+            };
+
+            let coverage_frac = if n_qt > 0 {
+                c.coverage_count as f64 / n_qt as f64
+            } else {
+                0.0
+            };
+
+            let seed_bonus = if c.is_seed { 1.15 } else { 1.0 };
+            let kb = kind_boost(&idx.symbol_kinds[c.idx]);
+            let tp = test_penalty(&idx.file_paths, idx.symbol_file_ids[c.idx]);
+
+            let raw = base * coverage_frac.powf(0.3) * seed_bonus * kb * tp;
+
+            if raw > 0.0 {
+                Some((c.idx, raw))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let bm25_confident = bm25_seeds.len() >= 2
+        && bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10) > 1.2;
+    if bm25_confident {
+        if let Some(&lock_i) = bm25_seeds
+            .first()
+            .and_then(|(id, _)| idx.id_to_idx.get(id))
+        {
+            if let Some(pos) = scored.iter().position(|(i, _)| *i == lock_i) {
+                if pos > 0 {
+                    let (li, ls) = scored.remove(pos);
+                    scored.insert(0, (li, ls + 1e6));
+                }
+            }
+        }
+    }
+
+    let mut results: Vec<(i64, f64)> = Vec::with_capacity(top_k);
+    let mut file_counts: HashMap<i64, usize> = HashMap::new();
+
+    for (i, score) in scored {
+        let fid = idx.symbol_file_ids[i];
+        let fc = file_counts.entry(fid).or_insert(0);
+        if *fc >= 3 {
+            continue;
+        }
+        *fc += 1;
+        results.push((idx.symbol_ids[i], score));
+        if results.len() >= top_k {
+            break;
+        }
+    }
+
+    results
+}

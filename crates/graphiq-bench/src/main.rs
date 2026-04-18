@@ -88,7 +88,7 @@ fn run_searches(
     ci: &cruncher::CruncherIndex,
     query: &str,
     top_k: usize,
-) -> [Vec<(i64, f64)>; 3] {
+) -> [Vec<(i64, f64)>; 4] {
     let bm25: Vec<(i64, f64)> = fts
         .search(query, Some(top_k))
         .into_iter()
@@ -97,8 +97,9 @@ fn run_searches(
 
     let cr_v1 = cruncher::cruncher_search(query, ci, &bm25, top_k);
     let cr_v2 = cruncher::cruncher_v2_search(query, ci, &bm25, top_k);
+    let goober = cruncher::goober_search(query, ci, &bm25, top_k);
 
-    [bm25, cr_v1, cr_v2]
+    [bm25, cr_v1, cr_v2, goober]
 }
 
 fn run_ndcg_benchmark(
@@ -111,11 +112,11 @@ fn run_ndcg_benchmark(
     println!("  NDCG@10 BENCHMARK  ({} queries)", queries.len());
     println!("{}", "=".repeat(60));
 
-    let methods = ["BM25", "CR v1", "CR v2"];
+    let methods = ["BM25", "CR v1", "CR v2", "Goober"];
     let n = queries.len();
-    let mut all_ndcg: [Vec<f64>; 3] = Default::default();
-    let mut all_hits: [Vec<[bool; 5]>; 3] = Default::default();
-    let mut cat_data: std::collections::HashMap<String, [Vec<f64>; 3]> =
+    let mut all_ndcg: [Vec<f64>; 4] = Default::default();
+    let mut all_hits: [Vec<[bool; 5]>; 4] = Default::default();
+    let mut cat_data: std::collections::HashMap<String, [Vec<f64>; 4]> =
         std::collections::HashMap::new();
 
     for q in queries {
@@ -150,7 +151,7 @@ fn run_ndcg_benchmark(
         "{:<12} {:>8} {:>6} {:>6} {:>6} {:>6}",
         "Method", "NDCG@10", "H@1", "H@3", "H@5", "H@10"
     );
-    println!("{}", "-".repeat(46));
+    println!("{}", "-".repeat(50));
     for (mi, name) in methods.iter().enumerate() {
         let avg: f64 = all_ndcg[mi].iter().sum::<f64>() / n as f64;
         let h1 = all_hits[mi].iter().filter(|h| h[0]).count();
@@ -166,21 +167,34 @@ fn run_ndcg_benchmark(
     println!("\n--- By Category ---\n");
     let mut cats: Vec<&String> = cat_data.keys().collect();
     cats.sort();
-    println!("{:<20} {:>8} {:>8} {:>8}", "Category", "BM25", "CR v1", "CR v2");
-    println!("{}", "-".repeat(50));
+    println!(
+        "{:<20} {:>8} {:>8} {:>8} {:>8}",
+        "Category", "BM25", "CR v1", "CR v2", "Goober"
+    );
+    println!("{}", "-".repeat(58));
     for cat in &cats {
         let d = &cat_data[*cat];
         let avg: Vec<f64> = d.iter().map(|v| v.iter().sum::<f64>() / v.len() as f64).collect();
-        println!("{:<20} {:>8.3} {:>8.3} {:>8.3}", cat, avg[0], avg[1], avg[2]);
+        println!(
+            "{:<20} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
+            cat, avg[0], avg[1], avg[2], avg[3]
+        );
     }
 
     println!("\n--- Per-Query ---\n");
-    println!("{:<40} {:>8} {:>8} {:>8}", "Query", "BM25", "CR v1", "CR v2");
-    println!("{}", "-".repeat(70));
+    println!(
+        "{:<40} {:>8} {:>8} {:>8} {:>8}",
+        "Query", "BM25", "CR v1", "CR v2", "Goober"
+    );
+    println!("{}", "-".repeat(80));
     for (i, q) in queries.iter().enumerate() {
         println!(
-            "{:<40} {:>8.3} {:>8.3} {:>8.3}",
-            truncate(&q.query, 40), all_ndcg[0][i], all_ndcg[1][i], all_ndcg[2][i]
+            "{:<40} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
+            truncate(&q.query, 40),
+            all_ndcg[0][i],
+            all_ndcg[1][i],
+            all_ndcg[2][i],
+            all_ndcg[3][i]
         );
     }
 }
@@ -195,7 +209,7 @@ fn run_mrr_benchmark(
     println!("  MRR BENCHMARK  ({} queries)", queries.len());
     println!("{}", "=".repeat(60));
 
-    let methods = ["BM25", "CR v1", "CR v2"];
+    let methods = ["BM25", "CR v1", "CR v2", "Goober"];
     let n = queries.len();
 
     struct MrrResult {
@@ -205,7 +219,7 @@ fn run_mrr_benchmark(
         found_rank: Option<usize>,
     }
 
-    let mut all: [Vec<MrrResult>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+    let mut all: [Vec<MrrResult>; 4] = Default::default();
 
     for q in queries {
         let results = run_searches(fts, ci, &q.query, 10);
@@ -227,7 +241,12 @@ fn run_mrr_benchmark(
                 found_rank.is_some(),
             ];
 
-            all[mi].push(MrrResult { rr, hit_at: h, accuracy, found_rank });
+            all[mi].push(MrrResult {
+                rr,
+                hit_at: h,
+                accuracy,
+                found_rank,
+            });
         }
     }
 
@@ -253,19 +272,25 @@ fn run_mrr_benchmark(
 
     println!("\n--- Per-Query ---\n");
     println!(
-        "{:<40} {:>6} {:>6} {:>6}  {:>6} {:>6} {:>6}",
-        "Query", "B_rr", "1_rr", "2_rr", "B_rnk", "1_rnk", "2_rnk"
+        "{:<40} {:>6} {:>6} {:>6} {:>6}  {:>6} {:>6} {:>6} {:>6}",
+        "Query", "B_rr", "1_rr", "2_rr", "G_rr", "B_rnk", "1_rnk", "2_rnk", "G_rnk"
     );
-    println!("{}", "-".repeat(78));
+    println!("{}", "-".repeat(100));
     for (i, q) in queries.iter().enumerate() {
         let fmt = |r: Option<usize>| -> String {
             r.map(|v| format!("{}", v + 1)).unwrap_or_else(|| "MISS".into())
         };
         println!(
-            "{:<40} {:>6.3} {:>6.3} {:>6.3}  {:>6} {:>6} {:>6}",
+            "{:<40} {:>6.3} {:>6.3} {:>6.3} {:>6.3}  {:>6} {:>6} {:>6} {:>6}",
             truncate(&q.query, 40),
-            all[0][i].rr, all[1][i].rr, all[2][i].rr,
-            fmt(all[0][i].found_rank), fmt(all[1][i].found_rank), fmt(all[2][i].found_rank)
+            all[0][i].rr,
+            all[1][i].rr,
+            all[2][i].rr,
+            all[3][i].rr,
+            fmt(all[0][i].found_rank),
+            fmt(all[1][i].found_rank),
+            fmt(all[2][i].found_rank),
+            fmt(all[3][i].found_rank)
         );
     }
 }

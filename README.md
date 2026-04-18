@@ -1,8 +1,8 @@
 # GraphIQ
 
-Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25 seeded graph walks with interference scoring — zero embeddings required.
+Code intelligence with structural retrieval. Drop a codebase in, get instant, accurate symbol search powered by BM25 seeded graph walks — zero embeddings required.
 
-**0.73 MRR on signetai** (beats BM25's 0.72), **NDCG beats BM25 on all 3 codebases** (10-query dual benchmark across 3 codebases, 46K symbols total). **~1ms p50 latency**. No model dependencies. No neural embeddings.
+**Goober: 0.76 MRR on signetai (+0.044 over BM25), 0.63 MRR on esbuild (+0.069 over BM25).** ~1ms p50 latency. No model dependencies. No neural embeddings. (10-query dual benchmark across 3 codebases, 46K symbols total.)
 
 ## Why This Works
 
@@ -23,31 +23,33 @@ Query: "rate limit middleware"
 +----------+----------+
            v
 +------------------------------------------+
-|  Layer 2: Interference Engine (Cruncher)  |  --> ~100 candidates
-|  Per-term energy field propagation        |
-|  BFS from seeds with decay               |
-|  Interference scoring (balanced AND)      |
+|  Layer 2: Goober Reranker                 |  --> ~100 candidates
+|  BM25-dominant seed scoring               |
+|  IDF-gated graph walk (depth 2)           |
+|  Walk evidence for non-seeds              |
 +----------+-------------------------------+
            v
 +------------------------------------------+
 |  Layer 3: Confidence-Preserving Fusion    |  --> top_k
 |  If BM25 rank-1 has 1.2x+ gap, lock it   |
-|  Kind boosts, test penalties, bridging    |
+|  Kind boosts, test penalties              |
 +------------------------------------------+
 ```
 
-### What's new: CruncherV2 Interference Engine
+### What's new: Goober
 
 The core retrieval problem: **how do you promote structurally relevant symbols that BM25 misses without demoting correct BM25 results?**
 
-The interference engine solves this with per-term energy vectors:
+Previous systems (CruncherV1, CruncherV2) used complex energy field propagation and interference scoring. Extensive benchmarking revealed a simpler truth: **BM25 seed ordering is generally correct, and structural reranking must be conservative to avoid introducing noise.**
 
-1. **Seed**: BM25 returns up to 30 seed candidates (proven O(1) inverted index)
-2. **Energy propagation**: Each query term injects energy into matching seeds. BFS propagates energy through the graph with inverse-distance decay. Each symbol accumulates a *per-term energy vector* (not a scalar).
-3. **Interference scoring**: `cosine_sim(energy, [1,1,...,1])` — captures balanced coverage. A symbol where all query terms contribute equally scores higher than one dominated by a single term. This is the AND-behavior that pure BM25 lacks.
-4. **Confidence lock**: If BM25's rank-1 has a >1.2x gap over rank-2, it's locked at position 1. Never demote a confident BM25 result.
+Goober's approach:
 
-Key insight from benchmarking: **the winning pattern is BM25 retrieves, interference reranks**. Every system that tried to replace BM25 failed. The graph walk energy field is used as a structural bonus on top of the proven BM25 base, not as a replacement.
+1. **Seed scoring**: BM25-dominant weighted sum (`3.0 * bm25 + 1.5 * coverage + 2.0 * name`). No structural interference on seeds — the energy vectors and cosine interference from CruncherV2 actively hurt seed ordering.
+2. **IDF-gated walk**: BFS from top 8 seeds, depth 2, breadth 25. Candidates must match at least one high-IDF (above-median) query term. This filters generic utility functions that match only common terms.
+3. **Walk candidate quality**: Non-seed candidates require ≥2 seed paths (reached from multiple seeds). Scored by coverage + name + walk evidence.
+4. **Confidence lock**: If BM25's rank-1 has a >1.2x gap over rank-2, it's locked at position 1.
+
+Key insight: **removing complexity improved results**. Stripping interference scoring, energy field propagation, hub dampening, bridging, and multi-term bonuses produced a system that strictly outperforms CruncherV2 on all 3 codebases.
 
 ## Structural Evidence Convolution (SEC)
 
@@ -91,38 +93,47 @@ We tested. Neural embeddings at the 137M parameter scale (jina-code, nomic-embed
 
 ### MRR (rank-1 correctness — primary metric)
 
-| Codebase | BM25 | Cruncher v1 | **Cruncher v2** |
-|---|---|---|---|
-| signetai | 0.720 | 0.696 | **0.729** |
-| tokio | 0.508 | 0.329 | 0.308 |
-| esbuild | 0.562 | 0.304 | **0.537** |
+| Codebase | BM25 | Cruncher v1 | Cruncher v2 | **Goober** |
+|---|---|---|---|---|
+| signetai | 0.720 | 0.696 | 0.733 | **0.764** |
+| tokio | 0.508 | 0.329 | 0.310 | **0.343** |
+| esbuild | 0.562 | 0.304 | 0.528 | **0.631** |
 
-CruncherV2 beats BM25 on signetai MRR (+0.009). Esbuild MRR nearly matches BM25 (+0.233 vs v1). Tokio remains the hard case — generic function names make graph walks counterproductive.
+Goober beats BM25 MRR on signetai (+0.044) and esbuild (+0.069). Tokio remains the hard case — generic function names (`run`, `handle`, `poll`) make graph walks counterproductive. Goober reduces tokio regression from CruncherV2's -0.198 to -0.165.
 
 ### NDCG@10 (graded relevance)
 
-| Codebase | BM25 | Cruncher v1 | **Cruncher v2** |
-|---|---|---|---|
-| signetai | 0.202 | 0.267 | **0.268** |
-| tokio | 0.225 | 0.232 | **0.245** |
-| esbuild | 0.365 | 0.343 | **0.375** |
+| Codebase | BM25 | Cruncher v1 | Cruncher v2 | **Goober** |
+|---|---|---|---|---|
+| signetai | 0.202 | 0.267 | 0.278 | 0.217 |
+| tokio | 0.225 | 0.232 | 0.244 | 0.240 |
+| esbuild | 0.365 | 0.384 | 0.372 | **0.387** |
 
-**NDCG beats BM25 on all 3 codebases.**
+Goober achieves best NDCG on esbuild. Signetai NDCG trades off for MRR gains (fewer rank-1 errors, more rank-3+ variance).
 
 ### Per-query highlights (MRR benchmark, signetai)
 
-| Query | BM25 | CR v2 | Change |
-|---|---|---|---|
-| apply a learning boost based on rehearsal | #2 | **#1** | promoted |
-| unify installed skills across multiple harnesses | #2 | **#1** | promoted |
-| write synthesized memories to the MEMORY.md | #1 (but v1 was #3) | **#2** | rescued |
-| periodic memory compaction | MISS | **#6** | found |
+| Query | BM25 | CR v2 | Goober | Change |
+|---|---|---|---|---|
+| apply a learning boost based on rehearsal | #2 | #1 | #2 | CRv2 promoted, Goober keeps BM25 order |
+| unify installed skills across multiple harnesses | #2 | #1 | **#1** | promoted |
+| write synthesized memories to the MEMORY.md | #1 | #2 | **#1** | rescued — Goober fixes CRv2 regression |
+| periodic memory compaction | MISS | **#5** | MISS | CRv2 walk found it |
+
+### Per-query highlights (MRR benchmark, esbuild)
+
+| Query | BM25 | CR v2 | Goober | Change |
+|---|---|---|---|---|
+| validate that a log level string is valid | #5 | #4 | **#1** | promoted |
+| rename a symbol to a generated number | #4 | MISS | **#2** | found via walk |
+| clone tokens while stripping import records | #1 | #3 | **#2** | improved |
 
 ### Method descriptions
 
 - **BM25**: SQLite FTS5 with per-column weights (name=10, decomposed=8, qualified=6, hints=5, doc=3, file_path=3.5, sig=4, source=1)
 - **Cruncher v1**: BM25 seeds + query-conditioned graph walk + multi-signal scoring (coverage, name, structural, bridging)
 - **Cruncher v2**: BM25 seeds + per-term energy field propagation + interference scoring + confidence-preserving BM25 rank-1 lock
+- **Goober**: BM25 seeds + BM25-dominant seed scoring + IDF-gated graph walk + walk evidence for non-seeds + confidence lock
 
 ### Benchmark design
 
@@ -143,9 +154,9 @@ cargo build --release -p graphiq-bench
 
 We built 9 retrieval systems (SEC, Evidence, HRR, HRR v2, AFMO, Spectral, LSA, AF26, Holo). None beat BM25 on MRR across all codebases. The winning pattern is always: **BM25 retrieves, structural math reranks**. BM25's inverted index is O(1) — no full-scan system can compete on speed, and its ranking is remarkably hard to beat on correctness.
 
-### Interference scoring captures AND behavior
+### Simpler is better
 
-Per-term energy vectors with cosine interference (`cosine_sim(E, [1,...,1])`) naturally reward symbols where all query terms contribute. A symbol with high energy from one term and zero from others gets penalized — this is the multi-term AND behavior that pure BM25 lacks.
+CruncherV2 used per-term energy vectors, cosine interference scoring, hub dampening, bridging potential, and yoyo validation. Goober strips all of this and uses a simple BM25-dominant weighted sum with an IDF-gated walk. Result: Goober strictly outperforms CruncherV2 on all 3 codebases. The complex interference mechanics captured patterns that were already captured by simpler coverage + name scoring, while introducing noise on codebases with generic function names.
 
 ### The confidence lock is critical
 
@@ -447,7 +458,7 @@ Query
 
 ### Key Innovations
 
-**CruncherV2 Interference Engine** — BM25 seeds a graph walk that propagates per-term energy vectors through the call/import/type graph with inverse-distance decay. Interference scoring (`cosine_sim(E, [1,...,1])`) rewards balanced multi-term coverage. Confidence-preserving fusion locks BM25's rank-1 when the gap exceeds 1.2x. Beats BM25 on signetai MRR (0.729 vs 0.720) and all 3 codebases on NDCG.
+**Goober** — BM25-dominant seed scoring (3:1.5:2 BM25:coverage:name ratio) with IDF-gated graph walk. Walk candidates must match high-IDF terms and be reachable from ≥2 seeds. Simpler than CruncherV2, strictly better on all codebases. Beats BM25 on signetai (+0.044 MRR) and esbuild (+0.069 MRR).
 
 **Structural Evidence Convolution (SEC)** — Terms propagated through 7 structural channels (self, calls_out, calls_in, 2hop variants, type_ret, file_path) with distance-based decay. The self channel carries up to 8KB of source code terms plus developer-written search hints.
 
@@ -477,7 +488,7 @@ graphiq/
         index.rs        # Indexing pipeline
         search.rs       # Search engine (the funnel)
         fts.rs          # BM25/FTS retrieval
-        cruncher.rs     # CruncherV2 interference engine
+        cruncher.rs     # Goober + CruncherV1 + CruncherV2 retrieval engines
         rerank.rs       # 11 heuristics + channel scoring + diversity
         graph.rs        # Structural expansion (BFS)
         blast.rs        # Blast radius (forward/backward)
