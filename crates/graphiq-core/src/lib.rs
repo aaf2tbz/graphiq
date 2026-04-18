@@ -1,5 +1,6 @@
 pub mod af26;
 pub mod afmo;
+pub mod behavioral;
 pub mod blast;
 pub mod cache;
 pub mod calls;

@@ -450,31 +450,46 @@ impl<'a> Indexer<'a> {
                 hints.push(format!("used by {}", callers));
             }
 
-            let mut hop2_names: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
+            let mut hop2_word_count: std::collections::HashMap<String, usize> =
+                std::collections::HashMap::new();
             if let Some(incoming) = in_by_id.get(id) {
-                for (_, source_name) in incoming.iter().take(6) {
+                for (edge_kind, source_name) in incoming.iter().take(8) {
+                    if let Some(decomp) = name_to_decomposed.get(source_name) {
+                        if edge_kind == "references" || edge_kind == "calls" {
+                            for word in decomp.split_whitespace() {
+                                let wl = word.to_lowercase();
+                                if wl.len() >= 4 {
+                                    *hop2_word_count.entry(wl).or_insert(0) += 1;
+                                }
+                            }
+                        }
+                    }
                     if let Some(&caller_id) = name_to_id.get(source_name) {
                         if let Some(caller_out) = out_by_id.get(&caller_id) {
                             for (_, callee_name) in caller_out.iter().take(4) {
                                 if callee_name != _name {
-                                    hop2_names.insert(callee_name.to_lowercase());
-                                }
-                            }
-                        }
-                        if let Some(caller_in) = in_by_id.get(&caller_id) {
-                            for (_, co_caller_name) in caller_in.iter().take(4) {
-                                if co_caller_name != _name && co_caller_name != source_name {
-                                    hop2_names.insert(co_caller_name.to_lowercase());
+                                    if let Some(decomp) = name_to_decomposed.get(callee_name) {
+                                        for word in decomp.split_whitespace() {
+                                            let wl = word.to_lowercase();
+                                            if wl.len() >= 4 {
+                                                *hop2_word_count.entry(wl).or_insert(0) += 1;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
-            if !hop2_names.is_empty() {
-                let hop2_list: Vec<String> = hop2_names.into_iter().take(8).collect();
-                hints.push(format!("near {}", hop2_list.join(", ")));
+            let hop2_consensus: Vec<String> = hop2_word_count
+                .into_iter()
+                .filter(|(_, count)| *count >= 2)
+                .map(|(word, _)| word)
+                .take(8)
+                .collect();
+            if !hop2_consensus.is_empty() {
+                hints.push(format!("related {}", hop2_consensus.join(", ")));
             }
 
             if let Ok(Some((container_id, container_name))) = self.db.container_for(*id) {
@@ -593,6 +608,34 @@ impl<'a> Indexer<'a> {
             let sig_type_hints = extract_signature_type_hints(sig_str, src_str);
             if !sig_type_hints.is_empty() {
                 hints.push(sig_type_hints);
+            }
+
+            let callee_name_list: Vec<String> = out_by_id
+                .get(id)
+                .map(|v| {
+                    v.iter()
+                        .filter(|(k, _)| k == "calls")
+                        .map(|(_, n)| n.clone())
+                        .take(10)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let caller_name_list: Vec<String> = in_by_id
+                .get(id)
+                .map(|v| v.iter().map(|(_, n)| n.clone()).take(10).collect())
+                .unwrap_or_default();
+
+            let desc = crate::behavioral::generate_behavioral_descriptors(
+                _name,
+                kind_str,
+                signature.as_deref(),
+                source.as_deref(),
+                &callee_name_list,
+                &caller_name_list,
+                file_path.as_deref(),
+            );
+            if !desc.phrases.is_empty() {
+                hints.push(desc.phrases.join(". "));
             }
 
             let hint_text = hints.join(". ");

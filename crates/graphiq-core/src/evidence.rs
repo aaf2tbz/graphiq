@@ -128,7 +128,7 @@ fn extract_query_terms(query: &str) -> Vec<String> {
         "should", "may", "might", "can", "shall", "the", "a", "an", "of", "in", "to", "for", "on",
         "at", "by", "with", "from", "as", "into", "through", "and", "or", "but", "not", "that",
         "this", "these", "those", "it", "its", "if", "then", "than", "so", "up", "out", "two",
-        "new", "all", "every",
+        "new", "all", "every", "has", "having",
     ]
     .iter()
     .cloned()
