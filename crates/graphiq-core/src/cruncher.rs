@@ -1335,7 +1335,7 @@ pub fn goober_search(
             };
 
             let base = if c.is_seed {
-                3.0 * c.bm25_score + 1.5 * cov_norm + 2.0 * name_norm
+                3.0 * c.bm25_score + 1.5 * cov_norm.min(0.5) + 2.0 * name_norm.min(0.5)
             } else {
                 1.5 * cov_norm + 2.0 * name_norm + walk_norm
             };
