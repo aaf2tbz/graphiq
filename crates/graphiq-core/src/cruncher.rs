@@ -2177,3 +2177,475 @@ pub fn goober_v4_search(
 
     results
 }
+
+// --- Holographic name matching for V5 ---
+
+const HOLO_DIM: usize = 1024;
+
+fn holo_hash_seed(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
+}
+
+fn holo_random_unit(seed: u64) -> Vec<f64> {
+    let mut state = seed;
+    let mut v = Vec::with_capacity(HOLO_DIM);
+    for _ in 0..HOLO_DIM / 2 {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let s = state as u32;
+        let u1 = (1.0 - s as f64 / u32::MAX as f64).max(1e-10);
+        let u2 = 2.0 * std::f64::consts::PI * (s.wrapping_add(1) as f64 / u32::MAX as f64);
+        let r = (-2.0 * u1.ln()).sqrt();
+        v.push(r * u2.cos());
+        v.push(r * u2.sin());
+    }
+    let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-10);
+    v.iter_mut().for_each(|x| *x /= norm);
+    v
+}
+
+fn holo_fft_inplace(re: &mut [f64], im: &mut [f64]) {
+    let n = re.len();
+    if n <= 1 { return; }
+    let mut j: usize = 0;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 { j &= !bit; bit >>= 1; }
+        j ^= bit;
+        if i < j { re.swap(i, j); im.swap(i, j); }
+    }
+    let mut len = 2usize;
+    while len <= n {
+        let ang = -2.0 * std::f64::consts::PI / len as f64;
+        let (wre, wim) = (ang.cos(), ang.sin());
+        for i in (0..n).step_by(len) {
+            let (mut cre, mut cim) = (1.0, 0.0);
+            for jj in 0..len / 2 {
+                let (are, aim) = (re[i + jj], im[i + jj]);
+                let (bre, bim) = (re[i + jj + len / 2], im[i + jj + len / 2]);
+                let (tre, tim) = (bre * cre - bim * cim, bre * cim + bim * cre);
+                re[i + jj] = are + tre; im[i + jj] = aim + tim;
+                re[i + jj + len / 2] = are - tre; im[i + jj + len / 2] = aim - tim;
+                let nre = cre * wre - cim * wim;
+                let nim = cre * wim + cim * wre;
+                cre = nre; cim = nim;
+            }
+        }
+        len *= 2;
+    }
+}
+
+fn holo_ifft_inplace(re: &mut [f64], im: &mut [f64]) {
+    for v in im.iter_mut() { *v = -*v; }
+    holo_fft_inplace(re, im);
+    let n = re.len() as f64;
+    for v in re.iter_mut() { *v /= n; }
+    for v in im.iter_mut() { *v = -*v / n; }
+}
+
+fn holo_to_freq(time: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let mut re = time.to_vec();
+    let mut im = vec![0.0; time.len()];
+    holo_fft_inplace(&mut re, &mut im);
+    (re, im)
+}
+
+fn holo_from_freq(re: &[f64], im: &[f64]) -> Vec<f64> {
+    let mut r = re.to_vec();
+    let mut i = im.to_vec();
+    holo_ifft_inplace(&mut r, &mut i);
+    r
+}
+
+fn holo_complex_mul(a: &(Vec<f64>, Vec<f64>), b: &(Vec<f64>, Vec<f64>)) -> (Vec<f64>, Vec<f64>) {
+    let n = a.0.len();
+    let mut re = vec![0.0; n];
+    let mut im = vec![0.0; n];
+    for i in 0..n {
+        re[i] = a.0[i] * b.0[i] - a.1[i] * b.1[i];
+        im[i] = a.0[i] * b.1[i] + a.1[i] * b.0[i];
+    }
+    (re, im)
+}
+
+fn holo_normalize(v: &mut [f64]) {
+    let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-10);
+    for x in v.iter_mut() { *x /= norm; }
+}
+
+fn holo_cosine(a: &[f64], b: &[f64]) -> f64 {
+    let na: f64 = a.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-10);
+    let nb: f64 = b.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-10);
+    a.iter().zip(b.iter()).map(|(x, y)| x * y).sum::<f64>() / (na * nb)
+}
+
+pub struct HoloIndex {
+    name_holos: Vec<Vec<f64>>,
+    term_freq: HashMap<String, (Vec<f64>, Vec<f64>)>,
+}
+
+pub fn build_holo_index(db: &GraphDb, idx: &CruncherIndex) -> HoloIndex {
+    let conn = db.conn();
+    let mut all_terms: HashSet<String> = HashSet::new();
+    for ts in &idx.term_sets {
+        for t in ts.name_terms.iter() { all_terms.insert(t.clone()); }
+        for t in ts.terms.keys() { all_terms.insert(t.clone()); }
+    }
+    for qt_term in idx.global_idf.keys() { all_terms.insert(qt_term.clone()); }
+
+    let mut term_time: HashMap<String, Vec<f64>> = HashMap::new();
+    let mut term_freq: HashMap<String, (Vec<f64>, Vec<f64>)> = HashMap::new();
+    for t in &all_terms {
+        let v = holo_random_unit(holo_hash_seed(t));
+        term_freq.insert(t.clone(), holo_to_freq(&v));
+        term_time.insert(t.clone(), v);
+    }
+
+    let rel_name = holo_random_unit(0xDEAD_BEEFu64);
+
+    let mut name_holos: Vec<Vec<f64>> = Vec::with_capacity(idx.n);
+    for i in 0..idx.n {
+        let nt = &idx.term_sets[i].name_terms;
+        if nt.is_empty() {
+            name_holos.push(vec![0.0; HOLO_DIM]);
+            continue;
+        }
+        let mut holo = vec![0.0; HOLO_DIM];
+        for t in nt {
+            if let Some(v) = term_time.get(t) {
+                for j in 0..HOLO_DIM { holo[j] += v[j]; }
+            }
+        }
+        holo_normalize(&mut holo);
+        name_holos.push(holo);
+    }
+
+    HoloIndex { name_holos, term_freq }
+}
+
+fn holo_query_name_cosine(query: &str, hi: &HoloIndex, symbol_i: usize) -> f64 {
+    let terms: Vec<String> = query.to_lowercase()
+        .split_whitespace()
+        .filter(|t| t.len() >= 2)
+        .filter(|t| !STOP.contains(t))
+        .map(|t| t.to_string())
+        .collect();
+    let decomp = decompose_identifier(query);
+    let mut all_terms: Vec<String> = terms;
+    for t in decomp.split_whitespace() {
+        let t = t.to_lowercase();
+        if t.len() >= 2 && !STOP.contains(&&*t) && !all_terms.contains(&t) {
+            all_terms.push(t);
+        }
+    }
+    if all_terms.is_empty() { return 0.0; }
+
+    let mut q_holo = vec![0.0; HOLO_DIM];
+    for t in &all_terms {
+        if let Some((re, im)) = hi.term_freq.get(t) {
+            let tv = holo_from_freq(re, im);
+            for j in 0..HOLO_DIM { q_holo[j] += tv[j]; }
+        }
+    }
+    holo_normalize(&mut q_holo);
+
+    holo_cosine(&q_holo, &hi.name_holos[symbol_i])
+}
+
+struct V5Candidate {
+    idx: usize,
+    bm25_score: f64,
+    coverage_score: f64,
+    coverage_count: usize,
+    name_score: f64,
+    is_seed: bool,
+    walk_evidence: f64,
+    seed_paths: HashSet<usize>,
+    ng_score: f64,
+    coherence_score: f64,
+    holo_name_sim: f64,
+}
+
+pub fn goober_v5_search(
+    query: &str,
+    idx: &CruncherIndex,
+    hi: &HoloIndex,
+    bm25_seeds: &[(i64, f64)],
+    top_k: usize,
+) -> Vec<(i64, f64)> {
+    let query_terms = build_query_terms(query, &idx.global_idf);
+    if query_terms.is_empty() {
+        return bm25_seeds.to_vec();
+    }
+
+    let intent = classify_query(&query_terms, idx, bm25_seeds);
+
+    let n_qt = query_terms.len();
+    let idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
+
+    let bm25_max = bm25_seeds
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let query_specificity = if n_qt > 0 {
+        let high_idf_count = query_terms.iter().filter(|qt| qt.idf > 1.0).count();
+        high_idf_count as f64 / n_qt as f64
+    } else {
+        0.0
+    };
+
+    let mut candidates: HashMap<usize, V5Candidate> = HashMap::new();
+
+    for &(id, score) in bm25_seeds.iter().take(MAX_SEEDS) {
+        if let Some(&i) = idx.id_to_idx.get(&id) {
+            let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
+            let (name_s, _) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+
+            let channels = compute_sec_channels(&query_terms, idx, i);
+            let ng = negentropy(&channels);
+            let coherence = channel_coherence(&query_terms, idx, i);
+            let holo_name = holo_query_name_cosine(query, hi, i);
+
+            let mut sp = HashSet::new();
+            sp.insert(i);
+
+            candidates.insert(
+                i,
+                V5Candidate {
+                    idx: i,
+                    bm25_score: score / bm25_max,
+                    coverage_score: cov_score,
+                    coverage_count: cov_count,
+                    name_score: name_s,
+                    is_seed: true,
+                    walk_evidence: 0.0,
+                    seed_paths: sp,
+                    ng_score: ng,
+                    coherence_score: coherence,
+                    holo_name_sim: holo_name,
+                },
+            );
+        }
+    }
+
+    let mut idf_sorted: Vec<f64> = query_terms.iter().map(|qt| qt.idf).collect();
+    idf_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let idf_threshold = idf_sorted[idf_sorted.len() / 2];
+
+    if matches!(intent, QueryIntent::Informational) {
+        let seed_indices: Vec<usize> = candidates.keys().cloned().collect();
+
+        for &seed_i in seed_indices.iter().take(8) {
+            let mut queue: VecDeque<(usize, f64, usize)> = VecDeque::new();
+            let mut visited: HashSet<usize> = HashSet::new();
+            visited.insert(seed_i);
+
+            for edge in idx.outgoing[seed_i].iter().take(10) {
+                if !visited.contains(&edge.target) {
+                    queue.push_back((edge.target, edge.weight, 1));
+                    visited.insert(edge.target);
+                }
+            }
+            for edge in idx.incoming[seed_i].iter().take(10) {
+                if !visited.contains(&edge.target) {
+                    queue.push_back((edge.target, edge.weight, 1));
+                    visited.insert(edge.target);
+                }
+            }
+
+            let mut expanded = 0usize;
+            while let Some((neighbor_i, edge_w, depth)) = queue.pop_front() {
+                if depth > 2 || expanded >= 25 {
+                    break;
+                }
+
+                let has_specific = query_terms
+                    .iter()
+                    .filter(|qt| qt.idf >= idf_threshold)
+                    .any(|qt| per_term_match(&idx.term_sets[neighbor_i], qt) > 0.0);
+
+                if !has_specific {
+                    continue;
+                }
+
+                let (cov_score, cov_count) =
+                    term_match_score(&query_terms, &idx.term_sets[neighbor_i]);
+                if cov_count == 0 {
+                    continue;
+                }
+
+                let proximity = 0.5_f64.powi(depth as i32);
+                let evidence = cov_score * proximity * edge_w;
+
+                let channels = compute_sec_channels(&query_terms, idx, neighbor_i);
+                let ng = negentropy(&channels);
+                let coherence = channel_coherence(&query_terms, idx, neighbor_i);
+                let holo_name = holo_query_name_cosine(query, hi, neighbor_i);
+
+                let entry = candidates.entry(neighbor_i).or_insert_with(|| {
+                    let (ns, _) =
+                        name_coverage(&query_terms, &idx.term_sets[neighbor_i].name_terms);
+                    V5Candidate {
+                        idx: neighbor_i,
+                        bm25_score: 0.0,
+                        coverage_score: cov_score,
+                        coverage_count: cov_count,
+                        name_score: ns,
+                        is_seed: false,
+                        walk_evidence: 0.0,
+                        seed_paths: HashSet::new(),
+                        ng_score: ng,
+                        coherence_score: coherence,
+                        holo_name_sim: holo_name,
+                    }
+                });
+
+                if !entry.is_seed {
+                    entry.coverage_score = entry.coverage_score.max(cov_score);
+                    entry.coverage_count = entry.coverage_count.max(cov_count);
+                    entry.ng_score = entry.ng_score.max(ng);
+                    entry.coherence_score = entry.coherence_score.max(coherence);
+                    entry.holo_name_sim = entry.holo_name_sim.max(holo_name);
+                }
+                entry.walk_evidence += evidence;
+                entry.seed_paths.insert(seed_i);
+                expanded += 1;
+
+                if depth < 2 {
+                    let next: Vec<(usize, f64)> = idx.outgoing[neighbor_i]
+                        .iter()
+                        .chain(idx.incoming[neighbor_i].iter())
+                        .take(6)
+                        .filter(|e| !visited.contains(&e.target))
+                        .map(|e| (e.target, e.weight.min(edge_w)))
+                        .collect();
+                    for (next_i, next_w) in next {
+                        visited.insert(next_i);
+                        queue.push_back((next_i, next_w, depth + 1));
+                    }
+                }
+            }
+        }
+    }
+
+    let max_ng = candidates
+        .values()
+        .map(|c| c.ng_score)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let max_coherence = candidates
+        .values()
+        .map(|c| c.coherence_score)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
+
+    let (bm25_w, cov_w, name_w, ng_w, coh_w) = match intent {
+        QueryIntent::Navigational => (5.0, 0.8, 1.0, 0.1, 0.05),
+        QueryIntent::Informational => (3.0, 1.5, 2.0, 0.25, 0.15),
+    };
+
+    let holo_gate = 0.25f64;
+    let holo_max_w = 2.0;
+
+    let mut scored: Vec<(usize, f64)> = candidates
+        .values()
+        .filter_map(|c| {
+            if !c.is_seed && c.seed_paths.len() < 2 {
+                return None;
+            }
+
+            let cov_norm = if idf_sum > 0.0 { c.coverage_score / idf_sum } else { 0.0 };
+            let name_norm = if idf_sum > 0.0 { c.name_score / idf_sum } else { 0.0 };
+            let walk_norm = if idf_sum > 0.0 { c.walk_evidence / idf_sum } else { 0.0 };
+
+            let base = if c.is_seed {
+                let cov_cap = if matches!(intent, QueryIntent::Navigational) {
+                    cov_norm.min(0.2)
+                } else {
+                    cov_norm.min(0.5)
+                };
+                let name_cap = if matches!(intent, QueryIntent::Navigational) {
+                    name_norm.min(0.3)
+                } else {
+                    name_norm.min(0.5)
+                };
+                bm25_w * c.bm25_score + cov_w * cov_cap + name_w * name_cap
+            } else {
+                1.5 * cov_norm + 2.0 * name_norm + walk_norm
+            };
+
+            let coverage_frac = if n_qt > 0 {
+                c.coverage_count as f64 / n_qt as f64
+            } else {
+                0.0
+            };
+
+            let ng_norm = c.ng_score / max_ng;
+            let coh_norm = c.coherence_score / max_coherence;
+            let ng_boost = 1.0 + ng_w * ng_norm + coh_w * coh_norm;
+
+            let holo_additive = if c.holo_name_sim > holo_gate {
+                let excess = (c.holo_name_sim - holo_gate) / (1.0 - holo_gate);
+                let w = holo_max_w * query_specificity * excess;
+                w
+            } else {
+                0.0
+            };
+
+            let seed_bonus = if c.is_seed { 1.15 } else { 1.0 };
+            let kb = kind_boost(&idx.symbol_kinds[c.idx]);
+            let tp = test_penalty(&idx.file_paths, idx.symbol_file_ids[c.idx]);
+
+            let raw = (base + holo_additive) * coverage_frac.powf(0.3) * ng_boost * seed_bonus * kb * tp;
+
+            if raw > 0.0 {
+                Some((c.idx, raw))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    let bm25_confident = bm25_seeds.len() >= 2
+        && bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10) > 1.2;
+    if bm25_confident {
+        if let Some(&lock_i) = bm25_seeds
+            .first()
+            .and_then(|(id, _)| idx.id_to_idx.get(id))
+        {
+            if let Some(pos) = scored.iter().position(|(i, _)| *i == lock_i) {
+                if pos > 0 {
+                    let (li, ls) = scored.remove(pos);
+                    scored.insert(0, (li, ls + 1e6));
+                }
+            }
+        }
+    }
+
+    let mut results: Vec<(i64, f64)> = Vec::with_capacity(top_k);
+    let mut file_counts: HashMap<i64, usize> = HashMap::new();
+
+    for (i, score) in scored {
+        let fid = idx.symbol_file_ids[i];
+        let fc = file_counts.entry(fid).or_insert(0);
+        if *fc >= 3 {
+            continue;
+        }
+        *fc += 1;
+        results.push((idx.symbol_ids[i], score));
+        if results.len() >= top_k {
+            break;
+        }
+    }
+
+    results
+}

@@ -86,9 +86,10 @@ fn truncate(s: &str, max: usize) -> String {
 fn run_searches(
     fts: &FtsSearch,
     ci: &cruncher::CruncherIndex,
+    hi: &cruncher::HoloIndex,
     query: &str,
     top_k: usize,
-) -> [Vec<(i64, f64)>; 6] {
+) -> [Vec<(i64, f64)>; 7] {
     let bm25: Vec<(i64, f64)> = fts
         .search(query, Some(top_k))
         .into_iter()
@@ -100,30 +101,32 @@ fn run_searches(
     let goober = cruncher::goober_search(query, ci, &bm25, top_k);
     let goober_v3 = cruncher::goober_v3_search(query, ci, &bm25, top_k);
     let goober_v4 = cruncher::goober_v4_search(query, ci, &bm25, top_k);
+    let goober_v5 = cruncher::goober_v5_search(query, ci, hi, &bm25, top_k);
 
-    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4]
+    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5]
 }
 
 fn run_ndcg_benchmark(
     db: &GraphDb,
     fts: &FtsSearch,
     ci: &cruncher::CruncherIndex,
+    hi: &cruncher::HoloIndex,
     queries: &[BenchQuery],
 ) {
     println!("\n{}", "=".repeat(60));
     println!("  NDCG@10 BENCHMARK  ({} queries)", queries.len());
     println!("{}", "=".repeat(60));
 
-    let methods = ["BM25", "CR v1", "CR v2", "Goober", "GooberV3", "GooberV4"];
+    let methods = ["BM25", "CR v1", "CR v2", "Goober", "GooberV3", "GooberV4", "GooberV5"];
     let n = queries.len();
-    let mut all_ndcg: [Vec<f64>; 6] = Default::default();
-    let mut all_hits: [Vec<[bool; 5]>; 6] = Default::default();
-    let mut cat_data: std::collections::HashMap<String, [Vec<f64>; 6]> =
+    let mut all_ndcg: [Vec<f64>; 7] = Default::default();
+    let mut all_hits: [Vec<[bool; 5]>; 7] = Default::default();
+    let mut cat_data: std::collections::HashMap<String, [Vec<f64>; 7]> =
         std::collections::HashMap::new();
 
     for q in queries {
         let ideal = compute_ideal_rels(db, q);
-        let results = run_searches(fts, ci, &q.query, 10);
+        let results = run_searches(fts, ci, hi, &q.query, 10);
 
         for (mi, hits) in results.iter().enumerate() {
             let rels: Vec<f64> = hits
@@ -170,34 +173,36 @@ fn run_ndcg_benchmark(
     let mut cats: Vec<&String> = cat_data.keys().collect();
     cats.sort();
     println!(
-        "{:<20} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "Category", "BM25", "CR v1", "CR v2", "Goober", "GooberV3"
+        "{:<20} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
+        "Category", "BM25", "CR v1", "CR v2", "Goober", "GooberV3", "GooberV4", "GooberV5"
     );
-    println!("{}", "-".repeat(68));
+    println!("{}", "-".repeat(100));
     for cat in &cats {
         let d = &cat_data[*cat];
         let avg: Vec<f64> = d.iter().map(|v| v.iter().sum::<f64>() / v.len() as f64).collect();
         println!(
-            "{:<20} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
-            cat, avg[0], avg[1], avg[2], avg[3], avg[4]
+            "{:<20} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
+            cat, avg[0], avg[1], avg[2], avg[3], avg[4], avg[5], avg[6]
         );
     }
 
     println!("\n--- Per-Query ---\n");
     println!(
-        "{:<40} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "Query", "BM25", "CR v1", "CR v2", "Goober", "GooberV3"
+        "{:<30} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
+        "Query", "BM25", "CR v1", "CR v2", "Goober", "GooV3", "GooV4", "GooV5"
     );
-    println!("{}", "-".repeat(90));
+    println!("{}", "-".repeat(93));
     for (i, q) in queries.iter().enumerate() {
         println!(
-            "{:<40} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
-            truncate(&q.query, 40),
+            "{:<30} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3}",
+            truncate(&q.query, 30),
             all_ndcg[0][i],
             all_ndcg[1][i],
             all_ndcg[2][i],
             all_ndcg[3][i],
-            all_ndcg[4][i]
+            all_ndcg[4][i],
+            all_ndcg[5][i],
+            all_ndcg[6][i]
         );
     }
 }
@@ -206,13 +211,14 @@ fn run_mrr_benchmark(
     db: &GraphDb,
     fts: &FtsSearch,
     ci: &cruncher::CruncherIndex,
+    hi: &cruncher::HoloIndex,
     queries: &[BenchQuery],
 ) {
     println!("\n{}", "=".repeat(60));
     println!("  MRR BENCHMARK  ({} queries)", queries.len());
     println!("{}", "=".repeat(60));
 
-    let methods = ["BM25", "CR v1", "CR v2", "Goober", "GooberV3", "GooberV4"];
+    let methods = ["BM25", "CR v1", "CR v2", "Goober", "GooberV3", "GooberV4", "GooberV5"];
     let n = queries.len();
 
     struct MrrResult {
@@ -222,10 +228,10 @@ fn run_mrr_benchmark(
         found_rank: Option<usize>,
     }
 
-    let mut all: [Vec<MrrResult>; 6] = Default::default();
+    let mut all: [Vec<MrrResult>; 7] = Default::default();
 
     for q in queries {
-        let results = run_searches(fts, ci, &q.query, 10);
+        let results = run_searches(fts, ci, hi, &q.query, 10);
 
         for (mi, hits) in results.iter().enumerate() {
             let expected = q.expected_symbol.as_deref().unwrap_or("");
@@ -275,27 +281,44 @@ fn run_mrr_benchmark(
 
     println!("\n--- Per-Query ---\n");
     println!(
-        "{:<40} {:>6} {:>6} {:>6} {:>6} {:>6}  {:>6} {:>6} {:>6} {:>6} {:>6}",
-        "Query", "B_rr", "1_rr", "2_rr", "G_rr", "V3_rr", "B_rnk", "1_rnk", "2_rnk", "G_rnk", "V3_rnk"
+        "{:<28} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+        "Query", "B_rr", "1_rr", "2_rr", "G_rr", "V3_rr", "V4_rr", "V5_rr"
     );
-    println!("{}", "-".repeat(115));
+    println!("{}", "-".repeat(76));
     for (i, q) in queries.iter().enumerate() {
-        let fmt = |r: Option<usize>| -> String {
-            r.map(|v| format!("{}", v + 1)).unwrap_or_else(|| "MISS".into())
-        };
         println!(
-            "{:<40} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3}  {:>6} {:>6} {:>6} {:>6} {:>6}",
-            truncate(&q.query, 40),
+            "{:<28} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3}",
+            truncate(&q.query, 28),
             all[0][i].rr,
             all[1][i].rr,
             all[2][i].rr,
             all[3][i].rr,
             all[4][i].rr,
+            all[5][i].rr,
+            all[6][i].rr
+        );
+    }
+
+    println!("\n--- Per-Query Ranks ---\n");
+    println!(
+        "{:<28} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+        "Query", "B_rnk", "1_rnk", "2_rnk", "G_rnk", "V3_rnk", "V4_rnk", "V5_rnk"
+    );
+    println!("{}", "-".repeat(76));
+    for (i, q) in queries.iter().enumerate() {
+        let fmt = |r: Option<usize>| -> String {
+            r.map(|v| format!("{}", v + 1)).unwrap_or_else(|| "MISS".into())
+        };
+        println!(
+            "{:<28} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+            truncate(&q.query, 28),
             fmt(all[0][i].found_rank),
             fmt(all[1][i].found_rank),
             fmt(all[2][i].found_rank),
             fmt(all[3][i].found_rank),
-            fmt(all[4][i].found_rank)
+            fmt(all[4][i].found_rank),
+            fmt(all[5][i].found_rank),
+            fmt(all[6][i].found_rank)
         );
     }
 }
@@ -334,6 +357,8 @@ fn main() {
         }
     };
 
+    let hi = cruncher::build_holo_index(&db, &ci);
+
     let ndcg_file = args.get(2).map(|s| s.as_str());
     let mrr_file = args.get(3).map(|s| s.as_str());
 
@@ -346,7 +371,7 @@ fn main() {
             eprintln!("error parsing NDCG query file: {e}");
             std::process::exit(1);
         });
-        run_ndcg_benchmark(&db, &fts, &ci, &queries);
+        run_ndcg_benchmark(&db, &fts, &ci, &hi, &queries);
     }
 
     if let Some(file) = mrr_file {
@@ -358,7 +383,7 @@ fn main() {
             eprintln!("error parsing MRR query file: {e}");
             std::process::exit(1);
         });
-        run_mrr_benchmark(&db, &fts, &ci, &queries);
+        run_mrr_benchmark(&db, &fts, &ci, &hi, &queries);
     }
 
     if ndcg_file.is_none() && mrr_file.is_none() {
