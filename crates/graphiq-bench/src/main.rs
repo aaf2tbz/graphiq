@@ -84,8 +84,8 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-const N_METHODS: usize = 8;
-const METHOD_NAMES: [&str; N_METHODS] = ["BM25", "CRv1", "CRv2", "Goober", "GooV3", "GooV4", "GooV5", "Geometric"];
+const N_METHODS: usize = 9;
+const METHOD_NAMES: [&str; N_METHODS] = ["BM25", "CRv1", "CRv2", "Goober", "GooV3", "GooV4", "GooV5", "Geometric", "Curved"];
 
 fn run_searches(
     db: &GraphDb,
@@ -110,12 +110,18 @@ fn run_searches(
     let goober_v5 = cruncher::goober_v5_search(query, ci, hi, &bm25, top_k);
 
     let geometric = if let Some(spec) = spectral {
-        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50)
+        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, false)
     } else {
         Vec::new()
     };
 
-    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5, geometric]
+    let curved = if let Some(spec) = spectral {
+        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, true)
+    } else {
+        Vec::new()
+    };
+
+    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5, geometric, curved]
 }
 
 fn run_ndcg_benchmark(
@@ -376,7 +382,12 @@ fn main() {
 
     eprintln!("Computing spectral index...");
     let spectral = match graphiq_core::spectral::compute_spectral(&db) {
-        Ok(idx) => Some(idx),
+        Ok(mut idx) => {
+            eprintln!("Computing Ricci curvature...");
+            let kappa = graphiq_core::spectral::compute_ricci_curvature(&idx.graph);
+            idx.graph.edge_curvature = Some(kappa);
+            Some(idx)
+        }
         Err(e) => {
             eprintln!("  spectral computation failed: {e}, skipping Geometric");
             None
@@ -484,7 +495,7 @@ fn cmd_tune(args: &[String]) {
                             &q.query, &ci, &hi,
                             &fts.search(&q.query, Some(10)).into_iter()
                                 .map(|r| (r.symbol.id, r.bm25_score)).collect::<Vec<_>>(),
-                            &spectral, 10, heat_t, cheb_order, walk_weight, heat_top_k,
+                            &spectral, 10, heat_t, cheb_order, walk_weight, heat_top_k, false,
                         );
                         let rels: Vec<f64> = results.iter()
                             .map(|(id, _)| q.relevance_of(&sym_name(&db, *id)) as f64)
@@ -509,7 +520,7 @@ fn cmd_tune(args: &[String]) {
                             &q.query, &ci, &hi,
                             &fts.search(&q.query, Some(10)).into_iter()
                                 .map(|r| (r.symbol.id, r.bm25_score)).collect::<Vec<_>>(),
-                            &spectral, 10, heat_t, cheb_order, walk_weight, heat_top_k,
+                            &spectral, 10, heat_t, cheb_order, walk_weight, heat_top_k, false,
                         );
                         let found = results.iter().position(|(id, _)| {
                             let name = sym_name(&db, *id);

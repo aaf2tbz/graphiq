@@ -2718,6 +2718,7 @@ pub fn geometric_search(
     cheb_order: usize,
     walk_weight: f64,
     heat_top_k: usize,
+    use_curvature: bool,
 ) -> Vec<(i64, f64)> {
     let query_terms = build_query_terms(query, &idx.global_idf);
     if query_terms.is_empty() {
@@ -2828,14 +2829,49 @@ pub fn geometric_search(
                 .map(|_| 1.0 / spectral_seeds.len() as f64)
                 .collect();
 
-            let heat_results = crate::spectral::chebyshev_heat(
-                &spectral.graph,
-                &spectral_seeds,
-                &seed_weights,
-                heat_t,
-                cheb_order,
-                heat_top_k,
-            );
+            let avg_ricci: Vec<f64> = if let Some(ref kappa) = spectral.graph.edge_curvature {
+                let n = spectral.graph.n;
+                let mut avg_k = vec![0.0f64; n];
+                let mut deg = vec![0usize; n];
+                for &(i, j, _) in &spectral.graph.structural_edges {
+                    let k = kappa[i * n + j];
+                    avg_k[i] += k;
+                    avg_k[j] += k;
+                    deg[i] += 1;
+                    deg[j] += 1;
+                }
+                for i in 0..n {
+                    if deg[i] > 0 {
+                        avg_k[i] /= deg[i] as f64;
+                    }
+                }
+                avg_k
+            } else {
+                vec![0.0; spectral.graph.n]
+            };
+
+            let ricci_max = avg_ricci.iter().cloned().fold(0.0f64, f64::max).max(1e-10);
+            let ricci_min = avg_ricci.iter().cloned().fold(f64::INFINITY, f64::min).min(0.0);
+
+            let heat_results = if use_curvature {
+                crate::spectral::chebyshev_heat_curved(
+                    &spectral.graph,
+                    &spectral_seeds,
+                    &seed_weights,
+                    heat_t,
+                    cheb_order,
+                    heat_top_k,
+                )
+            } else {
+                crate::spectral::chebyshev_heat(
+                    &spectral.graph,
+                    &spectral_seeds,
+                    &seed_weights,
+                    heat_t,
+                    cheb_order,
+                    heat_top_k,
+                )
+            };
 
             let heat_max = heat_results.first().map(|(_, s)| *s).unwrap_or(1.0).max(1e-10);
 
@@ -2847,6 +2883,13 @@ pub fn geometric_search(
                     }
 
                     let normalized_heat = heat_score / heat_max;
+
+                    let ricci_boost = if ricci_max > ricci_min {
+                        let spec_k = avg_ricci[*spec_i];
+                        1.0 + 0.3 * (spec_k - ricci_min) / (ricci_max - ricci_min)
+                    } else {
+                        1.0
+                    };
 
                     let has_specific = query_terms
                         .iter()
@@ -2885,7 +2928,7 @@ pub fn geometric_search(
                         }
                     });
 
-                    entry.walk_evidence = entry.walk_evidence.max(cov_score * normalized_heat);
+                    entry.walk_evidence = entry.walk_evidence.max(cov_score * normalized_heat * ricci_boost);
                     entry.seed_paths.insert(seed_indices[0]);
                 }
             }

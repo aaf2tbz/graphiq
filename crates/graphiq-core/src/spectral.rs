@@ -60,6 +60,8 @@ pub struct SparseGraph {
     pub n: usize,
     pub adj: SparseSym,
     pub inv_sqrt_d: Vec<f64>,
+    pub edge_curvature: Option<Vec<f64>>,
+    pub structural_edges: Vec<(usize, usize, f64)>,
 }
 
 impl SparseGraph {
@@ -86,9 +88,37 @@ impl SparseGraph {
         let deg = self.adj.degree();
         deg.into_iter().fold(0.0f64, f64::max).max(1.0)
     }
+
+    pub fn curvature_weighted_matvec(&self, x: &[f64]) -> Vec<f64> {
+        let mut y = vec![0.0; self.n];
+        if let Some(ref kappa) = self.edge_curvature {
+            for &(i, j, w) in &self.structural_edges {
+                let k_raw = kappa[i * self.n + j];
+                let k = (1.0 + k_raw).max(0.1);
+                let wk = w * k;
+                y[i] += wk * x[j];
+                y[j] += wk * x[i];
+            }
+        } else {
+            y = self.adj.matvec(x);
+        }
+        y
+    }
+
+    pub fn curvature_laplacian_matvec(&self, x: &[f64]) -> Vec<f64> {
+        let wv = self.curvature_weighted_matvec(x);
+        let degree = self.adj.degree();
+        let mut lv = vec![0.0; self.n];
+        for i in 0..self.n {
+            if degree[i] > 1e-10 {
+                lv[i] = x[i] - wv[i] / degree[i];
+            }
+        }
+        lv
+    }
 }
 
-pub fn build_adjacency(db: &GraphDb) -> (SparseSym, Vec<i64>, HashMap<i64, usize>) {
+pub fn build_adjacency(db: &GraphDb) -> (SparseSym, Vec<i64>, HashMap<i64, usize>, Vec<(usize, usize, f64)>) {
     let conn = db.conn();
 
     let mut sym_stmt = conn
@@ -139,6 +169,7 @@ pub fn build_adjacency(db: &GraphDb) -> (SparseSym, Vec<i64>, HashMap<i64, usize
     drop(edge_stmt);
 
     let mut edge_count = 0usize;
+    let mut struct_edges: Vec<(usize, usize, f64)> = Vec::new();
     for (src, tgt, kind) in &edges {
         if let (Some(&si), Some(&ti)) = (sym_id_to_idx.get(src), sym_id_to_idx.get(tgt)) {
             let w = edge_weights
@@ -146,6 +177,7 @@ pub fn build_adjacency(db: &GraphDb) -> (SparseSym, Vec<i64>, HashMap<i64, usize
                 .find_map(|(k, w)| if *k == kind { Some(*w) } else { None })
                 .unwrap_or(0.3);
             adj.add(si, ti, w);
+            struct_edges.push((si, ti, w));
             edge_count += 1;
         }
     }
@@ -213,11 +245,11 @@ pub fn build_adjacency(db: &GraphDb) -> (SparseSym, Vec<i64>, HashMap<i64, usize
 
     eprintln!("  added {} term-overlap edges", term_edges);
 
-    (adj, symbol_ids, sym_id_to_idx)
+    (adj, symbol_ids, sym_id_to_idx, struct_edges)
 }
 
 pub fn compute_spectral(db: &GraphDb) -> Result<SpectralIndex, String> {
-    let (adj, symbol_ids, sym_id_to_idx) = build_adjacency(db);
+    let (adj, symbol_ids, sym_id_to_idx, struct_edges) = build_adjacency(db);
     let n = adj.n;
     let k = SPECTRAL_DIM.min(n.saturating_sub(1));
 
@@ -233,6 +265,8 @@ pub fn compute_spectral(db: &GraphDb) -> Result<SpectralIndex, String> {
         n,
         adj,
         inv_sqrt_d,
+        edge_curvature: None,
+        structural_edges: struct_edges,
     };
 
     let graph_adj = &graph.adj;
@@ -642,6 +676,84 @@ pub fn chebyshev_heat(
     scored
 }
 
+pub fn chebyshev_heat_curved(
+    graph: &SparseGraph,
+    seed_indices: &[usize],
+    seed_weights: &[f64],
+    t: f64,
+    order: usize,
+    top_k: usize,
+) -> Vec<(usize, f64)> {
+    let n = graph.n;
+    if seed_indices.is_empty() || order == 0 {
+        return Vec::new();
+    }
+
+    let lmax = graph.lambda_max();
+    if lmax < 1e-10 {
+        return Vec::new();
+    }
+
+    let f0 = |x: f64| -> f64 { (-t * x).exp() };
+    let x_max = lmax;
+
+    let c = (0..=order)
+        .map(|k| cheb_coeff(f0, k, x_max, 1024))
+        .collect::<Vec<f64>>();
+
+    let mut f = vec![0.0; n];
+    for (i, w) in seed_indices.iter().zip(seed_weights.iter()) {
+        f[*i] += *w;
+    }
+
+    let clv = |v: &[f64]| -> Vec<f64> {
+        let cl = graph.curvature_laplacian_matvec(v);
+        let scale = 2.0 / lmax;
+        let mut y = vec![0.0; n];
+        for i in 0..n {
+            y[i] = scale * cl[i] - v[i];
+        }
+        y
+    };
+
+    let twf = clv(&f);
+    let mut y2 = vec![0.0; n];
+    for i in 0..n {
+        y2[i] = 2.0 * twf[i] - f[i];
+    }
+    let mut y1 = twf;
+
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        result[i] = c[0] * f[i] + c[1] * y1[i];
+    }
+
+    for j in 2..=order {
+        let ty = clv(&y2);
+        let mut y_new = vec![0.0; n];
+        for i in 0..n {
+            y_new[i] = 2.0 * ty[i] - y1[i];
+        }
+        if j < c.len() {
+            for i in 0..n {
+                result[i] += c[j] * y_new[i];
+            }
+        }
+        y1 = y2;
+        y2 = y_new;
+    }
+
+    let mut scored: Vec<(usize, f64)> = result
+        .iter()
+        .enumerate()
+        .filter(|(_, &s)| s > 1e-12)
+        .map(|(i, s)| (i, *s))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+    scored
+}
+
 fn cheb_coeff<F: Fn(f64) -> f64>(f: F, k: usize, b: f64, n_quad: usize) -> f64 {
     let a = 0.0;
     let mid = (b + a) / 2.0;
@@ -815,6 +927,111 @@ pub fn store_spectral_coords(
             stmt.execute(params![*sym_id as i64, bytes, dim as i64])
                 .map_err(|e| e.to_string())?;
             count += 1;
+        }
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+pub fn compute_ricci_curvature(graph: &SparseGraph) -> Vec<f64> {
+    let n = graph.n;
+
+    let mut nbrs: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+    for &(i, j, w) in &graph.structural_edges {
+        nbrs[i].push((j, w));
+        nbrs[j].push((i, w));
+    }
+    let degree: Vec<f64> = nbrs.iter().map(|v| v.iter().map(|(_, w)| w).sum()).collect();
+
+    let mut kappa = vec![0.0f64; n * n];
+
+    for i in 0..n {
+        let di = degree[i];
+        if di < 1e-10 {
+            continue;
+        }
+        let ni: Vec<usize> = nbrs[i].iter().map(|(n, _)| *n).collect();
+        let wi: Vec<f64> = nbrs[i].iter().map(|(_, w)| *w).collect();
+        let ni_len = ni.len();
+
+        for &(j, _) in &nbrs[i] {
+            let dj = degree[j];
+            if dj < 1e-10 {
+                continue;
+            }
+
+            let nj: Vec<usize> = nbrs[j].iter().map(|(n, _)| *n).collect();
+            let wj: Vec<f64> = nbrs[j].iter().map(|(_, w)| *w).collect();
+
+            let mut l1 = 0.0f64;
+
+            let mut mi: HashMap<usize, f64> = HashMap::new();
+            mi.insert(i, 0.5);
+            for k in 0..ni_len {
+                let p = wi[k] / di;
+                *mi.entry(ni[k]).or_insert(0.0) += 0.5 * p;
+            }
+
+            let mut mj: HashMap<usize, f64> = HashMap::new();
+            mj.insert(j, 0.5);
+            for k in 0..nj.len() {
+                let p = wj[k] / dj;
+                *mj.entry(nj[k]).or_insert(0.0) += 0.5 * p;
+            }
+
+            for (&node, &pi) in &mi {
+                let pj = mj.get(&node).copied().unwrap_or(0.0);
+                l1 += (pi - pj).abs();
+            }
+            for (&node, &pj) in &mj {
+                if !mi.contains_key(&node) {
+                    l1 += pj;
+                }
+            }
+
+            kappa[i * n + j] = 1.0 - l1;
+        }
+    }
+
+    kappa
+}
+
+pub fn store_ricci_curvature(
+    db: &GraphDb,
+    graph: &SparseGraph,
+    symbol_ids: &[i64],
+    kappa: &[f64],
+) -> Result<usize, String> {
+    let n = graph.n;
+    let conn = db.conn();
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS ricci_edges (
+            source_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            curvature REAL NOT NULL,
+            PRIMARY KEY (source_id, target_id)
+        )",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.execute("DELETE FROM ricci_edges", [])
+        .map_err(|e| e.to_string())?;
+
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let mut count = 0usize;
+    {
+        let mut stmt = tx
+            .prepare("INSERT OR IGNORE INTO ricci_edges (source_id, target_id, curvature) VALUES (?1, ?2, ?3)")
+            .map_err(|e| e.to_string())?;
+
+        for (&(i, j), _) in &graph.adj.entries {
+            let k = kappa[i * n + j];
+            if i < symbol_ids.len() && j < symbol_ids.len() {
+                stmt.execute(params![symbol_ids[i], symbol_ids[j], k])
+                    .map_err(|e| e.to_string())?;
+                count += 1;
+            }
         }
     }
     tx.commit().map_err(|e| e.to_string())?;
