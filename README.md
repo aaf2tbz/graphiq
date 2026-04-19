@@ -1,8 +1,8 @@
 # GraphIQ
 
-Instant, accurate code search powered by BM25 + structural graph analysis. No embeddings. No model dependencies. Drop a codebase in and search.
+Instant, accurate code search powered by BM25 + structural graph analysis + spectral heat diffusion. No embeddings. No model dependencies. Drop a codebase in and search.
 
-**0.827 MRR on esbuild, 0.681 on signetai, 0.511 on tokio** — 30-query benchmark, 46K symbols, ~1ms p50 latency.
+**GooberV5: NDCG 0.504 (esbuild), 0.444 (signetai), 0.367 (tokio) — Geometric: NDCG 0.503, 0.443, 0.368**
 
 ## How It Works
 
@@ -13,7 +13,8 @@ Query: "rate limit middleware"
   BM25/FTS  -->  30 seeds
         |
         v
-  Graph Walk  -->  ~100 candidates (IDF-gated, depth 2)
+  [V5] Graph Walk (BFS, depth 2, IDF-gated)
+  [Geo] Chebyshev Heat Diffusion (spectral graph)
         |
         v
   SEC + NG Scoring  -->  structural rerank
@@ -25,21 +26,27 @@ Query: "rate limit middleware"
   Confidence Lock  -->  top_k results
 ```
 
-Five layers, all deterministic. BM25 retrieves seeds, the code graph expands candidates, structural scoring reranks, holographic matching adds name similarity signal when it's confident, and the confidence lock prevents wrong promotions. See [docs/retrieval.md](docs/retrieval.md) for the full pipeline details.
+Two retrieval modes. GooberV5 uses BFS graph walks to expand candidates. Geometric uses Chebyshev polynomial approximation of the graph Laplacian's heat kernel — diffusion-based expansion that naturally propagates relevance across structural distance. Both feed into the same SEC + negentropy + holographic scoring pipeline. See [docs/retrieval.md](docs/retrieval.md) for full pipeline details.
 
 ## Benchmarks
 
-30-query MRR across 3 codebases:
+NDCG@10 across 3 codebases (v3 queries, 7 categories):
 
-| Codebase | BM25 | **GraphIQ** | Delta |
-|---|---|---|---|
-| esbuild (Go) | 0.675 | **0.827** | +0.152 |
-| signetai (TS) | 0.556 | **0.681** | +0.125 |
-| tokio (Rust) | 0.583 | **0.511** | -0.072 |
+| Codebase | BM25 | GooV4 | GooV5 | **Geometric** |
+|---|---|---|---|---|
+| esbuild (Go) | 0.315 | 0.383 | **0.504** | 0.503 |
+| signetai (TS) | 0.334 | 0.388 | **0.444** | 0.443 |
+| tokio (Rust) | 0.249 | 0.246 | 0.367 | **0.368** |
 
-46K symbols total. GraphIQ beats BM25 on 2 of 3 codebases. Tokio remains hard — generic function names (`run`, `handle`, `poll`) make structural signals unreliable.
+MRR across 3 codebases (v3 queries, disjoint from NDCG):
 
-Full results including NDCG@10, accuracy, and per-query breakdowns: [docs/benchmarks.md](docs/benchmarks.md)
+| Codebase | BM25 | GooV4 | GooV5 | **Geometric** |
+|---|---|---|---|---|
+| esbuild | 0.624 | 0.652 | 0.669 | **0.676** |
+| signetai | 0.843 | 0.810 | **0.924** | 0.924 |
+| tokio | 0.627 | 0.560 | **0.637** | 0.636 |
+
+Full results including per-category and per-query breakdowns: [docs/benchmarks.md](docs/benchmarks.md)
 
 ## Quick Start
 
@@ -66,9 +73,9 @@ brew install graphiq
 ```
 
 Installs four binaries:
-- `graphiq` — CLI (index, search, blast, status, reindex, demo, setup)
+- `graphiq` — CLI (index, search, blast, status, reindex, demo, setup, spectral)
 - `graphiq-mcp` — MCP server for LLM integration (stdio JSON-RPC)
-- `graphiq-bench` — NDCG/MRR benchmarking
+- `graphiq-bench` — NDCG/MRR benchmarking and parameter tuning
 - `graphiq-locomo` — LoCoMo-style benchmarking
 
 ### From source
@@ -119,6 +126,14 @@ graphiq blast RateLimiter
 graphiq blast RateLimiter --depth 5 --direction forward
 ```
 
+### `graphiq spectral`
+
+Compute the spectral embedding (Laplacian eigendecomposition + Chebyshev heat kernel infrastructure). Required for the Geometric search mode.
+
+```bash
+graphiq spectral --db .graphiq/graphiq.db
+```
+
 ### `graphiq demo`
 
 Generates a multi-language sample project (Rust, Java, Ruby), indexes it, and runs a side-by-side comparison of BM25 (FTS-only) vs GraphIQ (GooberV5). Shows where structural graph analysis promotes the right symbol above pure text search results.
@@ -146,6 +161,24 @@ Zero setup. No project needed.
 graphiq index /path/to/project     # index a project
 graphiq reindex /path/to/project   # reindex
 graphiq status                      # show index stats
+```
+
+### `graphiq-bench`
+
+Benchmark and tune retrieval methods.
+
+```bash
+# Run full benchmark suite
+graphiq-bench <db> <ndcg-queries.json> <mrr-queries.json>
+
+# Parameter tuning (outputs CSV)
+graphiq-bench tune <db> <ndcg-queries.json> <mrr-queries.json>
+
+# Latency profiling
+graphiq-bench profile <db> <mrr-queries.json>
+
+# Fuzz testing
+graphiq-bench fuzz <db>
 ```
 
 ## MCP Server
@@ -187,7 +220,7 @@ Manual configuration for any MCP client:
 
 ## Documentation
 
-- [docs/retrieval.md](docs/retrieval.md) — Retrieval pipeline, SEC, NG scoring, holographic name gate
+- [docs/retrieval.md](docs/retrieval.md) — Retrieval pipeline, SEC, NG scoring, holographic name gate, geometric search
 - [docs/benchmarks.md](docs/benchmarks.md) — Full benchmark results and methodology
 - [docs/research.md](docs/research.md) — Experimental history and lessons learned
 - [ROADMAP.md](docs/ROADMAP.md) — Current state and next steps
