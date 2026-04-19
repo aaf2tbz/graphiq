@@ -2766,6 +2766,7 @@ pub fn geometric_search(
     predictive: Option<&PredictiveModel>,
     fingerprints: Option<&[ChannelFingerprint]>,
     fp_id_to_idx: Option<&HashMap<i64, usize>>,
+    evidence_weight: f64,
 ) -> Vec<(i64, f64)> {
     let query_terms = build_query_terms(query, &idx.global_idf);
     if query_terms.is_empty() {
@@ -3043,7 +3044,7 @@ pub fn geometric_search(
                         }
                     });
 
-                    entry.walk_evidence = entry.walk_evidence.max(cov_score * normalized_heat * ricci_boost);
+                    entry.walk_evidence = entry.walk_evidence.max(cov_score * normalized_heat * ricci_boost * evidence_weight);
                     entry.surprise_boost = entry.surprise_boost.max(surprise_boost);
                     entry.seed_paths.insert(seed_indices[0]);
                 }

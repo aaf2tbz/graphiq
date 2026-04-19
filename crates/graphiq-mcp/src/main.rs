@@ -159,6 +159,13 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
         result.edges_inserted,
     );
     log_err(&msg);
+
+    let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
+    let manifest = graphiq_core::manifest::build_manifest_all_ready(&state.db);
+    if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
+        log_err(&format!("warning: failed to write manifest: {e}"));
+    }
+
     Ok(msg)
 }
 
@@ -522,6 +529,22 @@ fn tools_list() -> Value {
                     },
                     "required": ["question"]
                 }
+            },
+            {
+                "name": "doctor",
+                "description": "Diagnose index health — check which artifacts are fresh, stale, or missing, and explain why the search mode may have been downgraded.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
+            },
+            {
+                "name": "upgrade_index",
+                "description": "Rebuild stale or missing index artifacts (cruncher, spectral, predictive model, fingerprints) and update the manifest. Call this after significant code changes.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {}
+                }
             }
         ]
     })
@@ -608,6 +631,23 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
             };
             tool_interrogate(&s.db, arguments)
         }
+        "doctor" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_doctor(&s)
+        }
+        "upgrade_index" => {
+            let mut s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            match tool_upgrade_index(&mut s) {
+                Ok(msg) => tool_ok(msg),
+                Err(e) => tool_error(&e),
+            }
+        }
         _ => tool_error(&format!("unknown tool: {tool_name}")),
     }
 }
@@ -667,9 +707,10 @@ fn tool_search(
 
     let mut lines = Vec::new();
     lines.push(format!(
-        "Search: \"{}\" ({} results, mode: {})",
+        "Search: \"{}\" ({} results, family: {}, mode: {})",
         query,
         result.results.len(),
+        result.query_family,
         result.search_mode,
     ));
     lines.push(String::new());
@@ -889,8 +930,44 @@ fn tool_status(state: &ServerState) -> Value {
             artifacts.push(format!("predictive: {}", if state.predictive_model.is_some() { "ready" } else { "missing" }));
             artifacts.push(format!("fingerprints: {}", if !state.fingerprints.is_empty() { "ready" } else { "missing" }));
 
+            let mut manifest_section = String::new();
+            let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
+            match graphiq_core::manifest::read_manifest(db_dir) {
+                Ok(Some(manifest)) => {
+                    let fresh = graphiq_core::manifest::check_artifact_freshness(&state.db, &manifest);
+                    let manifest_mode = graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
+                    manifest_section = format!(
+                        "\n  Manifest (v{}, indexed {}):",
+                        manifest.schema_version, manifest.indexed_at
+                    );
+                    manifest_section.push_str(&format!(
+                        "\n    fts: {}  cruncher: {}  holo: {}  spectral: {}  predictive: {}  fingerprints: {}",
+                        fresh.fts, fresh.cruncher, fresh.holo, fresh.spectral, fresh.predictive, fresh.fingerprints,
+                    ));
+                    manifest_section.push_str(&format!(
+                        "\n    manifest mode: {}  live mode: {}",
+                        manifest_mode, mode,
+                    ));
+                    if manifest_mode != graphiq_core::search::SearchMode::Deformed {
+                        let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
+                        if !reasons.is_empty() {
+                            manifest_section.push_str("\n    downgrade reasons:");
+                            for r in &reasons {
+                                manifest_section.push_str(&format!("\n      - {}", r));
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    manifest_section = "\n  Manifest: not found (run upgrade-index to create)".into();
+                }
+                Err(e) => {
+                    manifest_section = format!("\n  Manifest: read error: {e}");
+                }
+            }
+
             let text = format!(
-                "GraphIQ v{}\n  Project:  {}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB: {}\n  Search mode: {}\n  Artifacts: {}",
+                "GraphIQ v{}\n  Project:  {}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB: {}\n  Search mode: {}\n  Artifacts: {}{}",
                 SERVER_VERSION,
                 state.project_root.display(),
                 stats.files,
@@ -900,6 +977,7 @@ fn tool_status(state: &ServerState) -> Value {
                 human_bytes(size),
                 mode,
                 artifacts.join(", "),
+                manifest_section,
             );
             tool_ok(text)
         }
@@ -1468,6 +1546,142 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     }
 
     tool_ok(lines.join("\n"))
+}
+
+fn tool_doctor(state: &ServerState) -> Value {
+    let stats = match state.db.stats() {
+        Ok(s) => s,
+        Err(e) => return tool_error(&format!("database error: {e}")),
+    };
+
+    let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
+
+    match graphiq_core::manifest::read_manifest(db_dir) {
+        Ok(Some(manifest)) => {
+            let fresh = graphiq_core::manifest::check_artifact_freshness(&state.db, &manifest);
+            let mode = graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
+
+            let mut lines = Vec::new();
+            lines.push(format!("GraphIQ Doctor"));
+            lines.push(format!("  Database: {} ({} files, {} symbols, {} edges)",
+                state.db_path.display(), stats.files, stats.symbols, stats.edges));
+            lines.push(String::new());
+            lines.push(format!("  Manifest v{}, indexed at {}", manifest.schema_version, manifest.indexed_at));
+            lines.push(String::new());
+            lines.push("  Artifact health:".into());
+
+            let all_artifacts: Vec<(&str, graphiq_core::manifest::ArtifactStatus)> = vec![
+                ("fts", fresh.fts),
+                ("cruncher", fresh.cruncher),
+                ("holo", fresh.holo),
+                ("spectral", fresh.spectral),
+                ("predictive", fresh.predictive),
+                ("fingerprints", fresh.fingerprints),
+            ];
+
+            let mut stale_count = 0;
+            let mut missing_count = 0;
+            for (name, status) in &all_artifacts {
+                let icon = match status {
+                    graphiq_core::manifest::ArtifactStatus::Ready => "OK",
+                    graphiq_core::manifest::ArtifactStatus::Stale => "STALE",
+                    graphiq_core::manifest::ArtifactStatus::Missing => "MISSING",
+                };
+                lines.push(format!("    {:14} {}", format!("{}:", name), icon));
+                match status {
+                    graphiq_core::manifest::ArtifactStatus::Stale => stale_count += 1,
+                    graphiq_core::manifest::ArtifactStatus::Missing => missing_count += 1,
+                    graphiq_core::manifest::ArtifactStatus::Ready => {}
+                }
+            }
+
+            lines.push(String::new());
+            lines.push(format!("  Active search mode: {}", mode));
+
+            if mode != graphiq_core::search::SearchMode::Deformed {
+                let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
+                if !reasons.is_empty() {
+                    lines.push("  Downgrade reasons:".into());
+                    for r in &reasons {
+                        lines.push(format!("    - {}", r));
+                    }
+                }
+            }
+
+            lines.push(String::new());
+            if stale_count > 0 || missing_count > 0 {
+                lines.push(format!("  DIAGNOSIS: {} stale, {} missing artifacts", stale_count, missing_count));
+                lines.push("  FIX: call upgrade_index tool".into());
+            } else {
+                lines.push("  DIAGNOSIS: all artifacts healthy".into());
+            }
+
+            tool_ok(lines.join("\n"))
+        }
+        Ok(None) => {
+            tool_ok(format!(
+                "GraphIQ Doctor\n  Database: {} ({} files, {} symbols, {} edges)\n\n  Manifest: MISSING\n  Run upgrade_index to create one.",
+                state.db_path.display(), stats.files, stats.symbols, stats.edges,
+            ))
+        }
+        Err(e) => tool_error(&format!("manifest read error: {e}")),
+    }
+}
+
+fn tool_upgrade_index(state: &mut ServerState) -> Result<String, String> {
+    let mut rebuilt = Vec::new();
+
+    if state.cruncher_index.is_none() {
+        if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
+            let hi = graphiq_core::cruncher::build_holo_index(&state.db, &ci);
+            state.cruncher_index = Some(ci);
+            state.holo_index = Some(hi);
+            rebuilt.push("cruncher + holo");
+            log_err("upgrade: cruncher + holo rebuilt");
+        }
+    }
+
+    if state.spectral_index.is_none() {
+        if let Ok(si) = graphiq_core::spectral::compute_spectral(&state.db) {
+            state.spectral_index = Some(si);
+            rebuilt.push("spectral");
+            log_err("upgrade: spectral rebuilt");
+        }
+    }
+
+    if state.predictive_model.is_none() {
+        if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&state.db) {
+            state.predictive_model = Some(pm);
+            rebuilt.push("predictive");
+            log_err("upgrade: predictive model rebuilt");
+        }
+    }
+
+    if state.fingerprints.is_empty() {
+        let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&state.db);
+        if !fps.is_empty() {
+            state.fingerprints = fps;
+            state.fp_id_to_idx = id_map;
+            rebuilt.push("fingerprints");
+            log_err(&format!("upgrade: fingerprints rebuilt ({} symbols)", state.fingerprints.len()));
+        }
+    }
+
+    let manifest = graphiq_core::manifest::build_manifest_all_ready(&state.db);
+    let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
+    if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
+        log_err(&format!("warning: failed to write manifest: {e}"));
+    }
+
+    if rebuilt.is_empty() {
+        Ok("All artifacts were already fresh. No rebuild needed.".into())
+    } else {
+        Ok(format!(
+            "Rebuilt: {}. Active mode: {}",
+            rebuilt.join(", "),
+            manifest.active_search_mode,
+        ))
+    }
 }
 
 fn parse_evidence_kind(meta: &serde_json::Value) -> &'static str {

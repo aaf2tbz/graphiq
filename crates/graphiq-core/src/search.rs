@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::blast;
 use crate::cache::HotCache;
@@ -9,6 +9,8 @@ use crate::fts::FtsSearch;
 use crate::graph::StructuralExpander;
 use crate::rerank::{Reranker, ScoredSymbol};
 use crate::spectral::{ChannelFingerprint, PredictiveModel, SpectralIndex};
+use crate::query_family::{self, QueryFamily, RetrievalPolicy};
+use crate::file_router;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
@@ -85,6 +87,7 @@ pub struct SearchResult {
     pub total_expanded: usize,
     pub from_cache: bool,
     pub search_mode: SearchMode,
+    pub query_family: QueryFamily,
 }
 
 pub struct SearchEngine<'a> {
@@ -161,6 +164,7 @@ impl<'a> SearchEngine<'a> {
 
     pub fn search(&self, query: &SearchQuery) -> SearchResult {
         let query_hash = HotCache::compute_query_hash(&query.query, query.top_k);
+        let family = query_family::classify_query_family(&query.query);
 
         if let Some(cached) = self.cache.get_results(query_hash) {
             return SearchResult {
@@ -170,22 +174,62 @@ impl<'a> SearchEngine<'a> {
                 total_expanded: 0,
                 from_cache: true,
                 search_mode: self.active_mode(),
+                query_family: family,
             };
         }
 
-        match self.active_mode() {
+        let policy = RetrievalPolicy::for_family(family);
+        let effective_mode = self.effective_mode(&policy);
+
+        if family == QueryFamily::FilePath {
+            return self.search_file_path(query, query_hash, family);
+        }
+
+        match effective_mode {
             SearchMode::Deformed => {
-                self.search_deformed(query, query_hash)
+                self.search_deformed(query, query_hash, &policy, family)
             }
             SearchMode::Geometric => {
-                self.search_geometric(query, query_hash)
+                self.search_geometric(query, query_hash, &policy, family)
             }
             SearchMode::GooberV5 => {
-                self.search_goober_v5(query, self.cruncher_index.unwrap(), self.holo_index.unwrap(), query_hash)
+                self.search_goober_v5(query, self.cruncher_index.unwrap(), self.holo_index.unwrap(), query_hash, family)
             }
             SearchMode::Fts => {
-                self.search_fts_fallback(query, query_hash)
+                self.search_fts_fallback(query, query_hash, family)
             }
+        }
+    }
+
+    fn effective_mode(&self, policy: &RetrievalPolicy) -> SearchMode {
+        let base = self.active_mode();
+        if !policy.allow_spectral && base == SearchMode::Deformed {
+            if self.cruncher_index.is_some() && self.holo_index.is_some() {
+                SearchMode::GooberV5
+            } else {
+                SearchMode::Fts
+            }
+        } else if !policy.allow_spectral && base == SearchMode::Geometric {
+            if self.cruncher_index.is_some() && self.holo_index.is_some() {
+                SearchMode::GooberV5
+            } else {
+                SearchMode::Fts
+            }
+        } else if base == SearchMode::Deformed
+            && (!policy.allow_predictive || !policy.allow_fingerprints)
+        {
+            if self.cruncher_index.is_some()
+                && self.holo_index.is_some()
+                && self.spectral_index.is_some()
+            {
+                SearchMode::Geometric
+            } else if self.cruncher_index.is_some() && self.holo_index.is_some() {
+                SearchMode::GooberV5
+            } else {
+                SearchMode::Fts
+            }
+        } else {
+            base
         }
     }
 
@@ -193,13 +237,24 @@ impl<'a> SearchEngine<'a> {
         &self,
         query: &SearchQuery,
         query_hash: u64,
+        policy: &RetrievalPolicy,
+        family: QueryFamily,
     ) -> SearchResult {
         let ci = self.cruncher_index.unwrap();
         let hi = self.holo_index.unwrap();
         let spec = self.spectral_index.unwrap();
-        let pm = self.predictive_model.unwrap();
-        let fps = self.fingerprints.unwrap();
-        let fp_map = self.fp_id_to_idx.unwrap();
+        let pm = match (policy.allow_predictive, self.predictive_model) {
+            (true, Some(m)) => Some(m),
+            _ => None,
+        };
+        let fps = match (policy.allow_fingerprints, self.fingerprints) {
+            (true, Some(f)) => Some(f),
+            _ => None,
+        };
+        let fp_map = match (policy.allow_fingerprints, self.fp_id_to_idx) {
+            (true, Some(m)) => Some(m),
+            _ => None,
+        };
 
         let fts = FtsSearch::new(self.db);
         let fts_results = fts.search(&query.query, Some(200));
@@ -217,18 +272,19 @@ impl<'a> SearchEngine<'a> {
             &bm25_seeds,
             spec,
             query.top_k,
-            1.0,
-            15,
-            5.0,
+            policy.bm25_lock_strength,
+            policy.spectral_expansion_seeds,
+            policy.spectral_heat_scale,
             50,
             false,
-            Some(pm),
-            Some(fps),
-            Some(fp_map),
+            pm,
+            fps,
+            fp_map,
+            policy.evidence_weight,
         );
 
         let file_paths = self.load_file_paths();
-        let results: Vec<ScoredSymbol> = goober_results
+        let mut results: Vec<ScoredSymbol> = goober_results
             .into_iter()
             .filter_map(|(id, score)| {
                 let sym = self.db.get_symbol(id).ok()??;
@@ -247,6 +303,8 @@ impl<'a> SearchEngine<'a> {
                 })
             })
             .collect();
+
+        Self::apply_diversity_boost(&mut results, policy.diversity_boost);
 
         for r in &results {
             self.cache.put_source(r.symbol.id, r.symbol.source.clone());
@@ -263,6 +321,7 @@ impl<'a> SearchEngine<'a> {
             total_expanded: 0,
             from_cache: false,
             search_mode: SearchMode::Deformed,
+            query_family: family,
         }
     }
 
@@ -270,6 +329,8 @@ impl<'a> SearchEngine<'a> {
         &self,
         query: &SearchQuery,
         query_hash: u64,
+        policy: &RetrievalPolicy,
+        family: QueryFamily,
     ) -> SearchResult {
         let ci = self.cruncher_index.unwrap();
         let hi = self.holo_index.unwrap();
@@ -291,21 +352,71 @@ impl<'a> SearchEngine<'a> {
             &bm25_seeds,
             spec,
             query.top_k,
-            1.0,
-            15,
-            5.0,
+            policy.bm25_lock_strength,
+            policy.spectral_expansion_seeds,
+            policy.spectral_heat_scale,
             50,
             false,
             None,
             None,
             None,
+            policy.evidence_weight,
         );
 
         let file_paths = self.load_file_paths();
-        let results: Vec<ScoredSymbol> = goober_results
+        let mut results: Vec<ScoredSymbol> = goober_results
             .into_iter()
             .filter_map(|(id, score)| {
                 let sym = self.db.get_symbol(id).ok()??;
+                let fp = file_paths.get(&sym.file_id).cloned();
+                if let Some(ref filter) = query.file_filter {
+                    if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
+                        return None;
+                    }
+                }
+                Some(ScoredSymbol {
+                    symbol: sym,
+                    score,
+                    breakdown: None,
+                    is_fts_hit: false,
+                    file_path: fp,
+                })
+            })
+            .collect();
+
+        Self::apply_diversity_boost(&mut results, policy.diversity_boost);
+
+        for r in &results {
+            self.cache.put_source(r.symbol.id, r.symbol.source.clone());
+        }
+
+        let blast_result = self.compute_blast(&results, query);
+
+        self.cache.put_results(query_hash, results.clone());
+
+        SearchResult {
+            results,
+            blast_radius: blast_result,
+            total_fts_candidates: total_fts,
+            total_expanded: 0,
+            from_cache: false,
+            search_mode: SearchMode::Geometric,
+            query_family: family,
+        }
+    }
+
+    fn search_file_path(
+        &self,
+        query: &SearchQuery,
+        query_hash: u64,
+        family: QueryFamily,
+    ) -> SearchResult {
+        let file_paths = self.load_file_paths();
+        let result = file_router::file_route_query(self.db, &query.query, query.top_k);
+
+        let results: Vec<ScoredSymbol> = result.ranked_symbols
+            .into_iter()
+            .filter_map(|(sym, score)| {
                 let fp = file_paths.get(&sym.file_id).cloned();
                 if let Some(ref filter) = query.file_filter {
                     if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
@@ -327,16 +438,16 @@ impl<'a> SearchEngine<'a> {
         }
 
         let blast_result = self.compute_blast(&results, query);
-
         self.cache.put_results(query_hash, results.clone());
 
         SearchResult {
             results,
             blast_radius: blast_result,
-            total_fts_candidates: total_fts,
+            total_fts_candidates: result.file_matches.len(),
             total_expanded: 0,
             from_cache: false,
-            search_mode: SearchMode::Geometric,
+            search_mode: SearchMode::Fts,
+            query_family: family,
         }
     }
 
@@ -346,6 +457,7 @@ impl<'a> SearchEngine<'a> {
         ci: &CruncherIndex,
         hi: &HoloIndex,
         query_hash: u64,
+        family: QueryFamily,
     ) -> SearchResult {
         let fts = FtsSearch::new(self.db);
         let fts_results = fts.search(&query.query, Some(200));
@@ -366,7 +478,7 @@ impl<'a> SearchEngine<'a> {
 
         let file_paths = self.load_file_paths();
 
-        let results: Vec<ScoredSymbol> = goober_results
+        let mut results: Vec<ScoredSymbol> = goober_results
             .into_iter()
             .filter_map(|(id, score)| {
                 let sym = self.db.get_symbol(id).ok()??;
@@ -386,6 +498,9 @@ impl<'a> SearchEngine<'a> {
             })
             .collect();
 
+        let policy = RetrievalPolicy::for_family(family);
+        Self::apply_diversity_boost(&mut results, policy.diversity_boost);
+
         for r in &results {
             self.cache.put_source(r.symbol.id, r.symbol.source.clone());
         }
@@ -401,6 +516,7 @@ impl<'a> SearchEngine<'a> {
             total_expanded: 0,
             from_cache: false,
             search_mode: SearchMode::GooberV5,
+            query_family: family,
         }
     }
 
@@ -408,6 +524,7 @@ impl<'a> SearchEngine<'a> {
         &self,
         query: &SearchQuery,
         query_hash: u64,
+        family: QueryFamily,
     ) -> SearchResult {
         let mut results: Vec<ScoredSymbol>;
         let mut total_fts: usize;
@@ -475,6 +592,7 @@ impl<'a> SearchEngine<'a> {
             total_expanded,
             from_cache: false,
             search_mode: SearchMode::Fts,
+            query_family: family,
         }
     }
 
@@ -516,6 +634,23 @@ impl<'a> SearchEngine<'a> {
             Some(r) => r.flatten().collect(),
             None => HashMap::new(),
         }
+    }
+
+    fn apply_diversity_boost(results: &mut Vec<ScoredSymbol>, diversity_boost: f64) {
+        if diversity_boost <= 0.0 || results.len() <= 1 {
+            return;
+        }
+        let mut seen_files: HashSet<i64> = HashSet::new();
+        for result in results.iter_mut() {
+            let file_id = result.symbol.file_id;
+            if seen_files.contains(&file_id) {
+                let penalty = 1.0 / (1.0 + diversity_boost);
+                result.score *= penalty;
+            } else {
+                seen_files.insert(file_id);
+            }
+        }
+        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     }
 }
 

@@ -113,19 +113,19 @@ fn run_searches(
     let goober_v5 = cruncher::goober_v5_search(query, ci, hi, &bm25, top_k);
 
     let geometric = if let Some(spec) = spectral {
-        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, false, None, None, None)
+        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, false, None, None, None, 1.0)
     } else {
         Vec::new()
     };
 
     let curved = if let Some(spec) = spectral {
-        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, true, None, None, None)
+        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, true, None, None, None, 1.0)
     } else {
         Vec::new()
     };
 
     let deformed = if let Some(spec) = spectral {
-        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, false, predictive.as_ref(), fingerprints.as_deref(), fp_id_to_idx.as_ref())
+        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, false, predictive.as_ref(), fingerprints.as_deref(), fp_id_to_idx.as_ref(), 1.0)
     } else {
         Vec::new()
     };
@@ -525,7 +525,7 @@ fn cmd_tune(args: &[String]) {
                             &fts.search(&q.query, Some(10)).into_iter()
                                 .map(|r| (r.symbol.id, r.bm25_score)).collect::<Vec<_>>(),
                             &spectral, 10, heat_t, cheb_order, walk_weight, heat_top_k, false,
-                            None, None, None,
+                            None, None, None, 1.0,
                         );
                         let rels: Vec<f64> = results.iter()
                             .map(|(id, _)| q.relevance_of(&sym_name(&db, *id)) as f64)
@@ -551,7 +551,7 @@ fn cmd_tune(args: &[String]) {
                             &fts.search(&q.query, Some(10)).into_iter()
                                 .map(|r| (r.symbol.id, r.bm25_score)).collect::<Vec<_>>(),
                             &spectral, 10, heat_t, cheb_order, walk_weight, heat_top_k, false,
-                            None, None, None,
+                            None, None, None, 1.0,
                         );
                         let found = results.iter().position(|(id, _)| {
                             let name = sym_name(&db, *id);

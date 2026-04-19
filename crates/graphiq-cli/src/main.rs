@@ -85,6 +85,14 @@ enum Commands {
         #[arg(long)]
         skip_index: bool,
     },
+    Doctor {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+    },
+    UpgradeIndex {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+    },
     #[cfg(feature = "embed")]
     EmbedTest {
         text: Option<String>,
@@ -127,6 +135,8 @@ fn main() {
             project,
             skip_index,
         } => cmd_setup(project.as_deref(), skip_index),
+        Commands::Doctor { db } => cmd_doctor(&db),
+        Commands::UpgradeIndex { db } => cmd_upgrade_index(&db),
         #[cfg(feature = "embed")]
         Commands::EmbedTest { text } => cmd_embed_test(text.as_deref().unwrap_or("hello world")),
     }
@@ -164,6 +174,12 @@ fn cmd_index(path: &std::path::Path, db_path: &std::path::Path, do_embed: bool) 
             eprintln!("error: {e}");
             std::process::exit(1);
         }
+    }
+
+    let manifest = graphiq_core::manifest::build_manifest_all_ready(&db);
+    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+    if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
+        eprintln!("  warning: failed to write manifest: {e}");
     }
 
     if do_embed {
@@ -207,6 +223,29 @@ fn cmd_search(
             std::process::exit(1);
         }
     };
+
+    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+    if let Ok(Some(manifest)) = graphiq_core::manifest::read_manifest(db_dir) {
+        let fresh = graphiq_core::manifest::check_artifact_freshness(&db, &manifest);
+        let stale: Vec<(&str, graphiq_core::manifest::ArtifactStatus)> = vec![
+            ("cruncher", fresh.cruncher),
+            ("holo", fresh.holo),
+            ("spectral", fresh.spectral),
+            ("predictive", fresh.predictive),
+            ("fingerprints", fresh.fingerprints),
+        ]
+        .into_iter()
+        .filter(|(_, s)| *s != graphiq_core::manifest::ArtifactStatus::Ready)
+        .collect();
+
+        if !stale.is_empty() && debug {
+            eprintln!("manifest: {} artifact(s) not ready:", stale.len());
+            for (name, status) in &stale {
+                eprintln!("  {}: {}", name, status);
+            }
+            eprintln!("  run `graphiq upgrade-index --db {}` to rebuild", db_path.display());
+        }
+    }
 
     let cache = graphiq_core::cache::HotCache::with_defaults();
     cache.prewarm(&db, 200);
@@ -252,6 +291,7 @@ fn cmd_search(
     let result = engine.search(&q);
 
     if debug {
+        eprintln!("query family: {}", result.query_family);
         eprintln!("search mode: {}", result.search_mode);
     }
 
@@ -374,6 +414,35 @@ fn cmd_status(db_path: &std::path::Path) {
                 "  DB Size:     {}",
                 human_bytes(std::fs::metadata(db_path).map(|m| m.len()).unwrap_or(0))
             );
+
+            let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+            if let Ok(Some(manifest)) = graphiq_core::manifest::read_manifest(db_dir) {
+                let fresh = graphiq_core::manifest::check_artifact_freshness(&gdb, &manifest);
+                println!();
+                println!("  Manifest (v{}):", manifest.schema_version);
+                println!("    Indexed at:  {}", manifest.indexed_at);
+                println!("    Artifacts:");
+                println!("      fts:          {}", fresh.fts);
+                println!("      cruncher:     {}", fresh.cruncher);
+                println!("      holo:         {}", fresh.holo);
+                println!("      spectral:     {}", fresh.spectral);
+                println!("      predictive:   {}", fresh.predictive);
+                println!("      fingerprints: {}", fresh.fingerprints);
+                let mode = graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
+                println!("    Active mode: {}", mode);
+                if mode != graphiq_core::search::SearchMode::Deformed {
+                    let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
+                    if !reasons.is_empty() {
+                        println!("    Downgrade reasons:");
+                        for r in &reasons {
+                            println!("      - {}", r);
+                        }
+                    }
+                }
+            } else {
+                println!();
+                println!("  Manifest: not found (run `graphiq index` or `graphiq upgrade-index`)");
+            }
         }
         Err(e) => {
             eprintln!("error opening database: {e}");
@@ -416,6 +485,12 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
             eprintln!("error: {e}");
             std::process::exit(1);
         }
+    }
+
+    let manifest = graphiq_core::manifest::build_manifest_all_ready(&db);
+    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+    if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
+        eprintln!("  warning: failed to write manifest: {e}");
     }
 }
 
@@ -638,6 +713,194 @@ fn cmd_roles(db_path: &std::path::Path, subsystem_filter: Option<usize>, top: us
             ext_out,
         );
     }
+}
+
+fn cmd_doctor(db_path: &std::path::Path) {
+    if !db_path.exists() {
+        eprintln!("database not found: {}", db_path.display());
+        eprintln!("run `graphiq index <path>` first");
+        std::process::exit(1);
+    }
+
+    let db = match graphiq_core::db::GraphDb::open(db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error opening database: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let stats = match db.stats() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error reading stats: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    println!("GraphIQ Doctor");
+    println!("  Database: {}", db_path.display());
+    println!("  Files: {}  Symbols: {}  Edges: {}", stats.files, stats.symbols, stats.edges);
+    println!();
+
+    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+
+    let manifest = match graphiq_core::manifest::read_manifest(db_dir) {
+        Ok(Some(m)) => m,
+        Ok(None) => {
+            println!("  Manifest: MISSING");
+            println!("    No manifest.json found. Run `graphiq upgrade-index` to create one.");
+            println!();
+
+            println!("  Artifact status (probing):");
+            let goober_ok = graphiq_core::cruncher::build_cruncher_index(&db).is_ok();
+            let spectral_ok = graphiq_core::spectral::compute_spectral(&db).is_ok();
+            let predictive_ok = graphiq_core::spectral::compute_predictive_model(&db).is_ok();
+            let (fps, _) = graphiq_core::spectral::compute_channel_fingerprints(&db);
+
+            println!("    fts:          ready ({} symbols in FTS)", stats.symbols);
+            println!("    cruncher:     {}", if goober_ok { "ready" } else { "missing" });
+            println!("    holo:         {}", if goober_ok { "ready" } else { "missing" });
+            println!("    spectral:     {}", if spectral_ok { "ready" } else { "missing" });
+            println!("    predictive:   {}", if predictive_ok { "ready" } else { "missing" });
+            println!("    fingerprints: {}", if !fps.is_empty() { "ready" } else { "missing" });
+            return;
+        }
+        Err(e) => {
+            eprintln!("  error reading manifest: {e}");
+            return;
+        }
+    };
+
+    let fresh = graphiq_core::manifest::check_artifact_freshness(&db, &manifest);
+    let mode = graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
+
+    println!("  Manifest (v{}, indexed at {})", manifest.schema_version, manifest.indexed_at);
+    println!();
+
+    println!("  Artifact health:");
+    let all_artifacts: Vec<(&str, graphiq_core::manifest::ArtifactStatus)> = vec![
+        ("fts", fresh.fts),
+        ("cruncher", fresh.cruncher),
+        ("holo", fresh.holo),
+        ("spectral", fresh.spectral),
+        ("predictive", fresh.predictive),
+        ("fingerprints", fresh.fingerprints),
+    ];
+
+    let mut stale_count = 0;
+    let mut missing_count = 0;
+    for (name, status) in &all_artifacts {
+        let icon = match status {
+            graphiq_core::manifest::ArtifactStatus::Ready => "OK",
+            graphiq_core::manifest::ArtifactStatus::Stale => "STALE",
+            graphiq_core::manifest::ArtifactStatus::Missing => "MISSING",
+        };
+        println!("    {:14} {}", format!("{}:", name), icon);
+        match status {
+            graphiq_core::manifest::ArtifactStatus::Stale => stale_count += 1,
+            graphiq_core::manifest::ArtifactStatus::Missing => missing_count += 1,
+            graphiq_core::manifest::ArtifactStatus::Ready => {}
+        }
+    }
+
+    println!();
+    println!("  Active search mode: {}", mode);
+
+    if mode != graphiq_core::search::SearchMode::Deformed {
+        let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
+        if !reasons.is_empty() {
+            println!("  Downgrade reasons:");
+            for r in &reasons {
+                println!("    - {}", r);
+            }
+        }
+    }
+
+    println!();
+    if stale_count > 0 || missing_count > 0 {
+        println!("  DIAGNOSIS: {} stale, {} missing artifacts", stale_count, missing_count);
+        println!("  FIX: run `graphiq upgrade-index --db {}`", db_path.display());
+    } else {
+        println!("  DIAGNOSIS: all artifacts healthy");
+    }
+}
+
+fn cmd_upgrade_index(db_path: &std::path::Path) {
+    if !db_path.exists() {
+        eprintln!("database not found: {}", db_path.display());
+        eprintln!("run `graphiq index <path>` first");
+        std::process::exit(1);
+    }
+
+    let db = match graphiq_core::db::GraphDb::open(db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error opening database: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+    let existing = graphiq_core::manifest::read_manifest(db_dir).ok().flatten();
+    let needs_rebuild = existing.as_ref().map_or(true, |m| {
+        let fresh = graphiq_core::manifest::check_artifact_freshness(&db, m);
+        let all: Vec<_> = vec![
+            fresh.cruncher, fresh.holo, fresh.spectral, fresh.predictive, fresh.fingerprints,
+        ];
+        all.iter().any(|s| *s != graphiq_core::manifest::ArtifactStatus::Ready)
+    });
+
+    if !needs_rebuild {
+        if let Some(m) = &existing {
+            let fresh = graphiq_core::manifest::check_artifact_freshness(&db, m);
+            if fresh.cruncher == graphiq_core::manifest::ArtifactStatus::Ready
+                && fresh.spectral == graphiq_core::manifest::ArtifactStatus::Ready
+                && fresh.predictive == graphiq_core::manifest::ArtifactStatus::Ready
+                && fresh.fingerprints == graphiq_core::manifest::ArtifactStatus::Ready
+            {
+                println!("All artifacts are fresh. No rebuild needed.");
+                return;
+            }
+        }
+    }
+
+    println!("Rebuilding stale/missing artifacts...");
+
+    let mut rebuilt = Vec::new();
+
+    if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&db) {
+        let _hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
+        rebuilt.push("cruncher + holo");
+    } else {
+        eprintln!("  warning: cruncher build failed");
+    }
+
+    if let Ok(_si) = graphiq_core::spectral::compute_spectral(&db) {
+        rebuilt.push("spectral");
+    } else {
+        eprintln!("  warning: spectral build failed");
+    }
+
+    if let Ok(_pm) = graphiq_core::spectral::compute_predictive_model(&db) {
+        rebuilt.push("predictive");
+    } else {
+        eprintln!("  warning: predictive model build failed");
+    }
+
+    let (fps, _) = graphiq_core::spectral::compute_channel_fingerprints(&db);
+    if !fps.is_empty() {
+        rebuilt.push("fingerprints");
+    }
+
+    let manifest = graphiq_core::manifest::build_manifest_all_ready(&db);
+    if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
+        eprintln!("  warning: failed to write manifest: {e}");
+    }
+
+    println!("  rebuilt: {}", rebuilt.join(", "));
+    println!("  active mode: {}", manifest.active_search_mode);
+    println!("Done.");
 }
 
 fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
