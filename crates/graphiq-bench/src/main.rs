@@ -3,7 +3,7 @@ use std::path::Path;
 use graphiq_core::cruncher;
 use graphiq_core::db::GraphDb;
 use graphiq_core::fts::FtsSearch;
-use graphiq_core::lsa;
+use graphiq_core::spectral::SpectralIndex;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct BenchQuery {
@@ -84,14 +84,18 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+const N_METHODS: usize = 8;
+const METHOD_NAMES: [&str; N_METHODS] = ["BM25", "CRv1", "CRv2", "Goober", "GooV3", "GooV4", "GooV5", "Geometric"];
+
 fn run_searches(
     db: &GraphDb,
     fts: &FtsSearch,
     ci: &cruncher::CruncherIndex,
     hi: &cruncher::HoloIndex,
+    spectral: &Option<SpectralIndex>,
     query: &str,
     top_k: usize,
-) -> [Vec<(i64, f64)>; 9] {
+) -> [Vec<(i64, f64)>; N_METHODS] {
     let bm25: Vec<(i64, f64)> = fts
         .search(query, Some(top_k))
         .into_iter()
@@ -104,10 +108,14 @@ fn run_searches(
     let goober_v3 = cruncher::goober_v3_search(query, ci, &bm25, top_k);
     let goober_v4 = cruncher::goober_v4_search(query, ci, &bm25, top_k);
     let goober_v5 = cruncher::goober_v5_search(query, ci, hi, &bm25, top_k);
-    let goober_v5_lsa = lsa::lsa_rerank(query, &goober_v5, db, 0.15);
-    let goober_v5_lsa_promo = lsa::lsa_rerank_promote(query, &goober_v5, db, 0.7, 0.08);
 
-    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5, goober_v5_lsa, goober_v5_lsa_promo]
+    let geometric = if let Some(spec) = spectral {
+        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50)
+    } else {
+        Vec::new()
+    };
+
+    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5, geometric]
 }
 
 fn run_ndcg_benchmark(
@@ -115,22 +123,22 @@ fn run_ndcg_benchmark(
     fts: &FtsSearch,
     ci: &cruncher::CruncherIndex,
     hi: &cruncher::HoloIndex,
+    spectral: &Option<SpectralIndex>,
     queries: &[BenchQuery],
 ) {
-    println!("\n{}", "=".repeat(60));
+    println!("\n{}", "=".repeat(76));
     println!("  NDCG@10 BENCHMARK  ({} queries)", queries.len());
-    println!("{}", "=".repeat(60));
+    println!("{}", "=".repeat(76));
 
-    let methods = ["BM25", "CR v1", "CR v2", "Goober", "GooberV3", "GooberV4", "GooberV5", "V5+LSA", "V5+Promo"];
     let n = queries.len();
-    let mut all_ndcg: [Vec<f64>; 9] = Default::default();
-    let mut all_hits: [Vec<[bool; 5]>; 9] = Default::default();
-    let mut cat_data: std::collections::HashMap<String, [Vec<f64>; 9]> =
+    let mut all_ndcg: [Vec<f64>; N_METHODS] = Default::default();
+    let mut all_hits: [Vec<[bool; 5]>; N_METHODS] = Default::default();
+    let mut cat_data: std::collections::HashMap<String, [Vec<f64>; N_METHODS]> =
         std::collections::HashMap::new();
 
     for q in queries {
         let ideal = compute_ideal_rels(db, q);
-        let results = run_searches(db, fts, ci, hi, &q.query, 10);
+        let results = run_searches(db, fts, ci, hi, spectral, &q.query, 10);
 
         for (mi, hits) in results.iter().enumerate() {
             let rels: Vec<f64> = hits
@@ -161,7 +169,7 @@ fn run_ndcg_benchmark(
         "Method", "NDCG@10", "H@1", "H@3", "H@5", "H@10"
     );
     println!("{}", "-".repeat(50));
-    for (mi, name) in methods.iter().enumerate() {
+    for (mi, name) in METHOD_NAMES.iter().enumerate() {
         let avg: f64 = all_ndcg[mi].iter().sum::<f64>() / n as f64;
         let h1 = all_hits[mi].iter().filter(|h| h[0]).count();
         let h3 = all_hits[mi].iter().filter(|h| h[1]).count();
@@ -176,33 +184,33 @@ fn run_ndcg_benchmark(
     println!("\n--- By Category ---\n");
     let mut cats: Vec<&String> = cat_data.keys().collect();
     cats.sort();
-    println!(
-        "{:<20} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8} {:>8}",
-        "Category", "BM25", "CR v1", "CR v2", "Goober", "GooberV3", "GooberV4", "GooberV5", "V5+LSA", "V5+Promo"
+    let header = format!(
+        "{:<20} {}",
+        "Category",
+        METHOD_NAMES.iter().map(|n| format!("{:>8}", n)).collect::<Vec<_>>().join("")
     );
-    println!("{}", "-".repeat(116));
+    println!("{}", header);
+    println!("{}", "-".repeat(header.len()));
     for cat in &cats {
         let d = &cat_data[*cat];
         let avg: Vec<f64> = d.iter().map(|v| v.iter().sum::<f64>() / v.len() as f64).collect();
-        println!(
-            "{:<20} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3} {:>8.3}",
-            cat, avg[0], avg[1], avg[2], avg[3], avg[4], avg[5], avg[6], avg[7], avg[8]
-        );
+        let row: Vec<String> = avg.iter().map(|v| format!("{:>8.3}", v)).collect();
+        println!("{:<20} {}", cat, row.join(""));
     }
 
     println!("\n--- Per-Query ---\n");
-    println!(
-        "{:<30} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7} {:>7}",
-        "Query", "BM25", "CR v1", "CR v2", "Goober", "GooV3", "GooV4", "GooV5", "V5+LSA", "V5+Pro"
+    let q_header = format!(
+        "{:<30} {}",
+        "Query",
+        METHOD_NAMES.iter().map(|n| format!("{:>7}", n)).collect::<Vec<_>>().join("")
     );
-    println!("{}", "-".repeat(108));
+    println!("{}", q_header);
+    println!("{}", "-".repeat(q_header.len()));
     for (i, q) in queries.iter().enumerate() {
-        println!(
-            "{:<30} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3} {:>7.3}",
-            truncate(&q.query, 30),
-            all_ndcg[0][i], all_ndcg[1][i], all_ndcg[2][i], all_ndcg[3][i],
-            all_ndcg[4][i], all_ndcg[5][i], all_ndcg[6][i], all_ndcg[7][i], all_ndcg[8][i]
-        );
+        let vals: Vec<String> = (0..N_METHODS)
+            .map(|mi| format!("{:>7.3}", all_ndcg[mi][i]))
+            .collect();
+        println!("{:<30} {}", truncate(&q.query, 30), vals.join(""));
     }
 }
 
@@ -211,13 +219,13 @@ fn run_mrr_benchmark(
     fts: &FtsSearch,
     ci: &cruncher::CruncherIndex,
     hi: &cruncher::HoloIndex,
+    spectral: &Option<SpectralIndex>,
     queries: &[BenchQuery],
 ) {
-    println!("\n{}", "=".repeat(60));
+    println!("\n{}", "=".repeat(76));
     println!("  MRR BENCHMARK  ({} queries)", queries.len());
-    println!("{}", "=".repeat(60));
+    println!("{}", "=".repeat(76));
 
-    let methods = ["BM25", "CR v1", "CR v2", "Goober", "GooberV3", "GooberV4", "GooberV5", "V5+LSA", "V5+Promo"];
     let n = queries.len();
 
     struct MrrResult {
@@ -227,10 +235,10 @@ fn run_mrr_benchmark(
         found_rank: Option<usize>,
     }
 
-    let mut all: [Vec<MrrResult>; 9] = Default::default();
+    let mut all: [Vec<MrrResult>; N_METHODS] = Default::default();
 
     for q in queries {
-        let results = run_searches(db, fts, ci, hi, &q.query, 10);
+        let results = run_searches(db, fts, ci, hi, spectral, &q.query, 10);
 
         for (mi, hits) in results.iter().enumerate() {
             let expected = q.expected_symbol.as_deref().unwrap_or("");
@@ -264,7 +272,7 @@ fn run_mrr_benchmark(
         "Method", "MRR", "Accuracy", "H@1", "H@3", "H@5", "H@10", "Miss"
     );
     println!("{}", "-".repeat(68));
-    for (mi, name) in methods.iter().enumerate() {
+    for (mi, name) in METHOD_NAMES.iter().enumerate() {
         let mrr: f64 = all[mi].iter().map(|r| r.rr).sum::<f64>() / n as f64;
         let acc: f64 = all[mi].iter().filter(|r| r.accuracy).count() as f64 / n as f64;
         let h1 = all[mi].iter().filter(|r| r.hit_at[0]).count();
@@ -279,37 +287,36 @@ fn run_mrr_benchmark(
     }
 
     println!("\n--- Per-Query ---\n");
-    println!(
-        "{:<28} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
-        "Query", "B_rr", "1_rr", "2_rr", "G_rr", "V3_rr", "V4_rr", "V5_rr", "LSA_rr", "Pro_rr"
+    let q_header = format!(
+        "{:<28} {}",
+        "Query",
+        METHOD_NAMES.iter().map(|n| format!("{:>6}", n)).collect::<Vec<_>>().join("")
     );
-    println!("{}", "-".repeat(90));
+    println!("{}", q_header);
+    println!("{}", "-".repeat(q_header.len()));
     for (i, q) in queries.iter().enumerate() {
-        println!(
-            "{:<28} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3}",
-            truncate(&q.query, 28),
-            all[0][i].rr, all[1][i].rr, all[2][i].rr, all[3][i].rr,
-            all[4][i].rr, all[5][i].rr, all[6][i].rr, all[7][i].rr, all[8][i].rr
-        );
+        let vals: Vec<String> = (0..N_METHODS)
+            .map(|mi| format!("{:>6.3}", all[mi][i].rr))
+            .collect();
+        println!("{:<28} {}", truncate(&q.query, 28), vals.join(""));
     }
 
     println!("\n--- Per-Query Ranks ---\n");
-    println!(
-        "{:<28} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
-        "Query", "B_rnk", "1_rnk", "2_rnk", "G_rnk", "V3_rnk", "V4_rnk", "V5_rnk", "LSA_rnk", "Pro_rnk"
+    let r_header = format!(
+        "{:<28} {}",
+        "Query",
+        METHOD_NAMES.iter().map(|n| format!("{:>6}", n)).collect::<Vec<_>>().join("")
     );
-    println!("{}", "-".repeat(90));
+    println!("{}", r_header);
+    println!("{}", "-".repeat(r_header.len()));
     for (i, q) in queries.iter().enumerate() {
         let fmt = |r: Option<usize>| -> String {
             r.map(|v| format!("{}", v + 1)).unwrap_or_else(|| "MISS".into())
         };
-        println!(
-            "{:<28} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
-            truncate(&q.query, 28),
-            fmt(all[0][i].found_rank), fmt(all[1][i].found_rank), fmt(all[2][i].found_rank),
-            fmt(all[3][i].found_rank), fmt(all[4][i].found_rank), fmt(all[5][i].found_rank),
-            fmt(all[6][i].found_rank), fmt(all[7][i].found_rank), fmt(all[8][i].found_rank)
-        );
+        let vals: Vec<String> = (0..N_METHODS)
+            .map(|mi| format!("{:>6}", fmt(all[mi][i].found_rank)))
+            .collect();
+        println!("{:<28} {}", truncate(&q.query, 28), vals.join(""));
     }
 }
 
@@ -317,9 +324,15 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("usage: graphiq-bench <db-path> <ndcg-queries.json> <mrr-queries.json>");
+        eprintln!("       graphiq-bench tune <db-path> <ndcg-queries.json> <mrr-queries.json>");
         eprintln!("       graphiq-bench profile <db-path> <mrr-queries.json>");
         eprintln!("       graphiq-bench fuzz <db-path>");
         std::process::exit(1);
+    }
+
+    if args[1] == "tune" {
+        cmd_tune(&args);
+        return;
     }
 
     if args[1] == "profile" {
@@ -361,6 +374,15 @@ fn main() {
 
     let hi = cruncher::build_holo_index(&db, &ci);
 
+    eprintln!("Computing spectral index...");
+    let spectral = match graphiq_core::spectral::compute_spectral(&db) {
+        Ok(idx) => Some(idx),
+        Err(e) => {
+            eprintln!("  spectral computation failed: {e}, skipping Geometric");
+            None
+        }
+    };
+
     let ndcg_file = args.get(2).map(|s| s.as_str());
     let mrr_file = args.get(3).map(|s| s.as_str());
 
@@ -373,7 +395,7 @@ fn main() {
             eprintln!("error parsing NDCG query file: {e}");
             std::process::exit(1);
         });
-        run_ndcg_benchmark(&db, &fts, &ci, &hi, &queries);
+        run_ndcg_benchmark(&db, &fts, &ci, &hi, &spectral, &queries);
     }
 
     if let Some(file) = mrr_file {
@@ -385,12 +407,134 @@ fn main() {
             eprintln!("error parsing MRR query file: {e}");
             std::process::exit(1);
         });
-        run_mrr_benchmark(&db, &fts, &ci, &hi, &queries);
+        run_mrr_benchmark(&db, &fts, &ci, &hi, &spectral, &queries);
     }
 
     if ndcg_file.is_none() && mrr_file.is_none() {
         eprintln!("no query files provided. usage: graphiq-bench <db> <ndcg.json> <mrr.json>");
     }
+}
+
+fn cmd_tune(args: &[String]) {
+    if args.len() < 3 {
+        eprintln!("usage: graphiq-bench tune <db-path> <ndcg-queries.json> [mrr-queries.json]");
+        std::process::exit(1);
+    }
+
+    let db_path = &args[2];
+    let ndcg_file = args.get(3).map(|s| s.as_str());
+    let mrr_file = args.get(4).map(|s| s.as_str());
+
+    let db = match GraphDb::open(Path::new(db_path)) {
+        Ok(d) => d,
+        Err(e) => { eprintln!("error: {e}"); std::process::exit(1); }
+    };
+
+    let fts = FtsSearch::new(&db);
+    let ci = match cruncher::build_cruncher_index(&db) {
+        Ok(idx) => idx,
+        Err(e) => { eprintln!("cruncher build failed: {e}"); std::process::exit(1); }
+    };
+    let hi = cruncher::build_holo_index(&db, &ci);
+
+    eprintln!("Computing spectral index...");
+    let spectral = match graphiq_core::spectral::compute_spectral(&db) {
+        Ok(idx) => idx,
+        Err(e) => { eprintln!("spectral failed: {e}"); std::process::exit(1); }
+    };
+
+    let ndcg_queries: Vec<BenchQuery> = if let Some(file) = ndcg_file {
+        let content = std::fs::read_to_string(file).unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1); });
+        serde_json::from_str(&content).unwrap_or_else(|e| { eprintln!("parse error: {e}"); std::process::exit(1); })
+    } else {
+        Vec::new()
+    };
+
+    let mrr_queries: Vec<BenchQuery> = if let Some(file) = mrr_file {
+        let content = std::fs::read_to_string(file).unwrap_or_else(|e| { eprintln!("error: {e}"); std::process::exit(1); });
+        serde_json::from_str(&content).unwrap_or_else(|e| { eprintln!("parse error: {e}"); std::process::exit(1); })
+    } else {
+        Vec::new()
+    };
+
+    let heat_ts: Vec<f64> = vec![0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0];
+    let cheb_orders: Vec<usize> = vec![10, 15, 20, 30];
+    let walk_weights: Vec<f64> = vec![1.0, 2.0, 3.0, 4.0, 5.0, 7.0, 10.0];
+    let heat_top_ks: Vec<usize> = vec![50, 100, 200];
+
+    println!("heat_t,cheb_order,walk_weight,heat_top_k,ndcg,mrr,h1,h3,h5,h10,mrr_acc,mrr_miss");
+
+    let total = heat_ts.len() * cheb_orders.len() * walk_weights.len() * heat_top_ks.len();
+    let mut count = 0usize;
+
+    for &heat_t in &heat_ts {
+        for &cheb_order in &cheb_orders {
+            for &walk_weight in &walk_weights {
+                for &heat_top_k in &heat_top_ks {
+                    count += 1;
+                    eprint!("\r{}/{}", count, total);
+
+                    let mut ndcg_sum = 0.0f64;
+                    let mut ndcg_n = 0usize;
+                    let mut hits: [usize; 5] = [0; 5];
+
+                    for q in &ndcg_queries {
+                        let ideal = compute_ideal_rels(&db, q);
+                        let results = cruncher::geometric_search(
+                            &q.query, &ci, &hi,
+                            &fts.search(&q.query, Some(10)).into_iter()
+                                .map(|r| (r.symbol.id, r.bm25_score)).collect::<Vec<_>>(),
+                            &spectral, 10, heat_t, cheb_order, walk_weight, heat_top_k,
+                        );
+                        let rels: Vec<f64> = results.iter()
+                            .map(|(id, _)| q.relevance_of(&sym_name(&db, *id)) as f64)
+                            .collect();
+                        ndcg_sum += ndcg_at_k(&rels, &ideal, 10);
+                        ndcg_n += 1;
+                        let first_rel = results.iter().position(|(id, _)| q.relevance_of(&sym_name(&db, *id)) >= 2);
+                        if let Some(r) = first_rel { if r < 1 { hits[0] += 1; } if r < 3 { hits[1] += 1; } if r < 5 { hits[2] += 1; } if r < 10 { hits[3] += 1; } }
+                        if first_rel.is_some() { hits[4] += 1; }
+                    }
+
+                    let ndcg = if ndcg_n > 0 { ndcg_sum / ndcg_n as f64 } else { 0.0 };
+
+                    let mut mrr_sum = 0.0f64;
+                    let mut mrr_n = 0usize;
+                    let mut mrr_acc = 0usize;
+                    let mut mrr_miss = 0usize;
+
+                    for q in &mrr_queries {
+                        let expected = q.expected_symbol.as_deref().unwrap_or("");
+                        let results = cruncher::geometric_search(
+                            &q.query, &ci, &hi,
+                            &fts.search(&q.query, Some(10)).into_iter()
+                                .map(|r| (r.symbol.id, r.bm25_score)).collect::<Vec<_>>(),
+                            &spectral, 10, heat_t, cheb_order, walk_weight, heat_top_k,
+                        );
+                        let found = results.iter().position(|(id, _)| {
+                            let name = sym_name(&db, *id);
+                            name == expected || expected.contains(&name) || name.contains(expected)
+                        });
+                        mrr_sum += found.map(|r| 1.0 / (r + 1) as f64).unwrap_or(0.0);
+                        mrr_n += 1;
+                        if found == Some(0) { mrr_acc += 1; }
+                        if found.is_none() { mrr_miss += 1; }
+                    }
+
+                    let mrr = if mrr_n > 0 { mrr_sum / mrr_n as f64 } else { 0.0 };
+
+                    println!("{},{},{},{},{:.4},{:.4},{},{},{},{},{:.3},{}",
+                        heat_t, cheb_order, walk_weight, heat_top_k,
+                        ndcg, mrr,
+                        hits[0], hits[1], hits[2], hits[3],
+                        if mrr_n > 0 { mrr_acc as f64 / mrr_n as f64 } else { 0.0 },
+                        mrr_miss,
+                    );
+                }
+            }
+        }
+    }
+    eprintln!("\nDone.");
 }
 
 fn cmd_profile(args: &[String]) {
@@ -420,7 +564,8 @@ fn cmd_profile(args: &[String]) {
         eprintln!("error reading query file: {e}"); std::process::exit(1);
     });
     let queries: Vec<BenchQuery> = serde_json::from_str(&content).unwrap_or_else(|e| {
-        eprintln!("error parsing query file: {e}"); std::process::exit(1);
+        eprintln!("error parsing query file: {e}");
+        std::process::exit(1);
     });
 
     let n_runs = 10;
@@ -515,7 +660,6 @@ fn cmd_fuzz(args: &[String]) {
     let fuzz_queries: Vec<&str> = vec![
         "", " ", "  ", "\t", "\n",
         "a", "z", "0", ".", "-", "_",
-        "日本語", "парсить", "解析設定", "🦀",
         "parse(config)", "a && b || c", "foo.bar.baz",
         "rate-limit", "parse+config", "parse*config",
         "parse[0]", "{json: true}", "<html>",

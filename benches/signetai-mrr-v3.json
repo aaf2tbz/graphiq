@@ -1,0 +1,23 @@
+[
+  {"query": "normalizeMcpConfig", "expected_symbol": "normalizeMcpConfig", "category": "exact"},
+  {"query": "evictOldestKey", "expected_symbol": "evictOldestKey", "category": "exact"},
+  {"query": "parseClaudeMdRoutes", "expected_symbol": "parseClaudeMdRoutes", "category": "exact"},
+  {"query": "canonical_provider", "expected_symbol": "canonical_provider", "category": "exact"},
+  {"query": "audit_fs_timestamp", "expected_symbol": "audit_fs_timestamp", "category": "exact"},
+  {"query": "token_count", "expected_symbol": "token_count", "category": "exact"},
+  {"query": "flipNested", "expected_symbol": "flipNested", "category": "exact"},
+  {"query": "listCargoFiles", "expected_symbol": "listCargoFiles", "category": "exact"},
+  {"query": "parseTargetType", "expected_symbol": "parseTargetType", "category": "exact"},
+  {"query": "entityRadius", "expected_symbol": "entityRadius", "category": "exact"},
+
+  {"query": "normalize an MCP server configuration", "expected_symbol": "normalizeMcpConfig", "category": "nl"},
+  {"query": "evict the oldest key from a cache", "expected_symbol": "evictOldestKey", "category": "nl"},
+  {"query": "parse routing rules from a claude md file", "expected_symbol": "parseClaudeMdRoutes", "category": "nl"},
+  {"query": "find the canonical provider for a model", "expected_symbol": "canonical_provider", "category": "nl"},
+  {"query": "audit filesystem timestamps for staleness", "expected_symbol": "audit_fs_timestamp", "category": "nl"},
+  {"query": "count tokens in a text string", "expected_symbol": "token_count", "category": "nl"},
+  {"query": "flip a nested data structure inside out", "expected_symbol": "flipNested", "category": "nl"},
+  {"query": "list all cargo.toml files in a workspace", "expected_symbol": "listCargoFiles", "category": "nl"},
+  {"query": "parse the target type from a config string", "expected_symbol": "parseTargetType", "category": "nl"},
+  {"query": "compute the radius of an entity in the knowledge graph", "expected_symbol": "entityRadius", "category": "nl"}
+]

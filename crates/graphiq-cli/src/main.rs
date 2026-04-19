@@ -60,6 +60,10 @@ enum Commands {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
+    Spectral {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+    },
     Subsystems {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
@@ -115,6 +119,7 @@ fn main() {
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
         Commands::Lsa { db } => cmd_lsa(&db),
+        Commands::Spectral { db } => cmd_spectral(&db),
         Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
         Commands::Roles { db, subsystem, top } => cmd_roles(&db, subsystem, top),
         Commands::Demo => cmd_demo(),
@@ -439,6 +444,46 @@ fn cmd_lsa(db_path: &std::path::Path) {
     }
 
     eprintln!("LSA done.");
+}
+
+fn cmd_spectral(db_path: &std::path::Path) {
+    if !db_path.exists() {
+        eprintln!("database not found: {}", db_path.display());
+        eprintln!("run `graphiq index` first to create the database");
+        std::process::exit(1);
+    }
+
+    let db = match graphiq_core::db::GraphDb::open(db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error opening database: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("Computing spectral embedding (k={})...", graphiq_core::spectral::SPECTRAL_DIM);
+    let index = match graphiq_core::spectral::compute_spectral(&db) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("spectral computation failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    eprintln!("Storing spectral coords and eigenvalues...");
+    match graphiq_core::spectral::store_spectral_coords(
+        &db,
+        &index.symbol_ids,
+        &index.symbol_coords,
+        &index.eigenvalues,
+        index.lambda_max,
+    ) {
+        Ok(n) => eprintln!("  {} symbol coords stored", n),
+        Err(e) => eprintln!("  store failed: {e}"),
+    }
+
+    eprintln!("  {} eigenvectors, lambda_max = {:.6}", index.eigenvalues.len(), index.lambda_max);
+    eprintln!("Spectral done.");
 }
 
 fn cmd_subsystems(db_path: &std::path::Path, compute_roles: bool) {

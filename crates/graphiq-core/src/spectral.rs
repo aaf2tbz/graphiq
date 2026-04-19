@@ -5,12 +5,15 @@ use rusqlite::params;
 use crate::db::GraphDb;
 use crate::tokenize::decompose_identifier;
 
-const SPECTRAL_DIM: usize = 6;
+pub const SPECTRAL_DIM: usize = 50;
 
 pub struct SpectralIndex {
     pub symbol_ids: Vec<i64>,
     pub symbol_coords: Vec<Vec<f64>>,
     pub sym_id_to_idx: HashMap<i64, usize>,
+    pub eigenvalues: Vec<f64>,
+    pub lambda_max: f64,
+    pub graph: SparseGraph,
 }
 
 struct SparseSym {
@@ -50,6 +53,38 @@ impl SparseSym {
             y[j] += w * x[i];
         }
         y
+    }
+}
+
+pub struct SparseGraph {
+    pub n: usize,
+    pub adj: SparseSym,
+    pub inv_sqrt_d: Vec<f64>,
+}
+
+impl SparseGraph {
+    pub fn laplacian_matvec(&self, x: &[f64]) -> Vec<f64> {
+        let wv = self.adj.matvec(x);
+        let mut lv = vec![0.0; self.n];
+        for i in 0..self.n {
+            lv[i] = x[i] - self.inv_sqrt_d[i] * wv[i] * self.inv_sqrt_d[i];
+        }
+        lv
+    }
+
+    pub fn rescaled_laplacian_matvec(&self, x: &[f64]) -> Vec<f64> {
+        let lx = self.laplacian_matvec(x);
+        let scale = 2.0 / self.lambda_max();
+        let mut y = vec![0.0; self.n];
+        for i in 0..self.n {
+            y[i] = scale * lx[i] - x[i];
+        }
+        y
+    }
+
+    pub fn lambda_max(&self) -> f64 {
+        let deg = self.adj.degree();
+        deg.into_iter().fold(0.0f64, f64::max).max(1.0)
     }
 }
 
@@ -186,23 +221,28 @@ pub fn compute_spectral(db: &GraphDb) -> Result<SpectralIndex, String> {
     let n = adj.n;
     let k = SPECTRAL_DIM.min(n.saturating_sub(1));
 
-    eprintln!("  Lanczos eigensolver: k={}, n={}...", k, n);
-
     let degree = adj.degree();
     let mut inv_sqrt_d = vec![0.0; n];
-    let mut sqrt_d = vec![0.0; n];
     for i in 0..n {
         if degree[i] > 1e-10 {
             inv_sqrt_d[i] = 1.0 / degree[i].sqrt();
-            sqrt_d[i] = degree[i].sqrt();
         }
     }
 
+    let graph = SparseGraph {
+        n,
+        adj,
+        inv_sqrt_d,
+    };
+
+    let graph_adj = &graph.adj;
+    let graph_inv_sqrt_d = &graph.inv_sqrt_d;
+
     let lap_vec = |v: &[f64]| -> Vec<f64> {
-        let wv = adj.matvec(v);
+        let wv = graph_adj.matvec(v);
         let mut lv = vec![0.0; n];
         for i in 0..n {
-            lv[i] = v[i] - inv_sqrt_d[i] * wv[i] * inv_sqrt_d[i];
+            lv[i] = v[i] - graph_inv_sqrt_d[i] * wv[i] * graph_inv_sqrt_d[i];
         }
         lv
     };
@@ -279,13 +319,13 @@ pub fn compute_spectral(db: &GraphDb) -> Result<SpectralIndex, String> {
     };
 
     let mut eigenvectors: Vec<Vec<f64>> = Vec::new();
-    let mut eigenvalues: Vec<f64> = Vec::new();
+    let mut kept_eigenvalues: Vec<f64> = Vec::new();
 
     for (rank, &(idx, _lambda)) in indexed.iter().enumerate() {
         if rank < skip || eigenvectors.len() >= k {
             continue;
         }
-        eigenvalues.push(eigvals[idx]);
+        kept_eigenvalues.push(eigvals[idx]);
 
         let s: Vec<f64> = (0..m)
             .map(|i| eig_vec_entry(&eigvecs_t, m, i, idx))
@@ -305,9 +345,11 @@ pub fn compute_spectral(db: &GraphDb) -> Result<SpectralIndex, String> {
         eigenvectors.push(ev);
     }
 
-    eprintln!("  eigenvalues: {:?}", eigenvalues);
+    eprintln!("  eigenvalues: {:?}", kept_eigenvalues);
 
     let actual_k = eigenvectors.len();
+    let lambda_max = kept_eigenvalues.last().copied().unwrap_or(1.0);
+
     let mut symbol_coords: Vec<Vec<f64>> = vec![vec![0.0; actual_k]; n];
     for (ev_idx, ev) in eigenvectors.iter().enumerate() {
         for i in 0..n {
@@ -319,6 +361,9 @@ pub fn compute_spectral(db: &GraphDb) -> Result<SpectralIndex, String> {
         symbol_ids,
         symbol_coords,
         sym_id_to_idx,
+        eigenvalues: kept_eigenvalues,
+        lambda_max,
+        graph,
     })
 }
 
@@ -476,6 +521,215 @@ pub fn spectral_search(
         .collect()
 }
 
+pub fn spectral_distance(index: &SpectralIndex, idx_a: usize, idx_b: usize) -> f64 {
+    let k = index.symbol_coords[idx_a].len().min(index.symbol_coords[idx_b].len());
+    let mut dist: f64 = 0.0;
+    for j in 0..k {
+        let d = index.symbol_coords[idx_a][j] - index.symbol_coords[idx_b][j];
+        dist += d * d;
+    }
+    dist
+}
+
+pub fn heat_kernel(
+    index: &SpectralIndex,
+    seed_indices: &[usize],
+    seed_weights: &[f64],
+    t: f64,
+    top_k: usize,
+) -> Vec<(usize, f64)> {
+    let n = index.symbol_ids.len();
+    let k = index.symbol_coords[0].len();
+    if k == 0 || seed_indices.is_empty() {
+        return Vec::new();
+    }
+
+    let mut signal = vec![0.0; n];
+    for (i, w) in seed_indices.iter().zip(seed_weights.iter()) {
+        signal[*i] += w;
+    }
+
+    for ev_j in 0..k {
+        let lambda_j = index.eigenvalues[ev_j];
+        let decay = (-t * lambda_j / index.lambda_max).exp();
+
+        let mut dot: f64 = 0.0;
+        for (si, w) in seed_indices.iter().zip(seed_weights.iter()) {
+            dot += *w * index.symbol_coords[*si][ev_j];
+        }
+
+        for i in 0..n {
+            signal[i] += decay * index.symbol_coords[i][ev_j] * dot;
+        }
+    }
+
+    let mut scored: Vec<(usize, f64)> = signal
+        .iter()
+        .enumerate()
+        .filter(|(_, &s)| s > 0.0)
+        .map(|(i, s)| (i, *s))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+    scored
+}
+
+pub fn chebyshev_heat(
+    graph: &SparseGraph,
+    seed_indices: &[usize],
+    seed_weights: &[f64],
+    t: f64,
+    order: usize,
+    top_k: usize,
+) -> Vec<(usize, f64)> {
+    let n = graph.n;
+    if seed_indices.is_empty() || order == 0 {
+        return Vec::new();
+    }
+
+    let lmax = graph.lambda_max();
+    if lmax < 1e-10 {
+        return Vec::new();
+    }
+
+    let f0 = |x: f64| -> f64 { (-t * x).exp() };
+    let x_max = lmax;
+
+    let c = (0..=order)
+        .map(|k| cheb_coeff(f0, k, x_max, 1024))
+        .collect::<Vec<f64>>();
+
+    let mut f = vec![0.0; n];
+    for (i, w) in seed_indices.iter().zip(seed_weights.iter()) {
+        f[*i] += *w;
+    }
+
+    let twf = graph.rescaled_laplacian_matvec(&f);
+    let mut y2 = vec![0.0; n];
+    for i in 0..n {
+        y2[i] = 2.0 * twf[i] - f[i];
+    }
+    let mut y1 = twf;
+
+    let mut result = vec![0.0; n];
+    for i in 0..n {
+        result[i] = c[0] * f[i] + c[1] * y1[i];
+    }
+
+    for j in 2..=order {
+        let ty = graph.rescaled_laplacian_matvec(&y2);
+        let mut y_new = vec![0.0; n];
+        for i in 0..n {
+            y_new[i] = 2.0 * ty[i] - y1[i];
+        }
+        if j < c.len() {
+            for i in 0..n {
+                result[i] += c[j] * y_new[i];
+            }
+        }
+        y1 = y2;
+        y2 = y_new;
+    }
+
+    let mut scored: Vec<(usize, f64)> = result
+        .iter()
+        .enumerate()
+        .filter(|(_, &s)| s > 1e-12)
+        .map(|(i, s)| (i, *s))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+    scored
+}
+
+fn cheb_coeff<F: Fn(f64) -> f64>(f: F, k: usize, b: f64, n_quad: usize) -> f64 {
+    let a = 0.0;
+    let mid = (b + a) / 2.0;
+    let half = (b - a) / 2.0;
+    let mut sum = 0.0;
+    for j in 0..n_quad {
+        let theta = std::f64::consts::PI * (j as f64 + 0.5) / n_quad as f64;
+        let x = mid + half * (-theta.cos());
+        let fx = f(x);
+        let cheb = (k as f64 * theta).cos();
+        sum += fx * cheb;
+    }
+    (2.0 / n_quad as f64) * sum
+}
+
+pub fn harmonic_extension(
+    graph: &SparseGraph,
+    seed_indices: &[usize],
+    seed_values: &[f64],
+    iterations: usize,
+    top_k: usize,
+) -> Vec<(usize, f64)> {
+    let n = graph.n;
+    if seed_indices.is_empty() {
+        return Vec::new();
+    }
+
+    let degree = graph.adj.degree();
+    let is_seed: std::collections::HashSet<usize> = seed_indices.iter().copied().collect();
+
+    let mut x = vec![0.0; n];
+    for (i, v) in seed_indices.iter().zip(seed_values.iter()) {
+        x[*i] = *v;
+    }
+
+    let neighbors: Vec<Vec<(usize, f64)>> = {
+        let mut nbrs: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+        for (&(i, j), &w) in &graph.adj.entries {
+            nbrs[i].push((j, w));
+            nbrs[j].push((i, w));
+        }
+        nbrs
+    };
+
+    for _ in 0..iterations {
+        let mut x_new = x.clone();
+        for i in 0..n {
+            if is_seed.contains(&i) || degree[i] < 1e-10 {
+                continue;
+            }
+            let mut weighted_sum = 0.0;
+            for &(j, w) in &neighbors[i] {
+                weighted_sum += w * x[j];
+            }
+            x_new[i] = weighted_sum / degree[i];
+        }
+        x = x_new;
+    }
+
+    let mut scored: Vec<(usize, f64)> = x
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !is_seed.contains(i))
+        .filter(|(_, &s)| s.abs() > 1e-12)
+        .map(|(i, s)| (i, s.abs()))
+        .collect();
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    scored.truncate(top_k);
+    scored
+}
+
+pub fn spectral_centroid(index: &SpectralIndex, indices: &[usize]) -> Vec<f64> {
+    let k = index.symbol_coords[0].len();
+    if k == 0 || indices.is_empty() {
+        return Vec::new();
+    }
+    let mut centroid = vec![0.0; k];
+    for &si in indices {
+        for j in 0..k {
+            centroid[j] += index.symbol_coords[si][j];
+        }
+    }
+    for x in centroid.iter_mut() {
+        *x /= indices.len() as f64;
+    }
+    centroid
+}
+
 struct SimpleRng {
     state: u64,
 }
@@ -499,6 +753,8 @@ pub fn store_spectral_coords(
     db: &GraphDb,
     symbol_ids: &[i64],
     coords: &[Vec<f64>],
+    eigenvalues: &[f64],
+    lambda_max: f64,
 ) -> Result<usize, String> {
     let conn = db.conn();
     conn.execute(
@@ -513,6 +769,32 @@ pub fn store_spectral_coords(
 
     conn.execute("DELETE FROM spectral_coords", [])
         .map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS spectral_meta (
+            key TEXT PRIMARY KEY,
+            value BLOB NOT NULL
+        )",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let ev_bytes: Vec<u8> = eigenvalues
+        .iter()
+        .flat_map(|f| (*f as f64).to_le_bytes())
+        .collect();
+    conn.execute(
+        "INSERT OR REPLACE INTO spectral_meta (key, value) VALUES ('eigenvalues', ?1)",
+        params![ev_bytes],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let lm_bytes = lambda_max.to_le_bytes().to_vec();
+    conn.execute(
+        "INSERT OR REPLACE INTO spectral_meta (key, value) VALUES ('lambda_max', ?1)",
+        params![lm_bytes],
+    )
+    .map_err(|e| e.to_string())?;
 
     let dim = coords.first().map(|v| v.len()).unwrap_or(0);
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;

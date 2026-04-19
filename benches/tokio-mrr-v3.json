@@ -1,0 +1,23 @@
+[
+  {"query": "AnyDelimiterCodec", "expected_symbol": "AnyDelimiterCodec", "category": "exact"},
+  {"query": "AsyncFdReadyGuard", "expected_symbol": "AsyncFdReadyGuard", "category": "exact"},
+  {"query": "BlockingPool", "expected_symbol": "BlockingPool", "category": "exact"},
+  {"query": "CachedParkThread", "expected_symbol": "CachedParkThread", "category": "exact"},
+  {"query": "DisallowBlockInPlaceGuard", "expected_symbol": "DisallowBlockInPlaceGuard", "category": "exact"},
+  {"query": "DropGuard", "expected_symbol": "DropGuard", "category": "exact"},
+  {"query": "GlobalOrphanQueue", "expected_symbol": "GlobalOrphanQueue", "category": "exact"},
+  {"query": "LocalNotified", "expected_symbol": "LocalNotified", "category": "exact"},
+  {"query": "RcCell", "expected_symbol": "RcCell", "category": "exact"},
+  {"query": "Vtable", "expected_symbol": "Vtable", "category": "exact"},
+
+  {"query": "decode frames delimited by any boundary sequence", "expected_symbol": "AnyDelimiterCodec", "category": "nl"},
+  {"query": "guard a file descriptor while async readiness is checked", "expected_symbol": "AsyncFdReadyGuard", "category": "nl"},
+  {"query": "pool of threads for blocking synchronous operations", "expected_symbol": "BlockingPool", "category": "nl"},
+  {"query": "park the current thread using a cached thread mechanism", "expected_symbol": "CachedParkThread", "category": "nl"},
+  {"query": "prevent block in place from being called in certain contexts", "expected_symbol": "DisallowBlockInPlaceGuard", "category": "nl"},
+  {"query": "guard that cleans up a resource when dropped", "expected_symbol": "DropGuard", "category": "nl"},
+  {"query": "queue of orphaned processes waiting to be reaped", "expected_symbol": "GlobalOrphanQueue", "category": "nl"},
+  {"query": "local task that has been notified and is ready to run", "expected_symbol": "LocalNotified", "category": "nl"},
+  {"query": "reference counted cell for shared mutable state", "expected_symbol": "RcCell", "category": "nl"},
+  {"query": "virtual table for dynamic task dispatch", "expected_symbol": "Vtable", "category": "nl"}
+]
