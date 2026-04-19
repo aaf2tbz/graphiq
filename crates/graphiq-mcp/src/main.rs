@@ -768,8 +768,21 @@ fn tool_search(
         let sym = &scored.symbol;
         let file = scored.file_path.as_deref().unwrap_or("?");
         let line_count = sym.line_end.saturating_sub(sym.line_start);
+
+        let neighborhood = state.cache.load_neighborhood(&state.db, sym.id);
+        let role_tag = neighborhood.as_ref().map_or("", |n| {
+            let callers = n.callers.len();
+            let callees = n.callees.len();
+            let members = n.members.len();
+            if callers >= 10 { "hub" }
+            else if callers >= 3 && callees >= 3 { "bridge" }
+            else if callers > 0 && callees > 0 { "connector" }
+            else if members > 0 { "container" }
+            else { "" }
+        });
+        let role_str = if role_tag.is_empty() { String::new() } else { format!(" [{}]", role_tag) };
         lines.push(format!(
-            "#{} [{:.2}] {}:{}  {}::{} ({}L)",
+            "#{} [{:.2}] {}:{}  {}::{} ({}L){}",
             i + 1,
             scored.score,
             file,
@@ -777,11 +790,27 @@ fn tool_search(
             sym.kind.as_str(),
             sym.name,
             line_count,
+            role_str,
         ));
         if let Some(ref sig) = sym.signature {
             let short = sig.lines().next().unwrap_or("");
             lines.push(format!("  {}", short));
         }
+
+        if let Some(ref n) = neighborhood {
+            let caller_names: Vec<String> = n.callers.iter().take(3).map(|(s, _)| s.name.clone()).collect();
+            let callee_names: Vec<String> = n.callees.iter().take(3).map(|(s, _)| s.name.clone()).collect();
+            if !caller_names.is_empty() || !callee_names.is_empty() {
+                lines.push("  calls:".into());
+                for name in &callee_names {
+                    lines.push(format!("    -> {}", name));
+                }
+                for name in &caller_names {
+                    lines.push(format!("    <- {}", name));
+                }
+            }
+        }
+
         let source_lines: Vec<&str> = sym.source.lines().take(3).collect();
         if !source_lines.is_empty() {
             let preview = source_lines.join("\n    ");

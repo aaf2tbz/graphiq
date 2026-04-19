@@ -214,6 +214,27 @@ fn classify_evidence(
                 EvidenceKind::Direct
             }
         }
+        EdgeKind::SharesType => {
+            if cross_module {
+                EvidenceKind::Structural
+            } else {
+                EvidenceKind::Incidental
+            }
+        }
+        EdgeKind::SharesErrorType => {
+            if cross_module {
+                EvidenceKind::Boundary
+            } else {
+                EvidenceKind::Structural
+            }
+        }
+        EdgeKind::SharesDataShape => {
+            if multiplicity >= 3 {
+                EvidenceKind::Reinforcing
+            } else {
+                EvidenceKind::Incidental
+            }
+        }
     }
 }
 

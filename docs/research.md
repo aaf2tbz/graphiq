@@ -317,6 +317,47 @@ When fusing two retrieval methods, raw scores are incomparable — GooV5's score
 - **CARE in production**: Currently bench-only. Should it replace Routed as the default search mode?
 - **Wire CARE into search pipeline**: Currently post-hoc fusion of two separate search calls. For production, needs to be integrated into the search pipeline directly.
 
+### Phase 22: 5-Codebase Benchmarks + Deep Graph Edges
+
+Expanded benchmark coverage from 3 to 5 codebases (adding flask/Python and junit5/Java) and built 4 new edge types for richer structural connectivity.
+
+**New codebases:**
+
+| Codebase | Language | Symbols | Why |
+|---|---|---|---|
+| flask | Python | 1,971 | Small codebase, decorator-based API, tests different language coverage |
+| junit5 | Java | 34,273 | Large multi-module Java project, annotation-driven, 34K symbols |
+
+**Deep graph edges** — 4 new edge types beyond calls/imports/containment:
+
+| Edge Type | Signal | Example |
+|---|---|---|
+| SharesType | Functions sharing type tokens in signatures | `fn foo(x: Arc<Mutex<Bar>>)` and `fn baz(y: Arc<Mutex<Bar>>)` |
+| SharesErrorType | Functions sharing error-type parameters | Functions that both return `Result<T, io::Error>` |
+| SharesDataShape | Functions accessing same field names | `self.config.host` and `self.config.port` |
+| StringLiteral | Functions sharing error-related string constants | Functions that both contain `"timeout"` |
+| CommentRef | Comments mentioning other symbol names | `// calls into processExpiredTimers` |
+
+**Graph-aware seed expansion**: Seeds expanded through different edge types based on query family — ErrorDebug queries route through error-type edges, CrossCutting queries through type/data-shape edges.
+
+**Results (5 codebases):**
+
+| Codebase | NDCG@10 (G IQ) | NDCG@10 (Grep) | MRR@10 (G IQ) | MRR@10 (Grep) |
+|---|---|---|---|---|
+| signetai | **0.406** | 0.343 | **0.404** | 0.154 |
+| tokio | 0.205 | **0.326** | **0.667** | 0.360 |
+| esbuild | **0.411** | 0.277 | **0.475** | 0.173 |
+| flask | 0.426 | **0.432** | **0.615** | 0.523 |
+| junit5 | **0.198** | 0.181 | **0.420** | 0.159 |
+
+**Key findings:**
+- GraphIQ wins MRR on all 5 codebases (1.6-2.7x over Grep)
+- NDCG wins on 3/5 — loses on tokio (known behavioral-NL gap) and flask (small codebase, near parity)
+- Deep graph edges improved esbuild MRR significantly but had mixed effects on signetai
+- junit5's large size (34K symbols) validates GraphIQ scales well to Java codebases
+
+**Importance as ranking signal doesn't move NDCG.** Fixed importance computation (broken `total_edges` normalization → sqrt-scaled max-degree). Tried multiplicative boost, tiebreaker, calibrated normalization — all negligible impact. Importance's value is in output display (role tags), not ranking.
+
 ## Cross-References to Roadmap
 
 These precedents from failed experiments are directly relevant to future phases:

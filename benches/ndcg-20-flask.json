@@ -1,0 +1,22 @@
+[
+  {"query": "before_request", "category": "symbol-exact", "relevance": {"before_request": 3, "before_first_request": 2}},
+  {"query": "app_errorhandler", "category": "symbol-exact", "relevance": {"app_errorhandler": 3}},
+  {"query": "send_static_file", "category": "symbol-exact", "relevance": {"send_static_file": 3}},
+  {"query": "stream_template_string", "category": "symbol-exact", "relevance": {"stream_template_string": 3, "stream_template": 2}},
+  {"query": "full_dispatch_request", "category": "symbol-exact", "relevance": {"full_dispatch_request": 3}},
+  {"query": "register blueprint with application", "category": "symbol-partial", "relevance": {"register_blueprint": 3, "Blueprint": 2}},
+  {"query": "session cookie signing serializer", "category": "symbol-partial", "relevance": {"get_signing_serializer": 3, "SecureCookieSessionInterface": 2}},
+  {"query": "how does Flask route incoming requests to view functions", "category": "nl-descriptive", "relevance": {"full_dispatch_request": 3, "url_rule": 2, "url_map": 2}},
+  {"query": "how are before and after request handlers registered", "category": "nl-descriptive", "relevance": {"before_request": 3, "after_request": 2, "teardown_request": 2}},
+  {"query": "how does Jinja template rendering work with Flask context", "category": "nl-descriptive", "relevance": {"render_template": 3, "stream_template_string": 2, "DispatchingJinjaLoader": 2}},
+  {"query": "what manages application and request context lifecycle", "category": "nl-abstract", "relevance": {"AppContext": 3, "push": 2, "pop": 2, "do_teardown_appcontext": 2}},
+  {"query": "how does the test client simulate requests without a server", "category": "nl-abstract", "relevance": {"FlaskClient": 3, "open_resource": 2}},
+  {"query": "how are custom CLI commands integrated with the Flask app", "category": "nl-abstract", "relevance": {"FlaskGroup": 3, "run_simple": 2}},
+  {"query": "abort response with error code", "category": "error-debug", "relevance": {"aborter": 3, "app_errorhandler": 2}},
+  {"query": "template not found Jinja loader error", "category": "error-debug", "relevance": {"DispatchingJinjaLoader": 3, "render_template": 2}},
+  {"query": "context teardown failed during request", "category": "error-debug", "relevance": {"do_teardown_appcontext": 3, "pop": 2}},
+  {"query": "flask config environment variables", "category": "file-path", "relevance": {"Config": 3, "from_prefixed_env": 2}},
+  {"query": "flask sessions signing", "category": "file-path", "relevance": {"get_signing_serializer": 3, "SecureCookieSessionInterface": 2}},
+  {"query": "all proxy objects for request context globals", "category": "cross-cutting", "relevance": {"request": 3, "current_app": 3, "g": 2, "session": 2}},
+  {"query": "all response helper functions", "category": "cross-cutting", "relevance": {"jsonify": 3, "redirect": 3, "make_response": 3, "send_file": 2}}
+]

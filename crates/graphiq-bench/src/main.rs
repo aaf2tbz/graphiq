@@ -167,7 +167,8 @@ const METHODS: &[&str] = &["GraphIQ", "Grep"];
 fn run_ndcg(fe: &FullEngine, queries: &[BenchQuery]) {
     let n = queries.len();
     let n_methods = METHODS.len();
-    let mut all_ndcg: Vec<Vec<f64>> = vec![vec![]; n_methods];
+    let cutoffs: &[usize] = &[3, 5, 10];
+    let mut per_query: Vec<Vec<Vec<f64>>> = vec![vec![vec![]; cutoffs.len()]; n_methods];
     let mut cat_data: std::collections::HashMap<String, Vec<Vec<f64>>> =
         std::collections::HashMap::new();
 
@@ -184,27 +185,34 @@ fn run_ndcg(fe: &FullEngine, queries: &[BenchQuery]) {
                 .iter()
                 .map(|(id, _)| q.relevance_of(&sym_name(fe.db, *id)) as f64)
                 .collect();
-            let ndcg = ndcg_at_k(&rels, &ideal, 10);
-            all_ndcg[mi].push(ndcg);
+            for (ki, &k) in cutoffs.iter().enumerate() {
+                let ndcg = ndcg_at_k(&rels, &ideal, k);
+                per_query[mi][ki].push(ndcg);
+            }
+            let ndcg10 = per_query[mi][cutoffs.len() - 1].last().copied().unwrap_or(0.0);
             cat_data
                 .entry(q.category.clone())
                 .or_insert_with(|| vec![vec![]; n_methods])[mi]
-                .push(ndcg);
+                .push(ndcg10);
         }
     }
 
-    println!("\n{}", "=".repeat(60));
-    println!("  NDCG@10  ({} queries)", n);
-    println!("{}", "=".repeat(60));
+    println!("\n{}", "=".repeat(72));
+    println!("  NDCG@K  ({} queries)", n);
+    println!("{}", "=".repeat(72));
 
-    println!("\n{:<10} {:>10}", "Method", "NDCG@10");
-    println!("{}", "-".repeat(24));
+    println!("\n{:<10} {:>8} {:>8} {:>8}", "Method", "H@3", "H@5", "H@10");
+    println!("{}", "-".repeat(40));
     for mi in 0..n_methods {
-        let avg: f64 = all_ndcg[mi].iter().sum::<f64>() / n as f64;
-        println!("{:<10} {:>10.3}", METHODS[mi], avg);
+        print!("{:<10}", METHODS[mi]);
+        for ki in 0..cutoffs.len() {
+            let avg: f64 = per_query[mi][ki].iter().sum::<f64>() / n as f64;
+            print!(" {:>8.3}", avg);
+        }
+        println!();
     }
 
-    println!("\n--- By Category ---\n");
+    println!("\n--- By Category (NDCG@10) ---\n");
     let mut cats: Vec<&String> = cat_data.keys().collect();
     cats.sort();
     print!("{:<20}", "Category");
@@ -221,7 +229,7 @@ fn run_ndcg(fe: &FullEngine, queries: &[BenchQuery]) {
         println!();
     }
 
-    println!("\n--- Per Query ---\n");
+    println!("\n--- Per Query (NDCG@10) ---\n");
     print!("{:<30}", "Query");
     for m in METHODS { print!("{:>10}", m); }
     println!();
@@ -229,7 +237,7 @@ fn run_ndcg(fe: &FullEngine, queries: &[BenchQuery]) {
     for (i, q) in queries.iter().enumerate() {
         print!("{:<30}", truncate(&q.query, 30));
         for mi in 0..n_methods {
-            print!("{:>10.3}", all_ndcg[mi][i]);
+            print!("{:>10.3}", per_query[mi][cutoffs.len() - 1][i]);
         }
         println!();
     }
@@ -243,6 +251,8 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
     struct MrrRow {
         rr: f64,
         found_rank: Option<usize>,
+        hits_in_10: usize,
+        relevant_total: usize,
     }
 
     let mut all: Vec<Vec<MrrRow>> = vec![vec![]; n_methods];
@@ -251,6 +261,12 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
 
     for q in queries {
         let expected = q.expected_symbol.as_deref().unwrap_or("");
+
+        let relevant_total = if !q.relevance.is_empty() {
+            q.relevance.values().filter(|&&v| v >= 2).count()
+        } else {
+            1
+        };
 
         for mi in 0..n_methods {
             let hits = match mi {
@@ -270,8 +286,19 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
                 })
             };
 
+            let hits_in_10 = hits.iter()
+                .filter(|(id, _)| {
+                    if !q.relevance.is_empty() {
+                        q.relevance_of(&sym_name(fe.db, *id)) >= 2
+                    } else {
+                        let name = sym_name(fe.db, *id);
+                        name == expected || expected.contains(&name) || name.contains(expected)
+                    }
+                })
+                .count();
+
             let rr = found_rank.map(|r| 1.0 / (r + 1) as f64).unwrap_or(0.0);
-            all[mi].push(MrrRow { rr, found_rank });
+            all[mi].push(MrrRow { rr, found_rank, hits_in_10, relevant_total });
             cat_data
                 .entry(q.category.clone())
                 .or_insert_with(|| vec![vec![]; n_methods])[mi]
@@ -279,20 +306,27 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
         }
     }
 
-    println!("\n{}", "=".repeat(60));
+    println!("\n{}", "=".repeat(84));
     println!("  MRR@10  ({} queries)", n);
-    println!("{}", "=".repeat(60));
+    println!("{}", "=".repeat(84));
 
-    println!("\n{:<10} {:>8} {:>6} {:>6}", "Method", "MRR", "H@1", "H@10");
-    println!("{}", "-".repeat(34));
+    println!("\n{:<10} {:>8} {:>7} {:>7} {:>7} {:>9} {:>9}", "Method", "MRR", "P@10", "R@10", "H@10", "Acc@1", "Acc@10");
+    println!("{}", "-".repeat(70));
     for mi in 0..n_methods {
         let mrr: f64 = all[mi].iter().map(|r| r.rr).sum::<f64>() / n as f64;
-        let h1 = all[mi].iter().filter(|r| r.found_rank == Some(0)).count();
+        let p10: f64 = all[mi].iter().map(|r| r.hits_in_10 as f64 / 10.0).sum::<f64>() / n as f64;
+        let r10: f64 = all[mi].iter()
+            .filter(|r| r.relevant_total > 0)
+            .map(|r| (r.hits_in_10 as f64 / r.relevant_total as f64).min(1.0))
+            .sum::<f64>() / n as f64;
         let h10 = all[mi].iter().filter(|r| r.found_rank.is_some()).count();
-        println!("{:<10} {:>8.3} {:>5}/{} {:>5}/{}", METHODS[mi], mrr, h1, n, h10, n);
+        let acc1 = all[mi].iter().filter(|r| r.found_rank == Some(0)).count();
+        let acc10 = h10;
+        println!("{:<10} {:>8.3} {:>7.3} {:>7.3} {:>5}/{}  {:>5}/{}  {:>5}/{}",
+            METHODS[mi], mrr, p10, r10, h10, n, acc1, n, acc10, n);
     }
 
-    println!("\n--- By Category ---\n");
+    println!("\n--- By Category (MRR) ---\n");
     let mut cats: Vec<&String> = cat_data.keys().collect();
     cats.sort();
     print!("{:<20}", "Category");
@@ -309,7 +343,7 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
         println!();
     }
 
-    println!("\n--- Per Query ---\n");
+    println!("\n--- Per Query (rank) ---\n");
     print!("{:<30}", "Query");
     for m in METHODS { print!("{:>10}", m); }
     println!();

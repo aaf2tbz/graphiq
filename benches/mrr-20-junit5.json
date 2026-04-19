@@ -1,0 +1,22 @@
+[
+  {"query": "how does JUnit 5 discover and select test classes to run", "category": "behavioral", "expected_symbol": "discoverTestsForClass"},
+  {"query": "create a new test instance before running a test method", "category": "behavioral", "expected_symbol": "createTestInstance"},
+  {"query": "mark a method as a parameterized test with argument sources", "category": "behavioral", "expected_symbol": "ParameterizedTest"},
+  {"query": "register a custom extension with the test engine", "category": "behavioral", "expected_symbol": "registerExtension"},
+  {"query": "assert that two arrays contain the same elements", "category": "behavioral", "expected_symbol": "assertArrayEquals"},
+  {"query": "disable a test when running on a specific operating system", "category": "behavioral", "expected_symbol": "DisabledOnOsCondition"},
+  {"query": "observe test execution events like start and finish", "category": "behavioral", "expected_symbol": "TestWatcher"},
+  {"query": "customize the display name of test classes and methods", "category": "behavioral", "expected_symbol": "DisplayNameGenerator"},
+  {"query": "run setup code before each test method executes", "category": "behavioral", "expected_symbol": "BeforeEachCallback"},
+  {"query": "configure a timeout for a test method", "category": "behavioral", "expected_symbol": "Timeout"},
+  {"query": "create a temporary directory for a test that is cleaned up afterward", "category": "behavioral", "expected_symbol": "TempDir"},
+  {"query": "order test methods within a class using a custom orderer", "category": "behavioral", "expected_symbol": "MethodOrderer"},
+  {"query": "scan the classpath for test classes and extensions", "category": "behavioral", "expected_symbol": "ClasspathScanner"},
+  {"query": "tag tests for filtering by category", "category": "behavioral", "expected_symbol": "Tag"},
+  {"query": "handle exceptions thrown during test execution", "category": "behavioral", "expected_symbol": "TestExecutionExceptionHandler"},
+  {"query": "intercept test method invocations before and after execution", "category": "behavioral", "expected_symbol": "InvocationInterceptor"},
+  {"query": "get information about the current test repetition", "category": "behavioral", "expected_symbol": "RepetitionInfo"},
+  {"query": "process a test after all methods have completed", "category": "behavioral", "expected_symbol": "AfterAllCallback"},
+  {"query": "create a test template that is invoked multiple times", "category": "behavioral", "expected_symbol": "TestTemplate"},
+  {"query": "define a nested test class inside a parent test class", "category": "behavioral", "expected_symbol": "Nested"}
+]

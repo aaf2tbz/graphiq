@@ -7,6 +7,7 @@ pub mod calls;
 pub mod chunker;
 pub mod db;
 pub mod decompose;
+pub mod deep_graph;
 pub mod directory_expand;
 pub mod edge;
 pub mod edge_evidence;

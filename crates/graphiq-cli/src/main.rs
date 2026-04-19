@@ -100,6 +100,10 @@ enum Commands {
         #[arg(short, long, default_value_t = 20)]
         top: usize,
     },
+    DeepGraph {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+    },
     #[cfg(feature = "embed")]
     EmbedTest {
         text: Option<String>,
@@ -145,6 +149,7 @@ fn main() {
         Commands::Doctor { db } => cmd_doctor(&db),
         Commands::UpgradeIndex { db } => cmd_upgrade_index(&db),
         Commands::Constants { db, query, top } => cmd_constants(&db, query.as_deref(), top),
+        Commands::DeepGraph { db } => cmd_deep_graph(&db),
         #[cfg(feature = "embed")]
         Commands::EmbedTest { text } => cmd_embed_test(text.as_deref().unwrap_or("hello world")),
     }
@@ -967,6 +972,20 @@ fn cmd_constants(db_path: &std::path::Path, query: Option<&str>, top: usize) {
             sites.join(", ")
         );
     }
+}
+
+fn cmd_deep_graph(db_path: &std::path::Path) {
+    let db = graphiq_core::db::GraphDb::open(db_path).expect("open db");
+    let stats = graphiq_core::deep_graph::compute_deep_graph_edges(&db).expect("compute");
+    println!(
+        "deep graph: {} type-flow, {} error-type, {} data-shape edges",
+        stats.type_flow_edges, stats.error_type_edges, stats.data_shape_edges
+    );
+    let src_stats = graphiq_core::deep_graph::compute_source_graph_edges(&db).expect("compute source");
+    println!(
+        "source graph: {} string-literal, {} comment-ref edges",
+        src_stats.string_literal_edges, src_stats.comment_ref_edges
+    );
 }
 
 fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {

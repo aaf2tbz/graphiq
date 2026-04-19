@@ -144,7 +144,7 @@ pub fn topo_nl_boost(db: &GraphDb, fts_ids: &[i64], top_k: usize) -> Vec<(i64, f
 
     let mut co_reachable: HashMap<i64, f64> = HashMap::new();
 
-    for &(candidate_id, mirror_score) in &mirror_results {
+    for &(candidate_id, _) in &mirror_results {
         if fts_set.contains(&candidate_id) {
             continue;
         }

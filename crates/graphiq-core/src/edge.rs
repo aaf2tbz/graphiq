@@ -76,6 +76,9 @@ pub enum EdgeKind {
     ReExports,
     SharesConstant,
     ReferencesConstant,
+    SharesType,
+    SharesErrorType,
+    SharesDataShape,
 }
 
 impl EdgeKind {
@@ -92,6 +95,9 @@ impl EdgeKind {
             EdgeKind::ReExports => "re_exports",
             EdgeKind::SharesConstant => "shares_constant",
             EdgeKind::ReferencesConstant => "references_constant",
+            EdgeKind::SharesType => "shares_type",
+            EdgeKind::SharesErrorType => "shares_error_type",
+            EdgeKind::SharesDataShape => "shares_data_shape",
         }
     }
 
@@ -108,6 +114,9 @@ impl EdgeKind {
             "re_exports" => Some(EdgeKind::ReExports),
             "shares_constant" => Some(EdgeKind::SharesConstant),
             "references_constant" => Some(EdgeKind::ReferencesConstant),
+            "shares_type" => Some(EdgeKind::SharesType),
+            "shares_error_type" => Some(EdgeKind::SharesErrorType),
+            "shares_data_shape" => Some(EdgeKind::SharesDataShape),
             _ => None,
         }
     }
@@ -119,12 +128,15 @@ impl EdgeKind {
             EdgeKind::Implements => 0.80,
             EdgeKind::Extends => 0.80,
             EdgeKind::Overrides => 0.75,
+            EdgeKind::ReferencesConstant => 0.60,
+            EdgeKind::SharesErrorType => 0.55,
             EdgeKind::Tests => 0.55,
             EdgeKind::Imports => 0.50,
-            EdgeKind::References => 0.40,
             EdgeKind::ReExports => 0.45,
+            EdgeKind::SharesType => 0.40,
+            EdgeKind::References => 0.40,
+            EdgeKind::SharesDataShape => 0.35,
             EdgeKind::SharesConstant => 0.30,
-            EdgeKind::ReferencesConstant => 0.60,
         }
     }
 
@@ -224,6 +236,9 @@ mod tests {
             EdgeKind::ReExports,
             EdgeKind::SharesConstant,
             EdgeKind::ReferencesConstant,
+            EdgeKind::SharesType,
+            EdgeKind::SharesErrorType,
+            EdgeKind::SharesDataShape,
         ] {
             assert_eq!(EdgeKind::from_str(kind.as_str()), Some(kind));
         }

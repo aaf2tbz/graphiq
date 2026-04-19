@@ -1,0 +1,22 @@
+[
+  {"query": "how does Flask route an incoming URL to the correct view function", "category": "behavioral", "expected_symbol": "full_dispatch_request"},
+  {"query": "register a handler that runs before every request", "category": "behavioral", "expected_symbol": "before_request"},
+  {"query": "render a Jinja template as an HTML response", "category": "behavioral", "expected_symbol": "render_template"},
+  {"query": "create a JSON response from a Python dictionary", "category": "behavioral", "expected_symbol": "jsonify"},
+  {"query": "redirect the user to a different URL", "category": "behavioral", "expected_symbol": "redirect"},
+  {"query": "store and retrieve flash messages across requests", "category": "behavioral", "expected_symbol": "flash"},
+  {"query": "mount a blueprint on the application", "category": "behavioral", "expected_symbol": "register_blueprint"},
+  {"query": "parse JSON data from an incoming request body", "category": "behavioral", "expected_symbol": "request"},
+  {"query": "create a test client to simulate HTTP requests", "category": "behavioral", "expected_symbol": "FlaskClient"},
+  {"query": "handle 404 errors with a custom error page", "category": "behavioral", "expected_symbol": "app_errorhandler"},
+  {"query": "load configuration from environment variables", "category": "behavioral", "expected_symbol": "Config"},
+  {"query": "sign and verify session cookies securely", "category": "behavioral", "expected_symbol": "get_signing_serializer"},
+  {"query": "clean up application context after a request", "category": "behavioral", "expected_symbol": "do_teardown_appcontext"},
+  {"query": "generate a URL from an endpoint name", "category": "behavioral", "expected_symbol": "url_for"},
+  {"query": "serve a static file from the static directory", "category": "behavioral", "expected_symbol": "send_static_file"},
+  {"query": "register a custom Jinja template filter", "category": "behavioral", "expected_symbol": "template_filter"},
+  {"query": "send a file as a downloadable attachment", "category": "behavioral", "expected_symbol": "send_file"},
+  {"query": "build a custom CLI command for the Flask app", "category": "behavioral", "expected_symbol": "FlaskGroup"},
+  {"query": "check if a request context is currently active", "category": "behavioral", "expected_symbol": "has_request_context"},
+  {"query": "stream a template response without buffering the entire body", "category": "behavioral", "expected_symbol": "stream_template_string"}
+]

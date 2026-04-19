@@ -1,0 +1,22 @@
+[
+  {"query": "Test", "category": "symbol-exact", "relevance": {"Test": 3, "DisplayName": 2}},
+  {"query": "assertEquals", "category": "symbol-exact", "relevance": {"assertEquals": 3, "AssertionUtils": 2}},
+  {"query": "assertArrayEquals", "category": "symbol-exact", "relevance": {"assertArrayEquals": 3, "AssertArrayEquals": 2}},
+  {"query": "BeforeEachCallback", "category": "symbol-exact", "relevance": {"BeforeEachCallback": 3, "BeforeEach": 2}},
+  {"query": "test instance creation", "category": "symbol-partial", "relevance": {"createTestInstance": 3, "TestInstanceFactory": 2}},
+  {"query": "parameterized test invocation", "category": "symbol-partial", "relevance": {"createBeforeParameterizedClassInvocationMethodInvoker": 3, "ParameterizedTestInvocationContext": 2}},
+  {"query": "discover test classes", "category": "symbol-partial", "relevance": {"discoverTestsForClass": 3, "MethodSelector": 2}},
+  {"query": "how does JUnit 5 dispatch and run test methods", "category": "nl-descriptive", "relevance": {"discoverTestsForClass": 3, "createTestInstance": 2, "createBeforeParameterizedClassInvocationMethodInvoker": 2}},
+  {"query": "what annotation marks a method as a test", "category": "nl-descriptive", "relevance": {"Test": 3, "DisplayName": 2, "Tag": 1}},
+  {"query": "how are test instances created and cleaned up before each test", "category": "nl-descriptive", "relevance": {"createTestInstance": 3, "BeforeEachCallback": 2, "BeforeEach": 2}},
+  {"query": "how does the extension model register and load custom extensions", "category": "nl-descriptive", "relevance": {"registerExtension": 3, "InvocationInterceptor": 2, "MutableExtensionRegistry": 2}},
+  {"query": "what mechanism handles test execution lifecycle callbacks", "category": "nl-abstract", "relevance": {"TestInstancePostProcessor": 3, "BeforeEachCallback": 2, "AfterAllCallback": 2, "TestWatcher": 2}},
+  {"query": "how does JUnit 5 evaluate conditional test execution", "category": "nl-abstract", "relevance": {"DisabledOnOsCondition": 3, "DisabledOnJreCondition": 2, "getExecutionCondition": 2}},
+  {"query": "what happens when a before-all method throws an exception", "category": "nl-abstract", "relevance": {"handleAfterAllMethodExecutionException": 3, "LifecycleMethodExecutionExceptionHandler": 2}},
+  {"query": "test timed out exception during execution", "category": "error-debug", "relevance": {"TimeoutExceptionFactory": 3, "Timeout": 2}},
+  {"query": "assumption violated test skipped", "category": "error-debug", "relevance": {"assumeTrue": 3, "assumeFalse": 2, "TestAbortedException": 2}},
+  {"query": "parameterized test no arguments source found", "category": "error-debug", "relevance": {"ParameterizedTestInvocationContext": 3, "createBeforeParameterizedClassInvocationMethodInvoker": 2}},
+  {"query": "junit platform discovery", "category": "file-path", "relevance": {"ClasspathScanner": 3, "DefaultClasspathScanner": 2, "MethodSelector": 2}},
+  {"query": "junit assertions assertEquals", "category": "file-path", "relevance": {"assertEquals": 3, "AssertionUtils": 2, "assertArrayEquals": 2}},
+  {"query": "all test lifecycle extension interfaces", "category": "cross-cutting", "relevance": {"BeforeEachCallback": 3, "AfterAllCallback": 3, "TestInstancePostProcessor": 2, "TestExecutionExceptionHandler": 2, "TestWatcher": 2}}
+]

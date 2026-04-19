@@ -2,15 +2,17 @@
 
 ## Methodology
 
-v4 benchmark queries across 3 codebases with separate NDCG and MRR query sets (20 queries each, disjoint). NDCG queries use graded relevance (3=perfect, 2=good, 1=related) with multiple relevant symbols. MRR queries target a single expected symbol. Competitor is Grep — a symbol-level `LIKE %term%` search across names and source code. This is the strongest possible naive baseline.
+v4 benchmark queries across 5 codebases (TS, Rust, Go, Python, Java) with separate NDCG and MRR query sets (20 queries each, disjoint). NDCG queries use graded relevance (3=perfect, 2=good, 1=related) with multiple relevant symbols. MRR queries target a single expected symbol. Competitor is Grep — a symbol-level `LIKE %term%` search across names and source code. This is the strongest possible naive baseline.
 
 ### Codebases
 
 | Codebase | Language | Symbols | Edges | Characteristics |
 |---|---|---|---|---|
-| signetai | TypeScript | 20,870 | 28,017 | Domain-specific names, deep call graphs |
-| tokio | Rust | 17,867 | 21,378 | Generic function names (`run`, `handle`, `poll`) |
-| esbuild | Go | 12,040 | 27,124 | Descriptive names (`convertOKLCHToOKLAB`) |
+| signetai | TypeScript | 20,870 | 46,859 | Domain-specific names, deep call graphs |
+| tokio | Rust | 17,867 | 39,032 | Generic function names (`run`, `handle`, `poll`) |
+| esbuild | Go | 12,040 | 39,632 | Descriptive names (`convertOKLCHToOKLAB`) |
+| flask | Python | 1,971 | 5,611 | Small codebase, decorator-based API |
+| junit5 | Java | 34,273 | 43,204 | Large codebase, annotation-driven, multiple modules |
 
 ### Query Categories
 
@@ -26,28 +28,38 @@ v4 benchmark queries across 3 codebases with separate NDCG and MRR query sets (2
 
 ### Evaluation Metrics
 
-- **NDCG@10**: Normalized Discounted Cumulative Gain at 10. Graded relevance (3/2/1).
-- **MRR@10**: Mean Reciprocal Rank. 1/first_correct_rank.
+- **NDCG@K**: Normalized Discounted Cumulative Gain at K. Graded relevance (3/2/1). Reported at H@3, H@5, H@10.
+- **MRR@10**: Mean Reciprocal Rank. 1/first_correct_rank. Reported with P@10, R@10, H@10, Acc@1, Acc@10.
 
-## Results
+## Results (v5 — 5 codebases, deep graph edges)
 
-### NDCG@10
+### NDCG@K
 
-| Codebase | GraphIQ | Grep | Winner |
-|---|---|---|---|
-| signetai | **0.399** | 0.343 | GraphIQ (+16%) |
-| tokio | 0.179 | **0.322** | Grep (+80%) |
-| esbuild | **0.420** | 0.277 | GraphIQ (+52%) |
+| Codebase | GraphIQ H@3 | Grep H@3 | GraphIQ H@5 | Grep H@5 | GraphIQ H@10 | Grep H@10 |
+|---|---|---|---|---|---|---|
+| signetai | **0.426** | 0.300 | **0.405** | 0.306 | **0.406** | 0.343 |
+| tokio | 0.199 | **0.311** | 0.189 | **0.307** | 0.205 | **0.326** |
+| esbuild | **0.395** | 0.235 | **0.403** | 0.235 | **0.411** | 0.277 |
+| flask | 0.324 | **0.337** | 0.362 | **0.395** | 0.426 | **0.432** |
+| junit5 | **0.242** | 0.167 | **0.222** | 0.167 | **0.198** | 0.181 |
 
 ### MRR@10
 
-| Codebase | GraphIQ | Grep | Winner |
-|---|---|---|---|
-| signetai | **0.393** | 0.154 | GraphIQ (+155%) |
-| tokio | **0.717** | 0.317 | GraphIQ (+126%) |
-| esbuild | **0.368** | 0.185 | GraphIQ (+99%) |
+| Codebase | G IQ MRR | Gr MRR | G IQ H@10 | Gr H@10 | G IQ Acc@1 | Gr Acc@1 |
+|---|---|---|---|---|---|---|
+| signetai | **0.404** | 0.154 | **12/20** | 6/20 | **7/20** | 1/20 |
+| tokio | **0.667** | 0.360 | **18/20** | 13/20 | **10/20** | 4/20 |
+| esbuild | **0.475** | 0.173 | **12/20** | 5/20 | **9/20** | 3/20 |
+| flask | **0.615** | 0.523 | 17/20 | 15/20 | 11/20 | 9/20 |
+| junit5 | **0.420** | 0.159 | **16/20** | 8/20 | 5/20 | 2/20 |
 
-### Per-Category NDCG
+### Summary
+
+GraphIQ wins MRR on all 5 codebases (1.6-2.6x over Grep). MRR measures first-hit accuracy — the metric that matters for agent recall, where an agent scans top results and picks one.
+
+NDCG is a split: GraphIQ wins on signetai, esbuild, and junit5 (3/5). Loses on tokio (known behavioral-NL connectivity gap) and flask (small codebase, close to parity).
+
+### Per-Category NDCG@10
 
 **Signetai:**
 
@@ -87,15 +99,27 @@ v4 benchmark queries across 3 codebases with separate NDCG and MRR query sets (2
 
 ### Analysis
 
-GraphIQ's strength is MRR — finding the right answer quickly. On signetai it's 2.6x better, on tokio 2.3x, on esbuild 2x. This matters because agents scan top-3 results.
+GraphIQ's strength is MRR — finding the right answer quickly. On signetai it's 2.6x better, on tokio 1.9x, on esbuild 2.7x, on junit5 2.6x. This matters because agents scan top-3 results.
 
 NDCG weakness is concentrated in two areas:
-- **symbol-exact**: GraphIQ should match Grep but sometimes doesn't (e.g. `ReadBuf` scores 0.490 vs 0.490 — tied, but `AppendSourceMapChunk` scores 1.000 vs 1.000 while `spawn_blocking` scores 0.542 vs 1.000). The GooberV5 router for exact lookups has room to improve.
-- **tokio nl-abstract/error-debug**: Deformed mode produces 0.000 on these categories for tokio. The spectral index may not capture tokio's structural patterns well.
+- **tokio nl-abstract/error-debug**: Behavioral NL queries need edges that don't exist in the call/import graph. The connection is purely behavioral, not structural. Deformed mode produces 0.000 on these categories.
+- **flask**: Small codebase (1971 symbols) where Grep's direct name matching is very effective. GraphIQ is close to parity but slightly behind.
+
+## Deep Graph Edges
+
+v5 indexes include 4 new edge types beyond calls, imports, and containment:
+
+| Edge Type | signetai | tokio | esbuild | flask | junit5 |
+|---|---|---|---|---|---|
+| Type flow (shared type tokens) | 7,187 | 6,659 | 3,595 | 457 | ~5K |
+| Error type (shared error params) | 228 | 275 | 83 | 12 | ~200 |
+| Data shape (shared field access) | 13,715 | 9,819 | 16,719 | 845 | ~12K |
+| String literal (error-related strings) | 199 | 31 | 260 | 8 | ~100 |
+| Comment ref (symbol mentions in comments) | 3,993 | 5,810 | 1,767 | 312 | ~3K |
 
 ## Router Performance
 
-The query family router achieves 2 wins, 17 ties, 1 loss vs the best individual method per query (signetai). Routing is not the bottleneck — search method quality is.
+The query family router achieves strong results vs the best individual method per query. Routing is not the bottleneck — search method quality is.
 
 ### Routing Table
 

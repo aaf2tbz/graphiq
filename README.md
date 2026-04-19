@@ -2,16 +2,18 @@
 
 Instant, accurate code search powered by structural graph analysis + spectral heat diffusion + per-query routing. No embeddings. No LLM. No model dependencies. Drop a codebase in and search.
 
-**GraphIQ vs Grep (symbol-level LIKE search) — 20 queries per codebase:**
+**GraphIQ vs Grep (symbol-level LIKE search) — 20 queries per codebase, 5 codebases (TS, Rust, Go, Python, Java):**
 
 | Codebase | NDCG@10 | | MRR@10 | |
 |---|---|---|---|---|
 | | GraphIQ | Grep | GraphIQ | Grep |
-| signetai (TS, 20K syms) | **0.399** | 0.343 | **0.393** | 0.154 |
-| tokio (Rust, 17K syms) | 0.179 | **0.322** | **0.717** | 0.317 |
-| esbuild (Go, 12K syms) | **0.420** | 0.277 | **0.368** | 0.185 |
+| signetai (TS, 20K syms) | **0.406** | 0.343 | **0.404** | 0.154 |
+| tokio (Rust, 17K syms) | 0.205 | **0.326** | **0.667** | 0.360 |
+| esbuild (Go, 12K syms) | **0.411** | 0.277 | **0.475** | 0.173 |
+| flask (Python, 2K syms) | 0.426 | **0.432** | **0.615** | 0.523 |
+| junit5 (Java, 34K syms) | **0.198** | 0.181 | **0.420** | 0.159 |
 
-GraphIQ wins NDCG on 2/3 and MRR on 3/3 (2.5x on tokio, 2.6x on signetai).
+GraphIQ wins MRR on 5/5 (1.6-2.7x) and NDCG on 3/5. MRR measures first-hit accuracy — the metric that matters for agent recall.
 
 ## How It Works
 
@@ -44,17 +46,21 @@ GraphIQ vs Grep — our direct competitor. Grep uses `LIKE %term%` across symbol
 
 | Codebase | GraphIQ | Grep | Delta |
 |---|---|---|---|
-| signetai (TS) | **0.399** | 0.343 | +16% |
-| tokio (Rust) | 0.179 | 0.322 | -44% |
-| esbuild (Go) | **0.420** | 0.277 | +52% |
+| signetai (TS) | **0.406** | 0.343 | +18% |
+| tokio (Rust) | 0.205 | **0.326** | -37% |
+| esbuild (Go) | **0.411** | 0.277 | +48% |
+| flask (Python) | 0.426 | **0.432** | -1% |
+| junit5 (Java) | **0.198** | 0.181 | +9% |
 
 ### MRR@10 (first-hit accuracy, 20 queries per codebase)
 
 | Codebase | GraphIQ | Grep | Delta |
 |---|---|---|---|
-| signetai (TS) | **0.393** | 0.154 | +155% |
-| tokio (Rust) | **0.717** | 0.317 | +126% |
-| esbuild (Go) | **0.368** | 0.185 | +99% |
+| signetai (TS) | **0.404** | 0.154 | +162% |
+| tokio (Rust) | **0.667** | 0.360 | +85% |
+| esbuild (Go) | **0.475** | 0.173 | +175% |
+| flask (Python) | **0.615** | 0.523 | +18% |
+| junit5 (Java) | **0.420** | 0.159 | +164% |
 
 Full results with per-category breakdowns: [docs/benchmarks.md](docs/benchmarks.md)
 

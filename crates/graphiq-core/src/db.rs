@@ -524,42 +524,83 @@ impl GraphDb {
     pub fn compute_importance_scores(&self) -> Result<Vec<(i64, f64)>, DbError> {
         let mut stmt = self.conn.prepare(
             r#"
+            WITH
+            call_in AS (
+                SELECT target_id, COUNT(*) as deg FROM edges WHERE kind = 'calls' GROUP BY target_id
+            ),
+            call_out AS (
+                SELECT source_id, COUNT(*) as deg FROM edges WHERE kind = 'calls' GROUP BY source_id
+            ),
+            contains_cte AS (
+                SELECT source_id, COUNT(*) as deg FROM edges WHERE kind = 'contains' GROUP BY source_id
+            ),
+            impls AS (
+                SELECT target_id, COUNT(*) as deg FROM edges WHERE kind = 'implements' GROUP BY target_id
+            ),
+            max_deg AS (
+                SELECT
+                    COALESCE(MAX(deg), 0) as max_call_in,
+                    COALESCE((SELECT MAX(deg) FROM call_out), 0) as max_call_out,
+                    COALESCE((SELECT MAX(deg) FROM contains_cte), 0) as max_contains,
+                    COALESCE((SELECT MAX(deg) FROM impls), 0) as max_impls
+                FROM call_in
+            )
             SELECT
                 s.id,
-                CASE WHEN total_edges = 0 THEN 0.3
-                ELSE MIN(1.0, 0.3
-                    + 0.5 * MIN(1.0, COALESCE(call_in_degree, 0) / CAST(total_edges AS REAL))
-                    + 0.2 * MIN(1.0, COALESCE(contains_count, 0) / CAST(total_edges AS REAL))
-                    + 0.2 * MIN(1.0, COALESCE(implements_in_degree, 0) / 5.0)
-                ) END as importance
+                md.max_call_in, md.max_call_out, md.max_contains, md.max_impls,
+                COALESCE(ci.deg, 0), COALESCE(co.deg, 0), COALESCE(ct.deg, 0), COALESCE(im.deg, 0)
             FROM symbols s
-            LEFT JOIN (
-                SELECT target_id, COUNT(*) as call_in_degree
-                FROM edges WHERE kind = 'calls'
-                GROUP BY target_id
-            ) calls ON calls.target_id = s.id
-            LEFT JOIN (
-                SELECT target_id, COUNT(*) as import_in_degree
-                FROM edges WHERE kind = 'imports'
-                GROUP BY target_id
-            ) imports ON imports.target_id = s.id
-            LEFT JOIN (
-                SELECT source_id, COUNT(*) as contains_count
-                FROM edges WHERE kind = 'contains'
-                GROUP BY source_id
-            ) contained ON contained.source_id = s.id
-            LEFT JOIN (
-                SELECT target_id, COUNT(*) as implements_in_degree
-                FROM edges WHERE kind = 'implements'
-                GROUP BY target_id
-            ) impls ON impls.target_id = s.id
-            CROSS JOIN (
-                SELECT COUNT(*) as total_edges FROM edges
-            )
+            LEFT JOIN call_in ci ON ci.target_id = s.id
+            LEFT JOIN call_out co ON co.source_id = s.id
+            LEFT JOIN contains_cte ct ON ct.source_id = s.id
+            LEFT JOIN impls im ON im.target_id = s.id
+            CROSS JOIN max_deg md
             "#,
         )?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, f64>(1)?)))?;
-        rows.collect::<SqlResult<Vec<_>>>().map_err(DbError::from)
+
+        let rows: Vec<(i64, i64, i64, i64, i64, i64, i64, i64, i64)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
+                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?,
+                ))
+            })?
+            .collect::<SqlResult<Vec<_>>>()
+            .map_err(DbError::from)?;
+
+        let max_ci = rows.iter().map(|r| r.1).max().unwrap_or(0).max(1) as f64;
+        let max_co = rows.iter().map(|r| r.2).max().unwrap_or(0).max(1) as f64;
+        let max_ct = rows.iter().map(|r| r.3).max().unwrap_or(0).max(1) as f64;
+        let max_im = rows.iter().map(|r| r.4).max().unwrap_or(0).max(1) as f64;
+
+        let results: Vec<(i64, f64)> = rows
+            .into_iter()
+            .map(|(id, mci, _mco, _mct, _mim, ci, co, ct, im)| {
+                let mci_f = mci.max(1) as f64;
+                let imp = if mci_f == 0.0 {
+                    0.1
+                } else {
+                    let call_in_score = 0.35 * (ci as f64).sqrt() / mci_f.sqrt();
+                    let call_out_score = if max_co > 0.0 {
+                        0.20 * (co as f64).sqrt() / (max_co as f64).sqrt()
+                    } else {
+                        0.0
+                    };
+                    let contains_score = if max_ct > 0.0 {
+                        0.20 * (ct as f64).sqrt() / (max_ct as f64).sqrt()
+                    } else {
+                        0.0
+                    };
+                    let impls_score = 0.15 * (im as f64) / max_im;
+                    let bridge_score = if ci > 0 && co > 0 { 0.10 } else { 0.0 };
+                    (call_in_score + call_out_score + contains_score + impls_score + bridge_score).min(1.0)
+                };
+                (id, imp)
+            })
+            .collect();
+
+        Ok(results)
     }
 
     pub fn insert_file_edge(

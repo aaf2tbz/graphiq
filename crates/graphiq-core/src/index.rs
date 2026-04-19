@@ -309,6 +309,7 @@ impl<'a> Indexer<'a> {
         self.compute_edge_evidence()?;
         self.generate_search_hints()?;
         self.compute_numeric_bridges()?;
+        self.compute_deep_graph()?;
 
         Ok(stats)
     }
@@ -320,6 +321,22 @@ impl<'a> Indexer<'a> {
         eprintln!(
             "  numeric bridges: {} literals, {} constants, {} edges",
             stats.literals_found, stats.constants_found, stats.bridge_edges_created
+        );
+        Ok(())
+    }
+
+    fn compute_deep_graph(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::deep_graph::{compute_deep_graph_edges, compute_source_graph_edges};
+
+        let stats = compute_deep_graph_edges(self.db)?;
+        eprintln!(
+            "  deep graph: {} type-flow, {} error-type, {} data-shape edges",
+            stats.type_flow_edges, stats.error_type_edges, stats.data_shape_edges
+        );
+        let src_stats = compute_source_graph_edges(self.db)?;
+        eprintln!(
+            "  source graph: {} string-literal, {} comment-ref edges",
+            src_stats.string_literal_edges, src_stats.comment_ref_edges
         );
         Ok(())
     }
@@ -971,6 +988,27 @@ fn format_edge_role(edge_kind: &str, other_name: &str, is_outgoing: bool) -> Str
                 format!("uses constant {}", other_name)
             } else {
                 format!("constant used by {}", other_name)
+            }
+        }
+        "shares_type" => {
+            if is_outgoing {
+                format!("shares type with {}", other_name)
+            } else {
+                format!("shares type with {}", other_name)
+            }
+        }
+        "shares_error_type" => {
+            if is_outgoing {
+                format!("handles same error as {}", other_name)
+            } else {
+                format!("handles same error as {}", other_name)
+            }
+        }
+        "shares_data_shape" => {
+            if is_outgoing {
+                format!("accesses same fields as {}", other_name)
+            } else {
+                format!("accesses same fields as {}", other_name)
             }
         }
         _ => String::new(),

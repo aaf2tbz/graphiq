@@ -152,6 +152,9 @@ pub fn build_adjacency(db: &GraphDb) -> (SparseSym, Vec<i64>, HashMap<i64, usize
         ("contains", 0.5),
         ("shares_constant", 0.3),
         ("references_constant", 0.6),
+        ("shares_type", 0.35),
+        ("shares_error_type", 0.50),
+        ("shares_data_shape", 0.30),
     ];
 
     let mut edge_stmt = conn
@@ -173,9 +176,6 @@ pub fn build_adjacency(db: &GraphDb) -> (SparseSym, Vec<i64>, HashMap<i64, usize
     let mut edge_count = 0usize;
     let mut struct_edges: Vec<(usize, usize, f64)> = Vec::new();
     for (src, tgt, kind) in &edges {
-        if kind == "shares_constant" || kind == "references_constant" {
-            continue;
-        }
         if let (Some(&si), Some(&ti)) = (sym_id_to_idx.get(src), sym_id_to_idx.get(tgt)) {
             let w = edge_weights
                 .iter()
