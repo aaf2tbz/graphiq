@@ -1,0 +1,24 @@
+[
+  {"query": "how does esbuild follow symbol references across modules during bundling", "category": "nl-medium", "relevance": {"FollowSymbols": 3, "Resolver": 2, "PathPair": 1}},
+  {"query": "what steps does the renamer take to assign minified names without collisions", "category": "nl-medium", "relevance": {"MinifyRenamer": 3, "ComputeReservedNames": 2, "AssignNestedScopeSlots": 2, "NumberToMinifiedName": 1}},
+  {"query": "how are source map segments encoded and appended during output", "category": "nl-medium", "relevance": {"AppendSourceMapChunk": 3, "encodeVLQ": 2, "appendMappingToBuffer": 2, "DataForSourceMap": 1}},
+  {"query": "how does the linker split output into chunks and track cross-chunk deps", "category": "nl-medium", "relevance": {"ChunkBuilder": 3, "computeCrossChunkDependencies": 3, "MakeChunkBuilder": 1, "generateUniqueKeyPrefix": 1}},
+  {"query": "what filesystem abstraction supports both real and in-memory access", "category": "nl-medium", "relevance": {"FS": 3, "InMemoryOpenedFile": 2, "canonicalizeError": 1}},
+  {"query": "how does tree shaking simplify boolean expressions", "category": "nl-medium", "relevance": {"SimplifyBooleanExpr": 3, "FoldBinaryOperator": 2, "Assign": 1}},
+  {"query": "what AST lowering passes handle nullish coalescing and private fields", "category": "nl-medium", "relevance": {"lowerNullishCoalescing": 3, "lowerPrivateGet": 2, "captureThis": 1}},
+  {"query": "how does the parser handle JSX elements and text nodes", "category": "nl-medium", "relevance": {"parseJSXElement": 3, "EJSXText": 2, "GlobResolveAST": 1}},
+  {"query": "how are CSS rules hashed for deduplication during bundling", "category": "nl-medium", "relevance": {"HashRules": 3, "HashMediaQueries": 2, "HashCombine": 1}},
+  {"query": "what validation ensures identifiers are valid during printing", "category": "nl-medium", "relevance": {"EnsureValidIdentifier": 3, "IsIdentifier": 2, "ForceValidIdentifier": 2, "CanEscapeIdentifier": 1}},
+
+  {"query": "MinifyRenamer", "category": "symbol-exact", "relevance": {"MinifyRenamer": 3}},
+  {"query": "ChunkBuilder", "category": "symbol-exact", "relevance": {"ChunkBuilder": 3, "MakeChunkBuilder": 1}},
+  {"query": "SourceMap", "category": "symbol-exact", "relevance": {"SourceMap": 3}},
+  {"query": "Lexer", "category": "symbol-exact", "relevance": {"Lexer": 3}},
+  {"query": "computeCrossChunkDependencies", "category": "symbol-exact", "relevance": {"computeCrossChunkDependencies": 3}},
+
+  {"query": "sourcemap", "category": "symbol-partial", "relevance": {"SourceMap": 3, "appendMappingToBuffer": 2, "encodeVLQ": 1}},
+  {"query": "renamer", "category": "symbol-partial", "relevance": {"MinifyRenamer": 3, "Renamer": 2}},
+  {"query": "validate", "category": "symbol-partial", "relevance": {"validateSourceMap": 3, "validateLogLevel": 2, "validateColor": 1}},
+  {"query": "lower", "category": "symbol-partial", "relevance": {"lowerNullishCoalescing": 3, "lowerPrivateGet": 2}},
+  {"query": "encode", "category": "symbol-partial", "relevance": {"encodeVLQ": 3, "encodePacket": 2}}
+]

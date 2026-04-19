@@ -1,0 +1,12 @@
+[
+  {"query": "what happens when a cancellation token is triggered during a blocking task", "category": "nl-medium", "relevance": {"CancellationToken": 3, "cancel_task": 2, "BlockingPool": 2, "CancelData": 1}},
+  {"query": "how does the broadcast channel handle lagging receivers and backpressure", "category": "nl-medium", "relevance": {"BroadcastStream": 3, "BroadcastStreamRecvError": 2, "broadcast": 2}},
+  {"query": "what is the relationship between AsyncFd readiness guards and the IO driver", "category": "nl-medium", "relevance": {"AsyncFd": 3, "AsyncFdReadyGuard": 2, "Direction": 1}},
+  {"query": "how do drop guards and abort guards ensure cleanup when tasks are cancelled", "category": "nl-medium", "relevance": {"DropGuard": 3, "AbortGuard": 3, "AbortOnDrop": 2, "CallOnDrop": 1}},
+  {"query": "how does the runtime scheduler inject and process tasks from external sources", "category": "nl-medium", "relevance": {"schedule_task": 3, "InjectGuard": 2, "max_capacity": 1}},
+  {"query": "what budgeting mechanism prevents cooperative tasks from monopolizing the runtime", "category": "nl-medium", "relevance": {"consume_budget": 3, "Budget": 2, "BudgetDecrement": 2}},
+  {"query": "how does the DelayQueue manage expiration entries in its internal heap", "category": "nl-medium", "relevance": {"DelayQueue": 3, "insert_idx": 2, "pop_entry": 2, "CancellationQueueEntry": 1}},
+  {"query": "how do codec implementations handle frame delimiting and end-of-stream errors", "category": "nl-medium", "relevance": {"BytesCodec": 3, "AnyDelimiterCodec": 2, "AnyDelimiterCodecError": 2, "decode_eof": 1}},
+  {"query": "what synchronization primitives support multi-producer single-consumer patterns", "category": "nl-medium", "relevance": {"channel": 3, "unbounded_channel": 2, "TrySendError": 1, "TryRecvError": 1}},
+  {"query": "how does the runtime track which context flavor is active and prevent nesting violations", "category": "nl-medium", "relevance": {"EnterRuntime": 3, "CurrentThread": 2, "Configuration": 1}}
+]

@@ -1,0 +1,23 @@
+[
+  {"query": "which function recalls memories from the store", "category": "nl-easy", "expected_symbol": "recallMemories"},
+  {"query": "what function computes the trust profile for an entity", "category": "nl-easy", "expected_symbol": "computeTrustProfile"},
+  {"query": "where is the checkpoint flush initialized", "category": "nl-easy", "expected_symbol": "initCheckpointFlush"},
+  {"query": "which function deletes a memory from the database", "category": "nl-easy", "expected_symbol": "doDeleteMemory"},
+  {"query": "where is the SDK client class defined", "category": "nl-easy", "expected_symbol": "SignetClient"},
+  {"query": "what function selects the right schema table for a query", "category": "nl-easy", "expected_symbol": "selectSchemaTable"},
+  {"query": "which function builds the classification prompt", "category": "nl-easy", "expected_symbol": "buildClassifyPrompt"},
+  {"query": "what function exports an agent configuration as zip", "category": "nl-easy", "expected_symbol": "export_agent_zip"},
+  {"query": "where is the chunking logic for transcripts", "category": "nl-easy", "expected_symbol": "chunkTranscript"},
+  {"query": "what function resolves user mentions in messages", "category": "nl-easy", "expected_symbol": "resolveUserMentions"},
+
+  {"query": "where does the daemon rate limit LLM concurrency", "category": "nl-medium", "expected_symbol": "LlmConcurrencySemaphore"},
+  {"query": "what error signals the daemon is already running", "category": "nl-medium", "expected_symbol": "AlreadyRunningError"},
+  {"query": "which class handles the opencode harness connector", "category": "nl-medium", "expected_symbol": "OpenCodeConnector"},
+  {"query": "where is the token bucket rate limiter defined", "category": "nl-medium", "expected_symbol": "TokenBucketRateLimiter"},
+  {"query": "what function generates the AGENTS.md file for opencode", "category": "nl-medium", "expected_symbol": "generateAgentsMd"},
+  {"query": "which function checks if a memory group is noise", "category": "nl-medium", "expected_symbol": "is_noise_artifact_group"},
+  {"query": "where does the predictor check for model drift", "category": "nl-medium", "expected_symbol": "checkModelDrift"},
+  {"query": "what function collects training pairs for scoring", "category": "nl-medium", "expected_symbol": "collectTrainingPairs"},
+  {"query": "which error type wraps non-retryable pipeline failures", "category": "nl-medium", "expected_symbol": "NonRetryableError"},
+  {"query": "where is the canonical provider resolution logic", "category": "nl-medium", "expected_symbol": "canonical_provider"}
+]

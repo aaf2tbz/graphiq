@@ -136,6 +136,162 @@ Tokio is hard because its function names are generic. Esbuild is easy because it
 
 Optimizing aggregate MRR led to over-fitting on easy queries while ignoring hard ones. Better approach: pick decisive case studies (hard NL queries where BM25 fails) and treat them like a test suite.
 
+### Phase 12: Promote Deformed to Production
+
+Added `SearchMode` enum (`Fts`, `GooberV5`, `Geometric`, `Deformed`, `Routed`) with automatic capability negotiation. The engine checks for spectral, predictive, and fingerprint artifacts and selects the strongest available mode. No silent downgrade — CLI debug output, MCP status, and search result metadata all report the active mode. This closed the trust gap where benchmarks measured Deformed but users got GooberV5.
+
+### Phase 13–14: Artifact Lifecycle + Query Family Router
+
+**Phase 13**: Added `.graphiq/manifest.json` tracking artifact freshness (fts, cruncher, holo, spectral, predictive, fingerprints). Heavy artifacts marked stale when graph topology changes. `graphiq doctor` reports status; `graphiq upgrade-index` rebuilds.
+
+**Phase 14**: Moved from binary Navigational/Informational intent to an 8-family `QueryFamily` classifier:
+
+| Family | Detection | Example |
+|---|---|---|
+| SymbolExact | Exact name match, PascalCase | `CancellationToken` |
+| SymbolPartial | Short fragment, single word | `cancel` |
+| FilePath | Path separators, extensions | `scheduler/worker.rs` |
+| ErrorDebug | Panic/error/failed/deadlock/timeout | `timeout in channel send` |
+| NaturalDescriptive | Behavioral description | `encode a value in VLQ` |
+| NaturalAbstract | "how does", "what controls" | `how does auth work` |
+| CrossCuttingSet | "all", "every", plural nouns | `all connector implementations` |
+| Relationship | "relationship between", "vs" | `AsyncFd vs readiness guard` |
+
+Each family produces a `RetrievalPolicy` that gates which signals are allowed to influence ranking. This is the key architectural shift: the classifier doesn't return "intent" — it returns **permission boundaries** for downstream signals.
+
+### Phase 15–16: File Path Router + Cross-Cutting Sets
+
+**Phase 15**: Built a file/path index with path tokens, basename tokens, directory tokens, extension/language, and public symbols per file. `FilePath` family queries rank files first, then return representative symbols inside matched files. Fixed the embarrassing zero on file-path NDCG for esbuild (0.000 → 0.148).
+
+**Phase 16**: Cross-cutting set detection clusters candidates by shared interface/trait, same directory family, same role tag, or shared morphology. Returns cluster metadata (key, coverage count, representative reason) instead of a flat ranked list. This is answer-shape routing: some queries want a ranked point, some want a set.
+
+### Phase 17: Gated Edge Evidence
+
+Edge evidence profiles (direct, structural, reinforcing, boundary, incidental) from Phase 7 now feed into retrieval, but **only for families where structural relation matters**: `NaturalAbstract`, `CrossCuttingSet`, `Relationship`, `ErrorDebug`. Disabled for `SymbolExact`, weak for `SymbolPartial`. Edge weight becomes `edge_kind_weight(kind) * evidence_weight(profile)` with family-based gating. This respects the research lesson: evidence is valuable when the user asks a structural question, but noise when the user already knows the symbol name.
+
+### Phase 18: Why-Chain Unification
+
+Created `RetrievalTrace` — a single proof object that both ranking and explanation consume:
+
+```
+RetrievalTrace {
+    query_family, search_mode,
+    seed_hits, expansions, evidence_edges,
+    score_terms, confidence
+}
+```
+
+Every search result optionally carries this trace in debug mode. MCP `why` reads the trace model, not a separate reconstruction. This makes ranking explanations falsifiable: "BM25 seeded X, heat diffusion reached Y through boundary edges, MDL kept it because it uniquely explained token Z" is the level of detail.
+
+### Phase 19: Benchmark Lab Notebook
+
+Expanded the benchmark harness significantly:
+
+- **v4 query design**: Separate NDCG and MRR query sets with different structures. NDCG queries use graded relevance (3=perfect, 2=good, 1=related) with multiple relevant symbols. MRR queries use single target symbols (`expected_symbol`). Each has easy (name hints in query) and medium (purely behavioral description) subsets.
+- **Medium difficulty NL queries are the real test** — they simulate "drop codebase in, ask a real question." ~40-50% miss rate on medium NL is the frontier to improve.
+- **MRR bench expanded**: Now reports MRR, P@10, R@10, H@1–H@10 (not just 1/3/5/10), and miss count. MRR queries also support `relevance` maps for multi-symbol first-hit matching.
+- **12 bench methods**: BM25, CRv1, CRv2, Goober, GooV3, GooV4, GooV5, Geometric, Curved, Deformed, Routed, CARE.
+
+### Phase 20: Repo Self-Model
+
+Built `RepoSelfModel` — deterministic, graph-derived concept nodes without embeddings:
+
+```
+ConceptNode {
+    name: "Subsystem:runtime_scheduler",
+    kind: Subsystem | ErrorSurface | TestSurface | PublicAPI,
+    symbols: [...],
+    terms: [...],
+    summary: "..."
+}
+```
+
+Concepts are built from subsystems (detected via edge density), error surfaces (error/panic symbols), test surfaces (test/assert symbols), and public APIs (exported/public symbols). Wired into `SearchEngine` for `NaturalAbstract` queries only — abstract questions hit concept nodes first, symbols second.
+
+Results: esbuild nl-abstract improved 0.111 → 0.156, signetai 0.049 → 0.098, tokio 0.000 (no change — tokio's generic names make concept extraction unreliable). Cross-cutting regression when applied to `CrossCuttingSet` queries — removed that wiring.
+
+### Phase 21: CARE — Confidence-Anchored Reciprocal Expansion
+
+CARE fuses GooV5 (best MRR) and Routed (best NDCG) into a single retrieval method. The insight: GooV5 captures **lexical precision** (name-matching confidence), while Routed captures **structural recall** (graph traversal finds neighbors BM25 misses). These are orthogonal signals.
+
+**Fusion algorithm:**
+
+1. Normalize both result sets to [0, 1] via max-score normalization
+2. Three evidence tiers:
+   - **Convergent** (both methods found it): `0.6*g_norm + 0.4*r_norm + 0.10` convergence bonus
+   - **Lexical-only** (GooV5 only): `0.7 * g_norm`
+   - **Structural-only** (Routed only): `0.45 * r_norm` + rank bonus (0.15 for rank-1, 0.08 for rank 2-3)
+3. **BM25 anchor**: if GooV5's rank-1 matches BM25's rank-1 with >1.2x confidence gap, force it to position 1
+
+**What didn't work in CARE development:**
+- **Hard tier ordering** (convergent first always): Too blunt — causes false promotions when both methods found a symbol for different reasons
+- **Pure RRF (Reciprocal Rank Fusion)**: Works but doesn't beat either parent
+- **Score signal addition** (0.3 * max(g,r)): Amplifies wrong candidates
+- **BM25-adaptive weighting by confidence thresholds**: Too coarse — binary thresholds don't capture the continuous confidence signal
+
+**CARE results (v4 queries):**
+
+| Metric | GooV5 | Routed | CARE |
+|---|---|---|---|
+| Signetai MRR | 0.721 | 0.691 | **0.696** |
+| Tokio MRR | 0.467 | 0.348 | **0.493** |
+| Esbuild MRR | 0.713 | **0.740** | 0.693 |
+| Signetai NDCG | 0.375 | **0.405** | 0.384 |
+| Tokio NDCG | 0.305 | **0.413** | 0.363 |
+| Esbuild NDCG | 0.430 | **0.514** | 0.496 |
+
+CARE beats both parents on MRR for signetai (+0.005 over GooV5) and tokio (+0.026 over GooV5), but never beats Routed on NDCG. The esbuild MRR regression (0.740→0.693) is the remaining problem — esbuild's descriptive names give Routed a strong structural signal that CARE dampens by blending with GooV5's lexical signal.
+
+**Key insight**: Score normalization is critical. Without it, GooV5's raw scores (often 10-100x larger than Routed's) dominate the fusion. Max-score normalization makes the two signals comparable.
+
+## Key Lessons
+
+### 1. BM25 is hard to beat
+
+Every system that tried to replace BM25 failed. The winning pattern is always BM25 retrieves + structural math reranks. BM25's inverted index is O(1) and its ranking is remarkably good for code search where identifiers carry meaning.
+
+### 2. Simpler is better
+
+CruncherV2 had 6 scoring mechanisms. Goober has 3. Goober wins everywhere. The complex interference mechanics captured patterns already captured by simpler coverage + name scoring, while introducing noise on codebases with generic function names.
+
+### 3. Confidence matters
+
+Two forms of confidence preservation:
+- **BM25 confidence lock**: When BM25 rank-1 has a >1.2x gap, lock it. Demoting confident BM25 results is almost always wrong.
+- **Signal confidence gate**: When a secondary signal (holographic, structural) is only moderately confident, don't use it. Only apply signals when they're strongly confident.
+
+### 4. Additive beats multiplicative
+
+Multiplicative boosts (V6) just reshuffle existing rankings. Additive contributions (V7, V5) can genuinely promote candidates the base score would miss. But additive contributions need gating to prevent false promotions from moderate-similarity noise. This lesson recurred in Phase 11: replacing weights entirely caused regressions; adding adjustments preserved gains.
+
+### 5. Gate your signals
+
+The raw holographic cosine has 6.8x separation — strong signal. But adding it indiscriminately caused false promotions. The gate (threshold 0.25 + query specificity scaling) turned a net-negative feature into a net-positive across all codebases. The gate adapts to the codebase: descriptive names (esbuild) pass the gate, generic names (tokio) don't. No codebase-specific tuning required.
+
+### 6. Compute geometry, don't score it
+
+Ricci curvature is a real structural signal (Ollivier-Ricci on the code graph). But using it as a scoring feature — curvature-weighted diffusion, per-node average curvature as a boost — produced no improvement. The geometry is infrastructure, not a ranking signal. The heat diffusion that exploits the graph topology is useful; the curvature of that topology is not (at least not for ranking).
+
+### 7. Chebyshev order is the dominant parameter
+
+Ran 673 parameter combinations for heat diffusion. Only chebyshev_order matters (15 is best). Heat_t, walk_weight, and heat_top_k are remarkably insensitive across their full ranges. This suggests the diffusion's sensitivity is in the polynomial approximation quality, not the physical time constant or expansion breadth.
+
+### 8. Codebase characteristics matter more than query characteristics
+
+Tokio is hard because its function names are generic. Esbuild is easy because its names are descriptive. Signetai is in between. The retrieval system needs to be robust across all three — a system that overfits to one codebase's characteristics will fail on another.
+
+### 9. Aggregate MRR is misleading
+
+Optimizing aggregate MRR led to over-fitting on easy queries while ignoring hard ones. Better approach: pick decisive case studies (hard NL queries where BM25 fails) and treat them like a test suite.
+
+### 10. NDCG and MRR measure different things
+
+NDCG measures ranking quality across multiple relevant items. MRR measures first-hit accuracy. They require different query sets: NDCG queries need graded relevance with multiple relevant symbols; MRR queries need a single target symbol. Mixing them obscures both signals. **H@3 is the metric that matters for agent recall** — a smart agent scans top 3 results and picks. NDCG captures ranking quality; MRR captures precision-at-one.
+
+### 11. Fusion requires score normalization
+
+When fusing two retrieval methods, raw scores are incomparable — GooV5's scores can be 10-100x Routed's. Max-score normalization to [0, 1] is essential before any fusion logic. Without it, the higher-scoring method dominates regardless of fusion weights.
+
 ## What Didn't Work
 
 - **Walk tuning** (edge types, density, adaptive depth): The walk pipeline is well-tuned. All modifications produced zero improvement.
@@ -146,12 +302,20 @@ Optimizing aggregate MRR led to over-fitting on easy queries while ignoring hard
 - **LSA reranker**: Helps signetai MRR +0.025, hurts tokio NDCG -0.020. Removed from pipeline.
 - **SEC reranker**: Hurts ALL three codebases. Removed from pipeline.
 - **Channel capacity weight replacement**: Replacing Nav/Info weights with channel-derived weights regressed NDCG on all codebases. Additive adjustments work.
+- **Self-model on cross-cutting queries**: Concept nodes help `nl-abstract` but regress `CrossCuttingSet` — removed that wiring.
+- **CARE hard tier ordering**: Forcing all convergent results above all single-method results causes false promotions.
+- **CARE score signal addition**: Amplifying by `max(goober, routed)` scores promotes wrong candidates.
+- **CARE BM25-adaptive confidence weighting**: Binary confidence thresholds too coarse for continuous fusion.
 
 ## Open Questions
 
-- **Weak categories**: file-path (0.000 everywhere), nl-abstract (~0.000–0.098), and cross-cutting (~0.000–0.282) remain unsolved. These require fundamentally different approaches (file path routing, semantic abstraction, cross-cutting concern detection).
+- **CARE esbuild MRR regression**: 0.740 → 0.693. Routed's structural signal is strong on esbuild's descriptive names; blending dampens it.
+- **CARE vs Routed on NDCG**: CARE never beats Routed on NDCG@10. Is there a fusion that can?
+- **Weak categories**: nl-abstract (0.000–0.156) and cross-cutting (~0.000–0.282) remain unsolved despite self-model and set retrieval.
 - **More codebases**: Current benchmark covers TS, Rust, Go. Need Python, Java to validate generalizability.
-- **Statistical significance**: 30–47 queries per codebase is small. Bootstrap resampling would help determine whether differences are real.
+- **Statistical significance**: 20 queries per codebase per metric is small. Bootstrap resampling would help determine whether differences are real.
+- **CARE in production**: Currently bench-only. Should it replace Routed as the default search mode?
+- **Wire CARE into search pipeline**: Currently post-hoc fusion of two separate search calls. For production, needs to be integrated into the search pipeline directly.
 
 ## Cross-References to Roadmap
 
@@ -167,3 +331,5 @@ These precedents from failed experiments are directly relevant to future phases:
 | Isotropic LSA | Captured patterns already in BM25; anisotropic correction didn't help either |
 | Ricci curvature scoring | Geometry as infrastructure, not ranking signal |
 | Channel capacity replacement | Additive adjustments work; full replacement causes regressions |
+| CARE hard tier ordering | Fusion must respect confidence continuum, not binary tiers |
+| Self-model on cross-cutting | Concept nodes help abstract queries but hurt set queries — different answer shapes need different substrates |

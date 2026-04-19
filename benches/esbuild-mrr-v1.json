@@ -1,0 +1,23 @@
+[
+  {"query": "which function analyzes a metafile and returns its statistics", "category": "nl-easy", "expected_symbol": "AnalyzeMetafile"},
+  {"query": "what function parses a JSX element into an AST node", "category": "nl-easy", "expected_symbol": "parseJSXElement"},
+  {"query": "where is the VLQ encoding for source maps implemented", "category": "nl-easy", "expected_symbol": "encodeVLQ"},
+  {"query": "which function computes cross-chunk dependencies for code splitting", "category": "nl-easy", "expected_symbol": "computeCrossChunkDependencies"},
+  {"query": "where is the canonicalize filesystem error defined", "category": "nl-easy", "expected_symbol": "canonicalizeError"},
+  {"query": "what function converts internal log messages to public API types", "category": "nl-easy", "expected_symbol": "convertMessagesToPublic"},
+  {"query": "which function scans all import dependencies recursively", "category": "nl-easy", "expected_symbol": "scanAllDependencies"},
+  {"query": "where is the lexer that tokenizes JavaScript source", "category": "nl-easy", "expected_symbol": "Lexer"},
+  {"query": "what function generates line offset tables for source maps", "category": "nl-easy", "expected_symbol": "GenerateLineOffsetTables"},
+  {"query": "which function determines the loader from a file extension", "category": "nl-easy", "expected_symbol": "LoaderFromFileExtension"},
+
+  {"query": "where does the renamer compute reserved names that can't be minified", "category": "nl-medium", "expected_symbol": "ComputeReservedNames"},
+  {"query": "what function assigns scope slots across nested bindings", "category": "nl-medium", "expected_symbol": "AssignNestedScopeSlots"},
+  {"query": "where is the CSS rules hashing logic for deduplication", "category": "nl-medium", "expected_symbol": "HashRules"},
+  {"query": "which function checks if a string is a valid JS identifier", "category": "nl-medium", "expected_symbol": "IsIdentifier"},
+  {"query": "what function forces a string to become a valid identifier", "category": "nl-medium", "expected_symbol": "ForceValidIdentifier"},
+  {"query": "where does the printer check if an identifier can be escaped", "category": "nl-medium", "expected_symbol": "CanEscapeIdentifier"},
+  {"query": "which function folds binary operators during tree shaking", "category": "nl-medium", "expected_symbol": "FoldBinaryOperator"},
+  {"query": "where is the graph cloning logic for the linker", "category": "nl-medium", "expected_symbol": "CloneLinkerGraph"},
+  {"query": "what function compiles a filter expression for plugin matching", "category": "nl-medium", "expected_symbol": "CompileFilterForPlugin"},
+  {"query": "where does esbuild check if a path is inside node_modules", "category": "nl-medium", "expected_symbol": "IsInsideNodeModules"}
+]

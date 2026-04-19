@@ -1,13 +1,16 @@
 # GraphIQ
 
-Instant, accurate code search powered by BM25 + structural graph analysis + spectral heat diffusion + predictive deformation. No embeddings. No model dependencies. Drop a codebase in and search.
+Instant, accurate code search powered by BM25 + structural graph analysis + spectral heat diffusion + query family routing + CARE fusion. No embeddings. No model dependencies. Drop a codebase in and search.
 
-**Deformed: NDCG 0.510 (esbuild), 0.440 (signetai), 0.371 (tokio)**
+**Routed: NDCG@10 0.514 (esbuild), 0.413 (tokio), 0.405 (signetai) | CARE: MRR 0.493 (tokio)**
 
 ## How It Works
 
 ```
 Query: "rate limit middleware"
+        |
+        v
+  Query Family Router (8 families)
         |
         v
   BM25/FTS  -->  30 seeds
@@ -27,30 +30,36 @@ Query: "rate limit middleware"
   Holographic Name Gate  -->  confidence-filtered boost
         |
         v
+  [CARE] Fusion: GooV5 (lexical) + Routed (structural)
+  Confidence-anchored score fusion + BM25 anchor
+        |
+        v
   Confidence Lock  -->  top_k results
 ```
 
-BM25 retrieves seeds. Chebyshev heat diffusion propagates relevance across the graph's structural topology. Phase 11 adds three deformation signals: predictive surprise (how unexpected is this query given the symbol's neighborhood?), channel capacity routing (structural role-aware weight blending instead of binary Nav/Info), and MDL explanation sets (greedy coverage with early stopping). All feed into the SEC + negentropy + holographic scoring pipeline. See [docs/retrieval.md](docs/retrieval.md) for full pipeline details.
+BM25 retrieves seeds. The query family router classifies the query and gates which downstream signals may influence ranking. Chebyshev heat diffusion propagates relevance across the graph's structural topology. Three deformation signals adapt scoring per-query. For CARE mode, GooV5's lexical precision and Routed's structural recall are fused via normalized score fusion with convergence bonuses. See [docs/retrieval.md](docs/retrieval.md) for full pipeline details.
 
 ## Benchmarks
 
-NDCG@10 across 3 codebases (v3 queries, 7 categories):
+NDCG@10 across 3 codebases (v4 queries, 12 methods):
 
-| Codebase | BM25 | GooV4 | GooV5 | Geometric | **Deformed** |
+| Codebase | BM25 | GooV5 | Geometric | Deformed | **Routed** | CARE |
+|---|---|---|---|---|---|---|
+| esbuild (Go) | 0.299 | 0.430 | 0.480 | 0.483 | **0.514** | 0.496 |
+| signetai (TS) | 0.287 | 0.375 | 0.367 | 0.367 | **0.405** | 0.384 |
+| tokio (Rust) | 0.272 | 0.305 | 0.353 | 0.355 | **0.413** | 0.363 |
+
+MRR across 3 codebases (v4 queries, disjoint from NDCG):
+
+| Codebase | BM25 | GooV5 | Geometric | Routed | **CARE** |
 |---|---|---|---|---|---|
-| esbuild (Go) | 0.315 | 0.383 | 0.504 | 0.501 | **0.510** |
-| signetai (TS) | 0.334 | 0.388 | 0.444 | **0.441** | 0.440 |
-| tokio (Rust) | 0.249 | 0.246 | 0.367 | 0.368 | **0.371** |
+| esbuild | 0.575 | 0.713 | 0.763 | **0.740** | 0.693 |
+| signetai | 0.650 | **0.721** | 0.700 | 0.691 | 0.696 |
+| tokio | 0.375 | 0.467 | 0.425 | 0.348 | **0.493** |
 
-MRR across 3 codebases (v3 queries, disjoint from NDCG):
+12 retrieval methods tested: BM25, CRv1, CRv2, Goober, GooV3, GooV4, GooV5, Geometric, Curved, Deformed, Routed, CARE.
 
-| Codebase | BM25 | GooV4 | GooV5 | Geometric | **Deformed** |
-|---|---|---|---|---|---|
-| esbuild | 0.624 | 0.652 | 0.669 | **0.676** | 0.676 |
-| signetai | 0.843 | 0.810 | 0.885 | **0.924** | 0.924 |
-| tokio | 0.627 | 0.560 | 0.612 | 0.637 | **0.674** |
-
-Full results including per-category and per-query breakdowns: [docs/benchmarks.md](docs/benchmarks.md)
+Full results including per-category breakdowns, H@1-10, P@10, R@10: [docs/benchmarks.md](docs/benchmarks.md)
 
 ## Quick Start
 
@@ -119,7 +128,7 @@ graphiq search "authenticateUser" --top 20 --file src/auth/
 graphiq search "error handler" --debug
 ```
 
-`--debug` prints per-result score breakdowns.
+`--debug` prints per-result score breakdowns and the active search mode (Routed, GooV5, etc.).
 
 ### `graphiq blast`
 
@@ -132,7 +141,7 @@ graphiq blast RateLimiter --depth 5 --direction forward
 
 ### `graphiq spectral`
 
-Compute the spectral embedding (Laplacian eigendecomposition + Chebyshev heat kernel infrastructure). Required for the Geometric and Deformed search modes.
+Compute the spectral embedding (Laplacian eigendecomposition + Chebyshev heat kernel infrastructure). Required for the Geometric, Deformed, and Routed search modes.
 
 ```bash
 graphiq spectral --db .graphiq/graphiq.db
@@ -164,7 +173,8 @@ Zero setup. No project needed.
 ```bash
 graphiq index /path/to/project     # index a project
 graphiq reindex /path/to/project   # reindex
-graphiq status                      # show index stats
+graphiq status                      # show index stats, active search mode, artifact freshness
+graphiq doctor                      # diagnose index issues
 ```
 
 ### `graphiq-bench`
@@ -172,7 +182,7 @@ graphiq status                      # show index stats
 Benchmark and tune retrieval methods.
 
 ```bash
-# Run full benchmark suite
+# Run full benchmark suite (12 methods, NDCG + MRR)
 graphiq-bench <db> <ndcg-queries.json> <mrr-queries.json>
 
 # Parameter tuning (outputs CSV)
@@ -194,7 +204,7 @@ graphiq-bench fuzz <db>
 | `search` | Ranked symbol search with file filter and top_k (max 50) |
 | `blast` | Blast radius — forward/backward/both, depth 1-10 |
 | `context` | Full source + structural neighborhood |
-| `status` | Index stats, project root, database size |
+| `status` | Index stats, project root, database size, active search mode |
 | `index` | (Re)index the project on demand |
 
 ```bash
@@ -224,9 +234,9 @@ Manual configuration for any MCP client:
 
 ## Documentation
 
-- [docs/retrieval.md](docs/retrieval.md) — Retrieval pipeline, SEC, NG scoring, holographic name gate, geometric search, deformation
-- [docs/benchmarks.md](docs/benchmarks.md) — Full benchmark results and methodology
-- [docs/research.md](docs/research.md) — Experimental history and lessons learned
+- [docs/retrieval.md](docs/retrieval.md) — Retrieval pipeline, SEC, NG scoring, holographic name gate, geometric search, deformation, query family routing
+- [docs/benchmarks.md](docs/benchmarks.md) — Full benchmark results (v3 + v4), 12 methods, H@1-10, P@10, R@10, per-category breakdowns
+- [docs/research.md](docs/research.md) — Experimental history, 21 phases of research, lessons learned, what didn't work
 - [ROADMAP.md](docs/ROADMAP.md) — Current state and next steps
 
 ## Architecture
@@ -236,11 +246,22 @@ Single-file SQLite database at `.graphiq/graphiq.db`. Rust, edition 2021. No run
 ```
 graphiq/
   crates/
-    graphiq-core/       # Core library
+    graphiq-core/       # Core library (search, cruncher, spectral, self_model, trace, query_family)
     graphiq-cli/        # CLI binary
     graphiq-mcp/        # MCP server binary
-    graphiq-bench/      # Benchmark binary
+    graphiq-bench/      # Benchmark binary (12 methods including CARE fusion)
 ```
+
+### Key Components
+
+| Component | File | Purpose |
+|---|---|---|
+| SearchEngine | `search.rs` | Main search entry point, query family dispatch, artifact negotiation |
+| CruncherIndex | `cruncher.rs` | GooV5 search, holographic encoding, SEC scoring |
+| SpectralIndex | `spectral.rs` | Chebyshev heat diffusion, channel fingerprints |
+| QueryFamily | `query_family.rs` | 8-family query classifier, retrieval policy generation |
+| RepoSelfModel | `self_model.rs` | Deterministic concept nodes for abstract queries |
+| RetrievalTrace | `trace.rs` | Proof-carrying search results for `why` tool |
 
 ## License
 

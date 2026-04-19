@@ -1,0 +1,12 @@
+[
+  {"query": "where is the OpenCode connector configured and what does it register", "category": "nl-medium", "relevance": {"OpenCodeConnector": 3, "registerMcpServer": 2, "registerPipelineAgent": 2, "ensureConfigFile": 1}},
+  {"query": "what error types does the daemon pipeline use for rate limiting and concurrency", "category": "nl-medium", "relevance": {"RateLimitExceededError": 3, "SemaphoreTimeoutError": 3, "TokenBucketRateLimiter": 2, "LlmConcurrencySemaphore": 2}},
+  {"query": "how does the SDK client authenticate and handle transport errors", "category": "nl-medium", "relevance": {"SignetClient": 3, "SignetTransport": 2, "SignetApiError": 2, "SignetNetworkError": 1}},
+  {"query": "which session state stores exist and how do they differ across extensions", "category": "nl-medium", "relevance": {"BaseSessionStateStore": 3, "OmpSessionStateStore": 2, "PiSessionStateStore": 2}},
+  {"query": "how does the filesystem connector discover and watch agent config files", "category": "nl-medium", "relevance": {"FilesystemConnector": 3, "ensureConfigFile": 2, "generateAgentsMd": 1}},
+  {"query": "what validation errors can occur when configuring memory or pipeline settings", "category": "nl-medium", "relevance": {"MemoryConfigValidationError": 3, "PipelineConfigValidationError": 3}},
+  {"query": "how does the event bus connect daemon components and propagate agent events", "category": "nl-medium", "relevance": {"SignetEventBus": 3, "AgentSession": 2, "Logger": 1}},
+  {"query": "what connectors exist for third-party harness integrations", "category": "nl-medium", "relevance": {"ClaudeCodeConnector": 2, "CodexConnector": 2, "ForgeConnector": 2, "OpenCodeConnector": 2}},
+  {"query": "how does the daemon prevent duplicate startup and handle already-running errors", "category": "nl-medium", "relevance": {"AlreadyRunningError": 3, "NonRetryableError": 2}},
+  {"query": "how do memory extraction results flow into chunking and artifact detection", "category": "nl-medium", "relevance": {"ExtractionResult": 3, "ChunkerConfig": 2, "is_noise_artifact_group": 1, "chunkTranscript": 1}}
+]

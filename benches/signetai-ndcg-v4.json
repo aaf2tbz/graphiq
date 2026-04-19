@@ -1,0 +1,24 @@
+[
+  {"query": "how does the SDK authenticate and handle transport", "category": "nl-medium", "relevance": {"SignetClient": 3, "SignetTransport": 2, "SignetApiError": 1, "SignetNetworkError": 1}},
+  {"query": "what error types does the pipeline raise for rate limiting", "category": "nl-medium", "relevance": {"RateLimitExceededError": 3, "SemaphoreTimeoutError": 3, "TokenBucketRateLimiter": 2, "LlmConcurrencySemaphore": 1}},
+  {"query": "how are session states managed across pi and omp extensions", "category": "nl-medium", "relevance": {"BaseSessionStateStore": 3, "OmpSessionStateStore": 2, "PiSessionStateStore": 2}},
+  {"query": "what connectors integrate third party harnesses", "category": "nl-medium", "relevance": {"ClaudeCodeConnector": 2, "CodexConnector": 2, "ForgeConnector": 2, "OpenCodeConnector": 2, "HermesAgentConnector": 1}},
+  {"query": "how does the daemon prevent duplicate startup", "category": "nl-medium", "relevance": {"AlreadyRunningError": 3, "NonRetryableError": 2}},
+  {"query": "what validation errors exist for memory and pipeline config", "category": "nl-medium", "relevance": {"MemoryConfigValidationError": 3, "PipelineConfigValidationError": 3}},
+  {"query": "how do extraction results flow into chunking and noise detection", "category": "nl-medium", "relevance": {"ExtractionResult": 3, "ChunkerConfig": 2, "is_noise_artifact_group": 1, "chunkTranscript": 1}},
+  {"query": "how does the event bus propagate events to daemon components", "category": "nl-medium", "relevance": {"SignetEventBus": 3, "AgentSession": 1}},
+  {"query": "how does the opencode connector register agents and mcp servers", "category": "nl-medium", "relevance": {"OpenCodeConnector": 3, "registerMcpServer": 2, "registerPipelineAgent": 2, "ensureConfigFile": 1}},
+  {"query": "how does the filesystem connector discover config files", "category": "nl-medium", "relevance": {"FilesystemConnector": 3, "ensureConfigFile": 2, "generateAgentsMd": 1}},
+
+  {"query": "recallMemories", "category": "symbol-exact", "relevance": {"recallMemories": 3}},
+  {"query": "computeTrustProfile", "category": "symbol-exact", "relevance": {"computeTrustProfile": 3}},
+  {"query": "initCheckpointFlush", "category": "symbol-exact", "relevance": {"initCheckpointFlush": 3}},
+  {"query": "doDeleteMemory", "category": "symbol-exact", "relevance": {"doDeleteMemory": 3}},
+  {"query": "SignetClient", "category": "symbol-exact", "relevance": {"SignetClient": 3}},
+
+  {"query": "embedding", "category": "symbol-partial", "relevance": {"EmbeddingRow": 3, "embeddings_stats": 2}},
+  {"query": "evict", "category": "symbol-partial", "relevance": {"evictOldestKey": 3}},
+  {"query": "supersede", "category": "symbol-partial", "relevance": {"applySupersession": 3}},
+  {"query": "pipeline", "category": "symbol-partial", "relevance": {"loadPipelineConfig": 3, "PipelineNodeDef": 2}},
+  {"query": "connector", "category": "symbol-partial", "relevance": {"OpenCodeConnector": 3, "ClaudeCodeConnector": 2, "CodexConnector": 1}}
+]

@@ -1,0 +1,12 @@
+[
+  {"query": "how does esbuild resolve and follow symbol references across modules during bundling", "category": "nl-medium", "relevance": {"FollowSymbols": 3, "Resolver": 2, "PathPair": 1}},
+  {"query": "what steps does the renamer take to assign minified names and avoid collisions", "category": "nl-medium", "relevance": {"MinifyRenamer": 3, "ComputeReservedNames": 2, "AssignNestedScopeSlots": 2, "NumberToMinifiedName": 1}},
+  {"query": "how are source map segments encoded and appended during chunk emission", "category": "nl-medium", "relevance": {"AppendSourceMapChunk": 3, "encodeVLQ": 2, "appendMappingToBuffer": 2, "DataForSourceMap": 1}},
+  {"query": "how does the linker split code into chunks and compute cross-chunk dependencies", "category": "nl-medium", "relevance": {"ChunkBuilder": 3, "computeCrossChunkDependencies": 3, "MakeChunkBuilder": 1, "generateUniqueKeyPrefix": 1}},
+  {"query": "what filesystem abstraction layer supports both real and in-memory file access", "category": "nl-medium", "relevance": {"FS": 3, "InMemoryOpenedFile": 2, "canonicalizeError": 1, "IsInsideNodeModules": 1}},
+  {"query": "how does tree shaking simplify boolean expressions and dead code", "category": "nl-medium", "relevance": {"SimplifyBooleanExpr": 3, "FoldBinaryOperator": 2, "Assign": 1}},
+  {"query": "what AST lowering passes transform modern JavaScript syntax for older targets", "category": "nl-medium", "relevance": {"lowerNullishCoalescing": 3, "lowerPrivateGet": 2, "captureThis": 1}},
+  {"query": "how does the parser handle JSX elements and integrate them into the AST", "category": "nl-medium", "relevance": {"parseJSXElement": 3, "EJSXText": 2, "GlobResolveAST": 1}},
+  {"query": "how are CSS rules hashed and deduplicated during bundling", "category": "nl-medium", "relevance": {"HashRules": 3, "HashMediaQueries": 2, "HashCombine": 1}},
+  {"query": "what validation logic ensures identifiers are valid and escapable during printing", "category": "nl-medium", "relevance": {"EnsureValidIdentifier": 3, "IsIdentifier": 2, "ForceValidIdentifier": 2, "CanEscapeIdentifier": 1}}
+]

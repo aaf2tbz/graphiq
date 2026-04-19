@@ -1,0 +1,24 @@
+[
+  {"query": "how does the runtime scheduler inject and dispatch tasks", "category": "nl-medium", "relevance": {"schedule_task": 3, "InjectGuard": 2, "max_capacity": 1}},
+  {"query": "what budgeting mechanism prevents cooperative task starvation", "category": "nl-medium", "relevance": {"consume_budget": 3, "Budget": 2, "BudgetDecrement": 1}},
+  {"query": "how do drop guards and abort guards ensure task cleanup", "category": "nl-medium", "relevance": {"DropGuard": 3, "AbortGuard": 3, "AbortOnDrop": 2, "CallOnDrop": 1}},
+  {"query": "how does the broadcast channel handle lagging receivers", "category": "nl-medium", "relevance": {"BroadcastStream": 3, "BroadcastStreamRecvError": 2, "broadcast": 2}},
+  {"query": "what is the relationship between AsyncFd and readiness guards", "category": "nl-medium", "relevance": {"AsyncFd": 3, "AsyncFdReadyGuard": 2, "Direction": 1}},
+  {"query": "how does the DelayQueue manage expiration in its internal heap", "category": "nl-medium", "relevance": {"DelayQueue": 3, "insert_idx": 2, "pop_entry": 2, "CancellationQueueEntry": 1}},
+  {"query": "how do codec implementations handle frame delimiters and EOF", "category": "nl-medium", "relevance": {"BytesCodec": 3, "AnyDelimiterCodec": 2, "decode_eof": 2, "AnyDelimiterCodecError": 1}},
+  {"query": "what synchronization primitives support bounded and unbounded channels", "category": "nl-medium", "relevance": {"channel": 3, "unbounded_channel": 2, "TrySendError": 1, "TryRecvError": 1}},
+  {"query": "how does the runtime track active context and prevent nesting violations", "category": "nl-medium", "relevance": {"EnterRuntime": 3, "CurrentThread": 2, "Configuration": 1}},
+  {"query": "how do child process stdio streams map to async read and write", "category": "nl-medium", "relevance": {"ChildStdin": 3, "ChildStdout": 2, "ChildStderr": 1}},
+
+  {"query": "CancellationToken", "category": "symbol-exact", "relevance": {"CancellationToken": 3}},
+  {"query": "DuplexStream", "category": "symbol-exact", "relevance": {"DuplexStream": 3}},
+  {"query": "BlockingPool", "category": "symbol-exact", "relevance": {"BlockingPool": 3}},
+  {"query": "JoinMap", "category": "symbol-exact", "relevance": {"JoinMap": 3}},
+  {"query": "LocalPoolHandle", "category": "symbol-exact", "relevance": {"LocalPoolHandle": 3}},
+
+  {"query": "cancel", "category": "symbol-partial", "relevance": {"CancellationToken": 3, "cancel_task": 2, "CancelData": 1}},
+  {"query": "guard", "category": "symbol-partial", "relevance": {"AbortGuard": 3, "DropGuard": 2, "AsyncFdReadyGuard": 1}},
+  {"query": "budget", "category": "symbol-partial", "relevance": {"consume_budget": 3, "Budget": 2, "BudgetDecrement": 1}},
+  {"query": "delay", "category": "symbol-partial", "relevance": {"DelayQueue": 3, "CancellationQueueEntry": 1}},
+  {"query": "duplex", "category": "symbol-partial", "relevance": {"DuplexStream": 3}}
+]

@@ -1,0 +1,23 @@
+[
+  {"query": "which type enables cooperative cancellation of spawned tasks", "category": "nl-easy", "expected_symbol": "CancellationToken"},
+  {"query": "what function creates an in-memory duplex stream pair", "category": "nl-easy", "expected_symbol": "duplex"},
+  {"query": "where is the blocking thread pool implementation", "category": "nl-easy", "expected_symbol": "BlockingPool"},
+  {"query": "which type maps keys to concurrently joined task results", "category": "nl-easy", "expected_symbol": "JoinMap"},
+  {"query": "what function spawns a background blocking task", "category": "nl-easy", "expected_symbol": "spawn_blocking"},
+  {"query": "where is the read buffer utility for async IO", "category": "nl-easy", "expected_symbol": "read_buf"},
+  {"query": "which function sleeps the current task until a deadline", "category": "nl-easy", "expected_symbol": "sleep_until"},
+  {"query": "what error type indicates a semaphore is closed", "category": "nl-easy", "expected_symbol": "AcquireError"},
+  {"query": "where is the runtime context tracker defined", "category": "nl-easy", "expected_symbol": "EnterRuntime"},
+  {"query": "which function writes to an async RwLock with exclusive access", "category": "nl-easy", "expected_symbol": "write_owned"},
+
+  {"query": "where does the runtime consume a scheduling budget tick", "category": "nl-medium", "expected_symbol": "consume_budget"},
+  {"query": "what guard type aborts a task when dropped", "category": "nl-medium", "expected_symbol": "AbortOnDrop"},
+  {"query": "which function inserts an entry into the delay queue heap", "category": "nl-medium", "expected_symbol": "insert_idx"},
+  {"query": "where is the time wheel level range calculation", "category": "nl-medium", "expected_symbol": "level_range"},
+  {"query": "what function pops an expired entry from the delay queue", "category": "nl-medium", "expected_symbol": "pop_entry"},
+  {"query": "which error indicates a broadcast receiver is lagging", "category": "nl-medium", "expected_symbol": "BroadcastStreamRecvError"},
+  {"query": "where does the scheduler inject external tasks", "category": "nl-medium", "expected_symbol": "schedule_task"},
+  {"query": "what struct holds the configuration for the runtime builder", "category": "nl-medium", "expected_symbol": "Configuration"},
+  {"query": "which function decodes a codec frame at end of stream", "category": "nl-medium", "expected_symbol": "decode_eof"},
+  {"query": "where is the shared notification waiter list implemented", "category": "nl-medium", "expected_symbol": "NotifyWaitersList"}
+]

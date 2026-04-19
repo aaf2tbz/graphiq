@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use graphiq_core::cruncher;
@@ -145,8 +146,60 @@ impl std::fmt::Display for FailureKind {
     }
 }
 
-const N_METHODS: usize = 11;
-const METHOD_NAMES: [&str; N_METHODS] = ["BM25", "CRv1", "CRv2", "Goober", "GooV3", "GooV4", "GooV5", "Geometric", "Curved", "Deformed", "Routed"];
+const N_METHODS: usize = 12;
+const METHOD_NAMES: [&str; N_METHODS] = ["BM25", "CRv1", "CRv2", "Goober", "GooV3", "GooV4", "GooV5", "Geometric", "Curved", "Deformed", "Routed", "CARE"];
+
+fn care_fuse(
+    bm25: &[(i64, f64)],
+    goov5: &[(i64, f64)],
+    routed: &[(i64, f64)],
+    top_k: usize,
+) -> Vec<(i64, f64)> {
+    let goov5_map: HashMap<i64, f64> = goov5.iter().map(|(id, s)| (*id, *s)).collect();
+    let routed_map: HashMap<i64, f64> = routed.iter().map(|(id, s)| (*id, *s)).collect();
+
+    let g_max = goov5.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
+    let r_max = routed.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
+
+    let mut scored: HashMap<i64, f64> = HashMap::new();
+
+    for &(id, g_score) in goov5 {
+        let g_norm = g_score / g_max;
+        if let Some(&r_score) = routed_map.get(&id) {
+            let r_norm = r_score / r_max;
+            scored.insert(id, 0.6 * g_norm + 0.4 * r_norm + 0.10);
+        } else {
+            scored.insert(id, 0.7 * g_norm);
+        }
+    }
+
+    for &(id, r_score) in routed {
+        if !scored.contains_key(&id) {
+            let r_norm = r_score / r_max;
+            let rank = routed.iter().position(|(sid, _)| *sid == id).unwrap();
+            let rank_bonus = if rank == 0 { 0.15 } else if rank < 3 { 0.08 } else { 0.0 };
+            scored.insert(id, 0.45 * r_norm + rank_bonus);
+        }
+    }
+
+    let mut fused: Vec<(i64, f64)> = scored.into_iter().collect();
+    fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+    if bm25.len() >= 2 && bm25[0].1 / bm25[1].1.max(1e-10) > 1.2 {
+        let anchor_id = bm25[0].0;
+        if !goov5.is_empty() && goov5[0].0 == anchor_id {
+            if let Some(pos) = fused.iter().position(|(id, _)| *id == anchor_id) {
+                if pos != 0 {
+                    let entry = fused.remove(pos);
+                    fused.insert(0, entry);
+                }
+            }
+        }
+    }
+
+    fused.truncate(top_k);
+    fused
+}
 
 fn run_searches(
     db: &GraphDb,
@@ -210,10 +263,17 @@ fn run_searches(
         }
         let q = SearchQuery::new(query).top_k(top_k);
         let result = engine.search(&q);
-        result.results.iter().map(|r| (r.symbol.id, r.score)).collect()
+        let routed_results: Vec<(i64, f64)> = result.results.iter().map(|r| (r.symbol.id, r.score)).collect();
+        routed_results
     };
 
-    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5, geometric, curved, deformed, routed]
+    let care = care_fuse(&bm25, &goober_v5, &routed, top_k);
+
+    let out: [Vec<(i64, f64)>; N_METHODS] = [
+        bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5,
+        geometric, curved, deformed, routed, care,
+    ];
+    out
 }
 
 fn run_ndcg_benchmark(
@@ -374,8 +434,9 @@ fn run_mrr_benchmark(
 
     struct MrrResult {
         rr: f64,
-        hit_at: [bool; 5],
-        accuracy: bool,
+        hit_at: [bool; 10],
+        precision_at_10: f64,
+        recall_at_10: f64,
         found_rank: Option<usize>,
     }
 
@@ -386,29 +447,63 @@ fn run_mrr_benchmark(
     for q in queries {
         let results = run_searches(db, fts, ci, hi, spectral, predictive, fingerprints, fp_id_to_idx, cache, self_model, &q.query, 10);
 
-        let classified_family = graphiq_core::query_family::classify_query_family(&q.query);
+        let _classified_family = graphiq_core::query_family::classify_query_family(&q.query);
         let expected = q.expected_symbol.as_deref().unwrap_or("");
 
+        let total_relevant = {
+            let mut count = 0usize;
+            if !q.relevance.is_empty() {
+                for (name, grade) in &q.relevance {
+                    let c: i64 = db.conn()
+                        .query_row("SELECT COUNT(*) FROM symbols WHERE name = ?", [name], |row| row.get(0))
+                        .unwrap_or(0);
+                    if *grade >= 2 { count += c as usize; }
+                }
+            } else {
+                let c: i64 = db.conn()
+                    .query_row("SELECT COUNT(*) FROM symbols WHERE name = ?", [expected], |row| row.get(0))
+                    .unwrap_or(0);
+                count = c.max(1) as usize;
+            }
+            count.max(1)
+        };
+
         for (mi, hits) in results.iter().enumerate() {
-            let found_rank = hits.iter().position(|(id, _)| {
-                let name = sym_name(db, *id);
-                name == expected || expected.contains(&name) || name.contains(expected)
-            });
+            let found_rank = if !q.relevance.is_empty() {
+                hits.iter().position(|(id, _)| q.relevance_of(&sym_name(db, *id)) >= 2)
+            } else {
+                hits.iter().position(|(id, _)| {
+                    let name = sym_name(db, *id);
+                    name == expected || expected.contains(&name) || name.contains(expected)
+                })
+            };
 
             let rr = found_rank.map(|r| 1.0 / (r + 1) as f64).unwrap_or(0.0);
-            let accuracy = found_rank == Some(0);
-            let h: [bool; 5] = [
-                found_rank.map_or(false, |r| r < 1),
-                found_rank.map_or(false, |r| r < 3),
-                found_rank.map_or(false, |r| r < 5),
-                found_rank.map_or(false, |r| r < 10),
-                found_rank.is_some(),
-            ];
+
+            let mut hit_at = [false; 10];
+            for k in 0..10 {
+                hit_at[k] = found_rank.map_or(false, |r| r < (k + 1));
+            }
+
+            let relevant_in_top10: usize = hits.iter().take(10)
+                .filter(|(id, _)| {
+                    if !q.relevance.is_empty() {
+                        q.relevance_of(&sym_name(db, *id)) >= 2
+                    } else {
+                        let name = sym_name(db, *id);
+                        name == expected || expected.contains(&name) || name.contains(expected)
+                    }
+                })
+                .count();
+
+            let precision_at_10 = relevant_in_top10 as f64 / 10.0;
+            let recall_at_10 = (relevant_in_top10 as f64 / total_relevant as f64).min(1.0);
 
             all[mi].push(MrrResult {
                 rr,
-                hit_at: h,
-                accuracy,
+                hit_at,
+                precision_at_10,
+                recall_at_10,
                 found_rank,
             });
 
@@ -421,9 +516,6 @@ fn run_mrr_benchmark(
                     let best_file_match = hits.iter().any(|(id, _)| {
                         if let Ok(Some(sym)) = db.get_symbol(*id) {
                             if let Some(ref exp) = q.expected_symbol {
-                                let sym_file = db.conn()
-                                    .query_row("SELECT path FROM files WHERE id = ?", [sym.file_id], |r| r.get::<_, String>(0))
-                                    .unwrap_or_default();
                                 let exp_syms = db.symbols_by_name(exp).unwrap_or_default();
                                 exp_syms.iter().any(|s| s.file_id == sym.file_id)
                             } else {
@@ -447,21 +539,25 @@ fn run_mrr_benchmark(
 
     println!("\n--- Summary ---\n");
     println!(
-        "{:<12} {:>6} {:>9} {:>6} {:>6} {:>6} {:>6} {:>6}",
-        "Method", "MRR", "Accuracy", "H@1", "H@3", "H@5", "H@10", "Miss"
+        "{:<12} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6} {:>6}",
+        "Method", "MRR", "P@10", "R@10", "H@1", "H@2", "H@3", "H@5", "H@7", "H@10", "Miss"
     );
-    println!("{}", "-".repeat(68));
+    println!("{}", "-".repeat(90));
     for (mi, name) in METHOD_NAMES.iter().enumerate() {
         let mrr: f64 = all[mi].iter().map(|r| r.rr).sum::<f64>() / n as f64;
-        let acc: f64 = all[mi].iter().filter(|r| r.accuracy).count() as f64 / n as f64;
+        let p10: f64 = all[mi].iter().map(|r| r.precision_at_10).sum::<f64>() / n as f64;
+        let r10: f64 = all[mi].iter().map(|r| r.recall_at_10).sum::<f64>() / n as f64;
         let h1 = all[mi].iter().filter(|r| r.hit_at[0]).count();
-        let h3 = all[mi].iter().filter(|r| r.hit_at[1]).count();
-        let h5 = all[mi].iter().filter(|r| r.hit_at[2]).count();
-        let h10 = all[mi].iter().filter(|r| r.hit_at[3]).count();
-        let miss = all[mi].iter().filter(|r| !r.hit_at[4]).count();
+        let h2 = all[mi].iter().filter(|r| r.hit_at[1]).count();
+        let h3 = all[mi].iter().filter(|r| r.hit_at[2]).count();
+        let h5 = all[mi].iter().filter(|r| r.hit_at[4]).count();
+        let h7 = all[mi].iter().filter(|r| r.hit_at[6]).count();
+        let h10 = all[mi].iter().filter(|r| r.hit_at[9]).count();
+        let miss = all[mi].iter().filter(|r| !r.hit_at[9]).count();
         println!(
-            "{:<12} {:>6.3} {:>9.3} {:>6} {:>6} {:>6} {:>6} {:>6}",
-            name, mrr, acc, h1, h3, h5, h10, miss
+            "{:<12} {:>6.3} {:>6.3} {:>6.3} {:>5}/{:<4} {:>5}/{:<4} {:>5}/{:<4} {:>5}/{:<4} {:>5}/{:<4} {:>5}/{:<4} {:>5}/{:<4}",
+            name, mrr, p10, r10,
+            h1, n, h2, n, h3, n, h5, n, h7, n, h10, n, miss, n
         );
     }
 
