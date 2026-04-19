@@ -1025,7 +1025,7 @@ pub fn store_ricci_curvature(
             .prepare("INSERT OR IGNORE INTO ricci_edges (source_id, target_id, curvature) VALUES (?1, ?2, ?3)")
             .map_err(|e| e.to_string())?;
 
-        for (&(i, j), _) in &graph.adj.entries {
+        for &(i, j, _) in &graph.structural_edges {
             let k = kappa[i * n + j];
             if i < symbol_ids.len() && j < symbol_ids.len() {
                 stmt.execute(params![symbol_ids[i], symbol_ids[j], k])
@@ -1036,4 +1036,107 @@ pub fn store_ricci_curvature(
     }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(count)
+}
+
+#[derive(Clone)]
+pub struct ChannelFingerprint {
+    pub calls_out: f64,
+    pub calls_in: f64,
+    pub imports_out: f64,
+    pub imports_in: f64,
+    pub extends: f64,
+    pub references: f64,
+    pub tests: f64,
+    pub entropy: f64,
+    pub role: String,
+}
+
+pub fn compute_channel_fingerprints(db: &GraphDb) -> (Vec<ChannelFingerprint>, HashMap<i64, usize>) {
+    let conn = db.conn();
+
+    let mut sym_stmt = conn
+        .prepare("SELECT id FROM symbols WHERE visibility = 'public' ORDER BY id")
+        .unwrap();
+    let symbol_ids: Vec<i64> = sym_stmt
+        .query_map([], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .flatten()
+        .collect();
+    drop(sym_stmt);
+
+    let id_to_idx: HashMap<i64, usize> = symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let n = symbol_ids.len();
+    let edge_kinds = ["calls", "imports", "extends", "implements", "references", "tests"];
+
+    let mut counts: Vec<[f64; 6]> = vec![[0.0; 6]; n];
+    let mut total: Vec<f64> = vec![0.0; n];
+
+    let mut edge_stmt = conn
+        .prepare("SELECT source_id, target_id, kind FROM edges")
+        .unwrap();
+    let edges: Vec<(i64, i64, String)> = edge_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .flatten()
+        .collect();
+    drop(edge_stmt);
+
+    for (src, tgt, kind) in &edges {
+        if let (Some(&si), Some(_ti)) = (id_to_idx.get(src), id_to_idx.get(tgt)) {
+            if let Some(ch) = edge_kinds.iter().position(|k| *k == kind) {
+                counts[si][ch] += 1.0;
+                total[si] += 1.0;
+            }
+        }
+    }
+
+    let mut fingerprints: Vec<ChannelFingerprint> = Vec::with_capacity(n);
+    for i in 0..n {
+        let t = total[i].max(1.0);
+        let dist: [f64; 6] = std::array::from_fn(|j| counts[i][j] / t);
+
+        let mut entropy = 0.0f64;
+        for &p in &dist {
+            if p > 0.0 {
+                entropy -= p * p.log2();
+            }
+        }
+
+        let role = if dist[0] > 0.4 {
+            "orchestrator"
+        } else if dist[1] > 0.4 {
+            "library"
+        } else if entropy > 1.5 {
+            "boundary"
+        } else if total[i] < 2.0 {
+            "isolate"
+        } else {
+            "worker"
+        };
+
+        fingerprints.push(ChannelFingerprint {
+            calls_out: dist[0],
+            calls_in: dist[1],
+            imports_out: dist[2],
+            imports_in: dist[3],
+            extends: dist[4],
+            references: dist[5],
+            tests: 0.0,
+            entropy,
+            role: role.to_string(),
+        });
+    }
+
+    (fingerprints, id_to_idx)
 }
