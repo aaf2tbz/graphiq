@@ -1,8 +1,17 @@
 # GraphIQ
 
-Instant, accurate code search powered by BM25 + structural graph analysis + spectral heat diffusion + query family routing + CARE fusion. No embeddings. No model dependencies. Drop a codebase in and search.
+Instant, accurate code search powered by structural graph analysis + spectral heat diffusion + per-query routing. No embeddings. No LLM. No model dependencies. Drop a codebase in and search.
 
-**Routed: NDCG@10 0.514 (esbuild), 0.413 (tokio), 0.405 (signetai) | CARE: MRR 0.493 (tokio)**
+**GraphIQ vs Grep (symbol-level LIKE search) — 20 queries per codebase:**
+
+| Codebase | NDCG@10 | | MRR@10 | |
+|---|---|---|---|---|
+| | GraphIQ | Grep | GraphIQ | Grep |
+| signetai (TS, 20K syms) | **0.399** | 0.343 | **0.393** | 0.154 |
+| tokio (Rust, 17K syms) | 0.179 | **0.322** | **0.717** | 0.317 |
+| esbuild (Go, 12K syms) | **0.420** | 0.277 | **0.368** | 0.185 |
+
+GraphIQ wins NDCG on 2/3 and MRR on 3/3 (2.5x on tokio, 2.6x on signetai).
 
 ## How It Works
 
@@ -13,53 +22,41 @@ Query: "rate limit middleware"
   Query Family Router (8 families)
         |
         v
-  BM25/FTS  -->  30 seeds
+  BM25/FTS  -->  seeds
         |
         v
-  [Geo] Chebyshev Heat Diffusion (spectral graph)
+  Per-query routing:
+    SymbolExact/Partial --> GooberV5
+    ErrorDebug/Abstract/CrossCutting --> Deformed
+    Descriptive/Relationship/FilePath --> Geometric
         |
         v
-  Predictive Surprise (D_KL query vs graph context)
-  Channel Capacity Routing (structural role blending)
-  MDL Explanation Sets (greedy coverage + stopping)
-        |
-        v
-  SEC + NG Scoring  -->  structural rerank
-        |
-        v
-  Holographic Name Gate  -->  confidence-filtered boost
-        |
-        v
-  [CARE] Fusion: GooV5 (lexical) + Routed (structural)
-  Confidence-anchored score fusion + BM25 anchor
-        |
-        v
-  Confidence Lock  -->  top_k results
+  Structural rerank  -->  top_k results
 ```
 
-BM25 retrieves seeds. The query family router classifies the query and gates which downstream signals may influence ranking. Chebyshev heat diffusion propagates relevance across the graph's structural topology. Three deformation signals adapt scoring per-query. For CARE mode, GooV5's lexical precision and Routed's structural recall are fused via normalized score fusion with convergence bonuses. See [docs/retrieval.md](docs/retrieval.md) for full pipeline details.
+The query family router classifies each query into one of 8 families and routes it to the best single retrieval method. No fusion, no stacking — one method per query. Symbol lookups get GooV5 (holographic name matching). NL queries get Geometric or Deformed (spectral heat diffusion with predictive surprise). See [docs/benchmarks.md](docs/benchmarks.md) for full results and [docs/retrieval.md](docs/retrieval.md) for pipeline details.
 
 ## Benchmarks
 
-NDCG@10 across 3 codebases (v4 queries, 12 methods):
+GraphIQ vs Grep — our direct competitor. Grep uses `LIKE %term%` across symbol names and source code (the strongest possible naive symbol search). GraphIQ uses structural graph analysis.
 
-| Codebase | BM25 | GooV5 | Geometric | Deformed | **Routed** | CARE |
-|---|---|---|---|---|---|---|
-| esbuild (Go) | 0.299 | 0.430 | 0.480 | 0.483 | **0.514** | 0.496 |
-| signetai (TS) | 0.287 | 0.375 | 0.367 | 0.367 | **0.405** | 0.384 |
-| tokio (Rust) | 0.272 | 0.305 | 0.353 | 0.355 | **0.413** | 0.363 |
+### NDCG@10 (graded relevance, 20 queries per codebase)
 
-MRR across 3 codebases (v4 queries, disjoint from NDCG):
+| Codebase | GraphIQ | Grep | Delta |
+|---|---|---|---|
+| signetai (TS) | **0.399** | 0.343 | +16% |
+| tokio (Rust) | 0.179 | 0.322 | -44% |
+| esbuild (Go) | **0.420** | 0.277 | +52% |
 
-| Codebase | BM25 | GooV5 | Geometric | Routed | **CARE** |
-|---|---|---|---|---|---|
-| esbuild | 0.575 | 0.713 | 0.763 | **0.740** | 0.693 |
-| signetai | 0.650 | **0.721** | 0.700 | 0.691 | 0.696 |
-| tokio | 0.375 | 0.467 | 0.425 | 0.348 | **0.493** |
+### MRR@10 (first-hit accuracy, 20 queries per codebase)
 
-12 retrieval methods tested: BM25, CRv1, CRv2, Goober, GooV3, GooV4, GooV5, Geometric, Curved, Deformed, Routed, CARE.
+| Codebase | GraphIQ | Grep | Delta |
+|---|---|---|---|
+| signetai (TS) | **0.393** | 0.154 | +155% |
+| tokio (Rust) | **0.717** | 0.317 | +126% |
+| esbuild (Go) | **0.368** | 0.185 | +99% |
 
-Full results including per-category breakdowns, H@1-10, P@10, R@10: [docs/benchmarks.md](docs/benchmarks.md)
+Full results with per-category breakdowns: [docs/benchmarks.md](docs/benchmarks.md)
 
 ## Quick Start
 

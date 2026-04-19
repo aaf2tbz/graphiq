@@ -74,6 +74,8 @@ pub enum EdgeKind {
     References,
     Tests,
     ReExports,
+    SharesConstant,
+    ReferencesConstant,
 }
 
 impl EdgeKind {
@@ -88,6 +90,8 @@ impl EdgeKind {
             EdgeKind::References => "references",
             EdgeKind::Tests => "tests",
             EdgeKind::ReExports => "re_exports",
+            EdgeKind::SharesConstant => "shares_constant",
+            EdgeKind::ReferencesConstant => "references_constant",
         }
     }
 
@@ -102,6 +106,8 @@ impl EdgeKind {
             "references" => Some(EdgeKind::References),
             "tests" => Some(EdgeKind::Tests),
             "re_exports" => Some(EdgeKind::ReExports),
+            "shares_constant" => Some(EdgeKind::SharesConstant),
+            "references_constant" => Some(EdgeKind::ReferencesConstant),
             _ => None,
         }
     }
@@ -117,6 +123,8 @@ impl EdgeKind {
             EdgeKind::Imports => 0.50,
             EdgeKind::References => 0.40,
             EdgeKind::ReExports => 0.45,
+            EdgeKind::SharesConstant => 0.30,
+            EdgeKind::ReferencesConstant => 0.60,
         }
     }
 
@@ -214,6 +222,8 @@ mod tests {
             EdgeKind::References,
             EdgeKind::Tests,
             EdgeKind::ReExports,
+            EdgeKind::SharesConstant,
+            EdgeKind::ReferencesConstant,
         ] {
             assert_eq!(EdgeKind::from_str(kind.as_str()), Some(kind));
         }

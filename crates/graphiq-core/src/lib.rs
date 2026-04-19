@@ -26,6 +26,7 @@ pub mod languages;
 pub mod lsa;
 pub mod manifest;
 pub mod motifs;
+pub mod numeric_bridges;
 pub mod qhrr;
 pub mod query_family;
 pub mod query_plan;

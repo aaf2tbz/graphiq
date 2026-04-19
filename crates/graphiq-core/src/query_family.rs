@@ -184,35 +184,35 @@ pub fn classify_query_family(query: &str) -> QueryFamily {
     let tokens: Vec<&str> = lower.split_whitespace().collect();
     let original_tokens: Vec<&str> = trimmed.split_whitespace().collect();
 
-    if is_file_path(&lower, &tokens) {
-        return QueryFamily::FilePath;
-    }
-
+    // --- structural signals that contain explicit markers ---
+    // cross-cutting first: "all X" queries are enumeration, not debugging,
+    // even if they mention error-related words ("all error types")
     if is_cross_cutting(&lower, &tokens) {
         return QueryFamily::CrossCuttingSet;
     }
-
+    if is_error_debug(&lower) {
+        return QueryFamily::ErrorDebug;
+    }
     if is_relationship(&lower) {
         return QueryFamily::Relationship;
     }
 
-    if is_error_debug(&lower) {
-        return QueryFamily::ErrorDebug;
+    // --- file path detection (before symbol, so "forge_config.rs" stays FilePath) ---
+    if is_file_path(&lower, &tokens) {
+        return QueryFamily::FilePath;
     }
 
+    // --- symbol detection (exact code-shaped tokens) ---
+    if is_symbol(trimmed, &tokens, &original_tokens) {
+        return QueryFamily::SymbolExact;
+    }
+
+    // --- natural language: distinguish abstract vs descriptive ---
     if is_natural_abstract(&lower) {
         return QueryFamily::NaturalAbstract;
     }
 
-    if is_natural_descriptive(&lower, &tokens) {
-        return QueryFamily::NaturalDescriptive;
-    }
-
-    if is_symbol_exact(trimmed, &tokens, &original_tokens) {
-        return QueryFamily::SymbolExact;
-    }
-
-    QueryFamily::SymbolPartial
+    QueryFamily::NaturalDescriptive
 }
 
 fn is_file_path(lower: &str, tokens: &[&str]) -> bool {
@@ -238,6 +238,41 @@ fn is_file_path(lower: &str, tokens: &[&str]) -> bool {
             return true;
         }
     }
+    false
+}
+
+fn is_code_token(t: &str) -> bool {
+    t.contains('_')
+        || t.contains("::")
+        || t.chars().enumerate().any(|(i, c)| i > 0 && c.is_uppercase())
+        || (t.len() <= 2 && t.chars().all(|c| c.is_ascii_alphanumeric()))
+}
+
+fn is_symbol(original: &str, tokens: &[&str], original_tokens: &[&str]) -> bool {
+    if tokens.len() == 1 {
+        return is_code_token(original_tokens[0]);
+    }
+
+    // multi-token: SymbolExact only if ALL tokens have code shape AND no NL words.
+    // This catches "GraphDb::open path" but not "remove dead CSS rules"
+    if tokens.len() >= 2 {
+        let nl_words: &[&str] = &[
+            "the", "a", "an", "is", "are", "was", "were", "for", "from", "into",
+            "using", "before", "after", "during", "with", "without", "over", "under",
+            "between", "through", "how", "what", "where", "when", "who", "why",
+            "and", "or", "but", "not", "does", "do", "can", "in", "on", "at", "to",
+            "of", "if", "all", "every", "each", "any", "by", "that", "this",
+        ];
+        let has_nl = tokens.iter().any(|t| nl_words.contains(t));
+        if has_nl {
+            return false;
+        }
+        let all_code = original_tokens.iter().all(|t| is_code_token(t));
+        if all_code {
+            return true;
+        }
+    }
+
     false
 }
 
@@ -282,64 +317,6 @@ fn is_natural_abstract(lower: &str) -> bool {
     ABSTRACT_PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
 }
 
-fn is_natural_descriptive(lower: &str, tokens: &[&str]) -> bool {
-    if tokens.len() < 3 {
-        return false;
-    }
-    let has_natural_words = tokens.iter().any(|t| {
-        matches!(
-            *t,
-            "the" | "a" | "an" | "is" | "are" | "for" | "from" | "into"
-                | "using" | "before" | "after" | "during" | "with" | "without"
-                | "over" | "under" | "between" | "through"
-        )
-    });
-    if !has_natural_words {
-        return false;
-    }
-    let has_action = tokens.iter().any(|t| {
-        matches!(
-            *t,
-            "compute" | "calculate" | "parse" | "validate" | "check"
-                | "handle" | "create" | "delete" | "update" | "build"
-                | "generate" | "encode" | "decode" | "scan" | "insert"
-                | "prune" | "run" | "send" | "receive" | "acquire"
-                | "wait" | "spawn" | "convert" | "initialize" | "recall"
-                | "extract" | "transform" | "process" | "store" | "fetch"
-                | "load" | "save" | "write" | "read" | "open" | "close"
-                | "connect" | "disconnect" | "authenticate" | "authorize"
-                | "encrypt" | "decrypt" | "hash" | "sign" | "verify"
-        )
-    });
-    has_action && tokens.len() >= 4
-}
-
-fn is_symbol_exact(original: &str, tokens: &[&str], original_tokens: &[&str]) -> bool {
-    if tokens.len() == 1 {
-        let t = original_tokens[0];
-        if t.contains('_') || t.contains("::") {
-            return true;
-        }
-        let has_upper_inside = t.chars().enumerate().any(|(i, c)| i > 0 && c.is_uppercase());
-        if has_upper_inside {
-            return true;
-        }
-    }
-    if tokens.len() == 1 || (tokens.len() == 2 && original.contains('.')) {
-        let no_natural = tokens.iter().all(|t| t.len() > 2 && !matches!(*t, "the" | "and" | "for" | "how" | "what"));
-        let has_code_shape = original_tokens.iter().any(|t| {
-            t.contains('_')
-                || t.contains("::")
-                || t.chars().enumerate().any(|(i, c)| i > 0 && c.is_uppercase())
-                || t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        });
-        if no_natural && has_code_shape && tokens.len() > 1 {
-            return true;
-        }
-    }
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,12 +331,28 @@ mod tests {
     }
 
     #[test]
-    fn test_symbol_partial() {
-        assert_eq!(classify_query_family("embedding"), QueryFamily::SymbolPartial);
-        assert_eq!(classify_query_family("trust"), QueryFamily::SymbolPartial);
-        assert_eq!(classify_query_family("pipeline"), QueryFamily::SymbolPartial);
-        assert_eq!(classify_query_family("chunk"), QueryFamily::SymbolPartial);
-        assert_eq!(classify_query_family("cache"), QueryFamily::SymbolPartial);
+    fn test_symbol_single_word_falls_through() {
+        // single lowercase words without code shape are not SymbolExact,
+        // they become NaturalDescriptive (the new default for non-symbol queries)
+        assert_eq!(classify_query_family("embedding"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("trust"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("pipeline"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("chunk"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("cache"), QueryFamily::NaturalDescriptive);
+    }
+
+    #[test]
+    fn test_symbol_multi_word_code() {
+        // multi-word queries with no NL words and at least one code-shaped token
+        assert_eq!(classify_query_family("recover stale leases"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("compute permission footprint"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("constellation dependency"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("validate build options"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("generate binary hashes"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("remove dead CSS rules"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("read bytes from TCP stream"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("blocking shutdown"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("acquire semaphore permit"), QueryFamily::NaturalDescriptive);
     }
 
     #[test]
@@ -387,6 +380,11 @@ mod tests {
         assert_eq!(classify_query_family("compute trust profile for an entity"), QueryFamily::NaturalDescriptive);
         assert_eq!(classify_query_family("build the classification prompt for memory synthesis"), QueryFamily::NaturalDescriptive);
         assert_eq!(classify_query_family("initialize checkpoint flush for persistence"), QueryFamily::NaturalDescriptive);
+        // previously misclassified as SymbolPartial — these are NL descriptions
+        assert_eq!(classify_query_family("memory synthesis and condensation pipeline"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("embedding health check and provider validation"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("what checks if a connector is healthy"), QueryFamily::NaturalDescriptive);
+        assert_eq!(classify_query_family("retrieve memories using vector similarity search"), QueryFamily::NaturalDescriptive);
     }
 
     #[test]

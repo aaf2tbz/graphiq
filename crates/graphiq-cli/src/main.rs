@@ -93,6 +93,13 @@ enum Commands {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
+    Constants {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+        query: Option<String>,
+        #[arg(short, long, default_value_t = 20)]
+        top: usize,
+    },
     #[cfg(feature = "embed")]
     EmbedTest {
         text: Option<String>,
@@ -137,6 +144,7 @@ fn main() {
         } => cmd_setup(project.as_deref(), skip_index),
         Commands::Doctor { db } => cmd_doctor(&db),
         Commands::UpgradeIndex { db } => cmd_upgrade_index(&db),
+        Commands::Constants { db, query, top } => cmd_constants(&db, query.as_deref(), top),
         #[cfg(feature = "embed")]
         Commands::EmbedTest { text } => cmd_embed_test(text.as_deref().unwrap_or("hello world")),
     }
@@ -438,7 +446,7 @@ fn cmd_status(db_path: &std::path::Path) {
                 println!("      fingerprints: {}", fresh.fingerprints);
                 let mode = graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
                 println!("    Active mode: {}", mode);
-                if mode != graphiq_core::search::SearchMode::Deformed {
+                if mode != graphiq_core::search::SearchMode::CARE && mode != graphiq_core::search::SearchMode::Deformed {
                     let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
                     if !reasons.is_empty() {
                         println!("    Downgrade reasons:");
@@ -909,6 +917,56 @@ fn cmd_upgrade_index(db_path: &std::path::Path) {
     println!("  rebuilt: {}", rebuilt.join(", "));
     println!("  active mode: {}", manifest.active_search_mode);
     println!("Done.");
+}
+
+fn cmd_constants(db_path: &std::path::Path, query: Option<&str>, top: usize) {
+    if !db_path.exists() {
+        eprintln!("database not found: {}", db_path.display());
+        eprintln!("run `graphiq index <path>` first");
+        std::process::exit(1);
+    }
+
+    let db = match graphiq_core::db::GraphDb::open(db_path) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("failed to open database: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    let entries = match graphiq_core::numeric_bridges::query_constants(&db, query, top) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("query failed: {e}");
+            std::process::exit(1);
+        }
+    };
+
+    if entries.is_empty() {
+        println!("No numeric bridges found.");
+        return;
+    }
+
+    println!("{:<12} {:<30} {:>6}  {}", "LITERAL", "NAMED", "COUNT", "USAGE SITES");
+    println!("{}", "-".repeat(90));
+    for entry in &entries {
+        let named = entry.named.as_deref().unwrap_or("—");
+        let sites: Vec<String> = entry
+            .symbols
+            .iter()
+            .map(|s| {
+                let file = s.file.rsplit('/').next().unwrap_or(&s.file);
+                format!("{}:{}:{}", file, s.line, s.name)
+            })
+            .collect();
+        println!(
+            "{:<12} {:<30} {:>6}  {}",
+            entry.literal,
+            named,
+            entry.count,
+            sites.join(", ")
+        );
+    }
 }
 
 fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {

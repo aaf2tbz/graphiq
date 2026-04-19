@@ -308,8 +308,20 @@ impl<'a> Indexer<'a> {
 
         self.compute_edge_evidence()?;
         self.generate_search_hints()?;
+        self.compute_numeric_bridges()?;
 
         Ok(stats)
+    }
+
+    fn compute_numeric_bridges(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::numeric_bridges::compute_numeric_bridges;
+
+        let stats = compute_numeric_bridges(self.db).map_err(|e| e)?;
+        eprintln!(
+            "  numeric bridges: {} literals, {} constants, {} edges",
+            stats.literals_found, stats.constants_found, stats.bridge_edges_created
+        );
+        Ok(())
     }
 
     fn compute_edge_evidence(&self) -> Result<(), Box<dyn std::error::Error>> {
@@ -945,6 +957,20 @@ fn format_edge_role(edge_kind: &str, other_name: &str, is_outgoing: bool) -> Str
                 format!("overrides {}", other_name)
             } else {
                 format!("overridden by {}", other_name)
+            }
+        }
+        "shares_constant" => {
+            if is_outgoing {
+                format!("shares constant with {}", other_name)
+            } else {
+                format!("shares constant with {}", other_name)
+            }
+        }
+        "references_constant" => {
+            if is_outgoing {
+                format!("uses constant {}", other_name)
+            } else {
+                format!("constant used by {}", other_name)
             }
         }
         _ => String::new(),

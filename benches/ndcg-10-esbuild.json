@@ -1,12 +1,12 @@
 [
-  {"query": "encodeVLQ", "category": "symbol-exact", "relevance": {"encodeVLQ": 3, "AppendSourceMapChunk": 2}},
-  {"query": "renamer number rename", "category": "symbol-partial", "relevance": {"Renamer": 3, "NumberRenamer": 3}},
-  {"query": "esbuild metafile analysis and bundle statistics", "category": "nl-descriptive", "relevance": {"analyzeMetafileImpl": 3, "Metafile": 3, "BuildResult": 2}},
-  {"query": "CSS color space conversion and gamut mapping", "category": "nl-descriptive", "relevance": {"gamut_mapping_xyz_to_srgb": 3, "F64": 2, "Range": 1}},
-  {"query": "how does esbuild detect identifiers in ES5 and ESNext", "category": "nl-abstract", "relevance": {"IsIdentifier": 3, "expectParseErrorTSNoAmbiguousLessThan": 2, "expectParseErrorJSXAutomatic": 2}},
-  {"query": "JSX automatic runtime parse error detection", "category": "error-debug", "relevance": {"expectParseErrorJSXAutomatic": 3, "EFunction": 2, "SFunction": 1}},
-  {"query": "log level validation and configuration", "category": "nl-descriptive", "relevance": {"validateLogLevel": 3, "parseBoolFlag": 2, "parseRangeInt": 1}},
-  {"query": "package resolution and path preparation", "category": "nl-abstract", "relevance": {"checkAndPreparePackage": 3, "downloadedBinPath": 2, "partialFetch": 2}},
-  {"query": "esbuild source map VLQ encoding", "category": "file-path", "relevance": {"encodeVLQ": 3, "AppendSourceMapChunk": 3, "createTraceFile": 2}},
-  {"query": "AST lowering and import record cloning", "category": "cross-cutting", "relevance": {"CloneTokensWithoutImportRecords": 3, "EFunction": 2, "SFunction": 2, "JoinAllWithComma": 1}}
+  {"query": "ScanBundle", "category": "symbol-exact", "relevance": {"ScanBundle": 3, "parseFile": 2, "Bundle": 2}},
+  {"query": "matchImportsWithExports linker", "category": "symbol-partial", "relevance": {"matchImportsWithExportsForFile": 3, "scanImportsAndExports": 3, "Link": 2}},
+  {"query": "resolve import path to file system path", "category": "nl-descriptive", "relevance": {"Resolve": 3, "NewResolver": 2, "IsPackagePath": 2, "ResolveResult": 1}},
+  {"query": "tree shaking and dead code elimination", "category": "nl-descriptive", "relevance": {"scanImportsAndExports": 3, "Link": 3, "matchImportsWithExportsForFile": 2}},
+  {"query": "parallel chunk code generation", "category": "nl-abstract", "relevance": {"generateChunksInParallel": 3, "Link": 2, "computeCrossChunkDependencies": 2}},
+  {"query": "property renaming and mangling across modules", "category": "nl-abstract", "relevance": {"mangleProps": 3, "scanImportsAndExports": 2}},
+  {"query": "unresolved import error message and suggestions", "category": "error-debug", "relevance": {"ResolveFailureErrorTextSuggestionNotes": 3, "Resolve": 2, "ResolveResult": 2}},
+  {"query": "parse tsconfig paths and baseUrl aliases", "category": "nl-descriptive", "relevance": {"ParseTSConfigJSON": 3, "NewResolver": 2, "Resolver": 1}},
+  {"query": "css local scope and composes handling", "category": "nl-descriptive", "relevance": {"Parse": 3, "MakeDeadRuleMangler": 2}},
+  {"query": "renamer path relative to outbase", "category": "file-path", "relevance": {"PathRelativeToOutbase": 3, "HashForFileName": 2, "DefaultExtensionToLoaderMap": 1}}
 ]

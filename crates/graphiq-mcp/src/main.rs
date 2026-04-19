@@ -559,6 +559,24 @@ fn tools_list() -> Value {
                     "type": "object",
                     "properties": {}
                 }
+            },
+            {
+                "name": "constants",
+                "description": "Find numeric literals and named constants that bridge symbols together. Shows which numbers connect code across files — error codes, port numbers, thresholds, limits. Useful for understanding structural glue and tracing shared constants.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Optional: filter to constants matching this text (e.g. 'timeout', '404', 'port')"
+                        },
+                        "top": {
+                            "type": "integer",
+                            "description": "Max results to return (default: 20)",
+                            "default": 20
+                        }
+                    }
+                }
             }
         ]
     })
@@ -668,6 +686,13 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
             }
+        }
+        "constants" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_constants(&s.db, arguments)
         }
         _ => tool_error(&format!("unknown tool: {tool_name}")),
     }
@@ -1755,4 +1780,46 @@ fn human_bytes(bytes: u64) -> String {
     } else {
         format!("{} B", bytes)
     }
+}
+
+fn tool_constants(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
+    let filter = args.get("query").and_then(|v| v.as_str());
+    let top = args
+        .get("top")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(20) as usize;
+
+    let entries = match graphiq_core::numeric_bridges::query_constants(db, filter, top) {
+        Ok(e) => e,
+        Err(e) => return tool_error(&format!("constants query failed: {e}")),
+    };
+
+    if entries.is_empty() {
+        return tool_ok("No numeric bridges found.".into());
+    }
+
+    let mut lines = Vec::new();
+    lines.push(format!("Numeric bridges ({} results):\n", entries.len()));
+
+    for entry in &entries {
+        let named = entry
+            .named
+            .as_deref()
+            .map(|n| format!(" ({})", n))
+            .unwrap_or_default();
+        lines.push(format!(
+            "  {}{} — shared by {} symbols:",
+            entry.literal, named, entry.count
+        ));
+        for sym in &entry.symbols {
+            let file = sym.file.rsplit('/').next().unwrap_or(&sym.file);
+            lines.push(format!(
+                "    {}: {} ({})",
+                file, sym.name, sym.kind
+            ));
+        }
+        lines.push(String::new());
+    }
+
+    tool_ok(lines.join("\n"))
 }

@@ -198,6 +198,22 @@ fn classify_evidence(
                 EvidenceKind::Direct
             }
         }
+        EdgeKind::SharesConstant => {
+            if multiplicity >= 3 {
+                EvidenceKind::Reinforcing
+            } else if cross_module {
+                EvidenceKind::Structural
+            } else {
+                EvidenceKind::Incidental
+            }
+        }
+        EdgeKind::ReferencesConstant => {
+            if cross_module {
+                EvidenceKind::Structural
+            } else {
+                EvidenceKind::Direct
+            }
+        }
     }
 }
 

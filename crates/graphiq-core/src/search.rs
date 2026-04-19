@@ -20,6 +20,7 @@ pub enum SearchMode {
     GooberV5,
     Geometric,
     Deformed,
+    CARE,
 }
 
 impl std::fmt::Display for SearchMode {
@@ -29,6 +30,7 @@ impl std::fmt::Display for SearchMode {
             SearchMode::GooberV5 => write!(f, "GooberV5"),
             SearchMode::Geometric => write!(f, "Geometric"),
             SearchMode::Deformed => write!(f, "Deformed"),
+            SearchMode::CARE => write!(f, "CARE"),
         }
     }
 }
@@ -180,6 +182,43 @@ impl<'a> SearchEngine<'a> {
         }
     }
 
+    fn route_mode(&self, family: QueryFamily) -> SearchMode {
+        let has_spectral = self.spectral_index.is_some()
+            && self.predictive_model.is_some()
+            && self.fingerprints.is_some();
+        let has_geometric = self.spectral_index.is_some();
+        let has_goober = self.cruncher_index.is_some() && self.holo_index.is_some();
+
+        match family {
+            QueryFamily::SymbolExact | QueryFamily::SymbolPartial => {
+                if has_goober { SearchMode::GooberV5 }
+                else { SearchMode::Fts }
+            }
+            QueryFamily::ErrorDebug => {
+                if has_spectral { SearchMode::Deformed }
+                else if has_geometric { SearchMode::Geometric }
+                else if has_goober { SearchMode::GooberV5 }
+                else { SearchMode::Fts }
+            }
+            QueryFamily::NaturalAbstract | QueryFamily::CrossCuttingSet => {
+                if has_spectral { SearchMode::Deformed }
+                else if has_geometric { SearchMode::Geometric }
+                else if has_goober { SearchMode::GooberV5 }
+                else { SearchMode::Fts }
+            }
+            QueryFamily::NaturalDescriptive | QueryFamily::Relationship => {
+                if has_spectral { SearchMode::Geometric }
+                else if has_goober { SearchMode::GooberV5 }
+                else { SearchMode::Fts }
+            }
+            QueryFamily::FilePath => {
+                if has_spectral { SearchMode::Geometric }
+                else if has_goober { SearchMode::GooberV5 }
+                else { SearchMode::Fts }
+            }
+        }
+    }
+
     pub fn search(&self, query: &SearchQuery) -> SearchResult {
         let query_hash = HotCache::compute_query_hash(&query.query, query.top_k);
         let family = query_family::classify_query_family(&query.query);
@@ -191,64 +230,177 @@ impl<'a> SearchEngine<'a> {
                 total_fts_candidates: 0,
                 total_expanded: 0,
                 from_cache: true,
-                search_mode: self.active_mode(),
+                search_mode: self.route_mode(family),
                 query_family: family,
                 traces: HashMap::new(),
             };
         }
 
         let policy = RetrievalPolicy::for_family(family);
-        let effective_mode = self.effective_mode(&policy);
+        let mode = self.route_mode(family);
 
-        if family == QueryFamily::FilePath {
-            return self.search_file_path(query, query_hash, family);
-        }
-
-        match effective_mode {
-            SearchMode::Deformed => {
-                self.search_deformed(query, query_hash, &policy, family)
-            }
-            SearchMode::Geometric => {
-                self.search_geometric(query, query_hash, &policy, family)
-            }
+        match mode {
+            SearchMode::CARE => self.search_care(query, query_hash, &policy, family),
+            SearchMode::Deformed => self.search_deformed(query, query_hash, &policy, family),
+            SearchMode::Geometric => self.search_geometric(query, query_hash, &policy, family),
             SearchMode::GooberV5 => {
                 self.search_goober_v5(query, self.cruncher_index.unwrap(), self.holo_index.unwrap(), query_hash, family)
             }
-            SearchMode::Fts => {
-                self.search_fts_fallback(query, query_hash, family)
-            }
+            SearchMode::Fts => self.search_fts_fallback(query, query_hash, family),
         }
     }
 
-    fn effective_mode(&self, policy: &RetrievalPolicy) -> SearchMode {
-        let base = self.active_mode();
-        if !policy.allow_spectral && base == SearchMode::Deformed {
-            if self.cruncher_index.is_some() && self.holo_index.is_some() {
-                SearchMode::GooberV5
+    fn fuse_care(
+        goov5_raw: &[(i64, f64)],
+        deformed_raw: &[(i64, f64)],
+        bm25_seeds: &[(i64, f64)],
+        family: QueryFamily,
+        top_k: usize,
+    ) -> Vec<(i64, f64)> {
+        let g_max = goov5_raw.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
+        let d_max = deformed_raw.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
+
+        let deformed_map: HashMap<i64, f64> = deformed_raw.iter().map(|(id, s)| (*id, *s)).collect();
+
+        let (w_lex, w_struct, conv_bonus) = match family {
+            QueryFamily::SymbolExact | QueryFamily::SymbolPartial => (0.85, 0.15, 0.05),
+            QueryFamily::NaturalAbstract | QueryFamily::CrossCuttingSet => (0.35, 0.65, 0.15),
+            QueryFamily::ErrorDebug => (0.45, 0.55, 0.12),
+            QueryFamily::NaturalDescriptive | QueryFamily::Relationship => (0.50, 0.50, 0.10),
+            _ => (0.55, 0.45, 0.10),
+        };
+
+        let mut scored: HashMap<i64, f64> = HashMap::new();
+
+        for &(id, g_score) in goov5_raw {
+            let g_norm = g_score / g_max;
+            if let Some(&d_score) = deformed_map.get(&id) {
+                let d_norm = d_score / d_max;
+                scored.insert(id, w_lex * g_norm + w_struct * d_norm + conv_bonus);
             } else {
-                SearchMode::Fts
+                scored.insert(id, w_lex * g_norm);
             }
-        } else if !policy.allow_spectral && base == SearchMode::Geometric {
-            if self.cruncher_index.is_some() && self.holo_index.is_some() {
-                SearchMode::GooberV5
-            } else {
-                SearchMode::Fts
+        }
+
+        for (rank, &(id, d_score)) in deformed_raw.iter().enumerate() {
+            if !scored.contains_key(&id) {
+                let d_norm = d_score / d_max;
+                let rank_bonus = if rank == 0 { 0.20 } else if rank < 3 { 0.10 } else { 0.0 };
+                scored.insert(id, w_struct * d_norm + rank_bonus);
             }
-        } else if base == SearchMode::Deformed
-            && (!policy.allow_predictive || !policy.allow_fingerprints)
-        {
-            if self.cruncher_index.is_some()
-                && self.holo_index.is_some()
-                && self.spectral_index.is_some()
-            {
-                SearchMode::Geometric
-            } else if self.cruncher_index.is_some() && self.holo_index.is_some() {
-                SearchMode::GooberV5
-            } else {
-                SearchMode::Fts
+        }
+
+        let mut fused: Vec<(i64, f64)> = scored.into_iter().collect();
+        fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+        if bm25_seeds.len() >= 2 && bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10) > 1.5 {
+            let anchor_id = bm25_seeds[0].0;
+            if let Some(pos) = fused.iter().position(|(id, _)| *id == anchor_id) {
+                if pos > 0 && pos < 5 {
+                    let entry = fused.remove(pos);
+                    fused.insert(0, entry);
+                }
             }
-        } else {
-            base
+        }
+
+        fused.truncate(top_k);
+        fused
+    }
+
+    fn search_care(
+        &self,
+        query: &SearchQuery,
+        query_hash: u64,
+        policy: &RetrievalPolicy,
+        family: QueryFamily,
+    ) -> SearchResult {
+        let ci = self.cruncher_index.unwrap();
+        let hi = self.holo_index.unwrap();
+        let spec = self.spectral_index.unwrap();
+        let pm = match (policy.allow_predictive, self.predictive_model) {
+            (true, Some(m)) => Some(m),
+            _ => None,
+        };
+        let fps = match (policy.allow_fingerprints, self.fingerprints) {
+            (true, Some(f)) => Some(f),
+            _ => None,
+        };
+        let fp_map = match (policy.allow_fingerprints, self.fp_id_to_idx) {
+            (true, Some(m)) => Some(m),
+            _ => None,
+        };
+
+        let fts = FtsSearch::new(self.db);
+        let fts_results = fts.search(&query.query, Some(200));
+        let total_fts = fts_results.len();
+
+        let bm25_seeds: Vec<(i64, f64)> = fts_results
+            .iter()
+            .map(|r| (r.symbol.id, r.bm25_score))
+            .collect();
+
+        let mut seeds = bm25_seeds.clone();
+        if let Some(model) = self.self_model {
+            let expanded = model.expand_query(&query.query);
+            let existing: HashSet<i64> = seeds.iter().map(|(id, _)| *id).collect();
+            for (sid, score) in expanded {
+                if !existing.contains(&sid) {
+                    seeds.push((sid, score * 5.0));
+                }
+            }
+        }
+
+        let goov5 = cruncher::goober_v5_search(&query.query, ci, hi, &seeds, query.top_k);
+
+        let deformed = cruncher::geometric_search(
+            &query.query, ci, hi, &seeds, spec, query.top_k,
+            policy.bm25_lock_strength, policy.spectral_expansion_seeds,
+            policy.spectral_heat_scale, 50, false,
+            pm, fps, fp_map, policy.evidence_weight,
+        );
+
+        let raw_results = Self::fuse_care(&goov5, &deformed, &bm25_seeds, family, query.top_k);
+
+        let file_paths = self.load_file_paths();
+        let mut results: Vec<ScoredSymbol> = raw_results
+            .into_iter()
+            .filter_map(|(id, score)| {
+                let sym = self.db.get_symbol(id).ok()??;
+                let fp = file_paths.get(&sym.file_id).cloned();
+                if let Some(ref filter) = query.file_filter {
+                    if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
+                        return None;
+                    }
+                }
+                Some(ScoredSymbol {
+                    symbol: sym,
+                    score,
+                    breakdown: None,
+                    is_fts_hit: false,
+                    file_path: fp,
+                })
+            })
+            .collect();
+
+        Self::apply_diversity_boost(&mut results, policy.diversity_boost);
+
+        for r in &results {
+            self.cache.put_source(r.symbol.id, r.symbol.source.clone());
+        }
+
+        let blast_result = self.compute_blast(&results, query);
+
+        self.cache.put_results(query_hash, results.clone());
+
+        SearchResult {
+            results,
+            blast_radius: blast_result,
+            total_fts_candidates: total_fts,
+            total_expanded: 0,
+            from_cache: false,
+            search_mode: SearchMode::CARE,
+            query_family: family,
+            traces: HashMap::new(),
         }
     }
 

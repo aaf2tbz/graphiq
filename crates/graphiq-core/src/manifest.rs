@@ -112,7 +112,7 @@ impl Manifest {
             && artifacts.predictive == ArtifactStatus::Ready
             && artifacts.fingerprints == ArtifactStatus::Ready
         {
-            SearchMode::Deformed
+            SearchMode::CARE
         } else if artifacts.fts == ArtifactStatus::Ready
             && artifacts.cruncher == ArtifactStatus::Ready
             && artifacts.holo == ArtifactStatus::Ready
@@ -133,19 +133,19 @@ impl Manifest {
         let mut reasons = Vec::new();
         if artifacts.spectral != ArtifactStatus::Ready {
             reasons.push(format!(
-                "spectral index {} — Deformed and Geometric modes unavailable",
+                "spectral index {} — CARE and Geometric modes unavailable",
                 artifacts.spectral
             ));
         }
         if artifacts.predictive != ArtifactStatus::Ready {
             reasons.push(format!(
-                "predictive model {} — Deformed mode unavailable",
+                "predictive model {} — CARE mode unavailable",
                 artifacts.predictive
             ));
         }
         if artifacts.fingerprints != ArtifactStatus::Ready {
             reasons.push(format!(
-                "channel fingerprints {} — Deformed mode unavailable",
+                "channel fingerprints {} — CARE mode unavailable",
                 artifacts.fingerprints
             ));
         }
@@ -273,9 +273,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_artifact_status_all_ready_gives_deformed() {
+    fn test_artifact_status_all_ready_gives_care() {
         let artifacts = ArtifactMap::all_ready();
-        assert_eq!(Manifest::compute_active_mode(&artifacts), SearchMode::Deformed);
+        assert_eq!(Manifest::compute_active_mode(&artifacts), SearchMode::CARE);
     }
 
     #[test]
@@ -334,8 +334,8 @@ mod tests {
             edges: 50,
             files: 10,
             artifacts: ArtifactMap::all_ready(),
-            active_search_mode: "Deformed".into(),
-            best_available_mode: "Deformed".into(),
+            active_search_mode: "CARE".into(),
+            best_available_mode: "CARE".into(),
             downgrade_reasons: None,
         };
         write_manifest(tmp.path(), &manifest).unwrap();

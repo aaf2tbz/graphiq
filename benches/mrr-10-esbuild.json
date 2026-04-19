@@ -1,12 +1,12 @@
 [
-  {"query": "encode a value in variable-length quantity for source maps", "category": "behavioral", "expected_symbol": "encodeVLQ"},
-  {"query": "check if a string is a valid JS identifier", "category": "behavioral", "expected_symbol": "IsIdentifier"},
-  {"query": "rename a symbol to a generated number", "category": "behavioral", "expected_symbol": "NumberRenamer"},
-  {"query": "validate that a log level string is acceptable", "category": "behavioral", "expected_symbol": "validateLogLevel"},
-  {"query": "compute the longest common substring between two strings", "category": "behavioral", "expected_symbol": "lcSubstr"},
-  {"query": "convert colors between XYZ and standard RGB color spaces", "category": "behavioral", "expected_symbol": "gamut_mapping_xyz_to_srgb"},
-  {"query": "hash a value with length-prefixed encoding", "category": "behavioral", "expected_symbol": "hashWriteLengthPrefixed"},
-  {"query": "download a binary asset to a local cache path", "category": "behavioral", "expected_symbol": "downloadedBinPath"},
-  {"query": "clone tokens while stripping import record metadata", "category": "behavioral", "expected_symbol": "CloneTokensWithoutImportRecords"},
-  {"query": "create a trace file for esbuild profiling", "category": "behavioral", "expected_symbol": "createTraceFile"}
+  {"query": "how does esbuild scan and resolve all entry points", "category": "behavioral", "expected_symbol": "ScanBundle"},
+  {"query": "how does the linker determine which symbols are live", "category": "behavioral", "expected_symbol": "scanImportsAndExports"},
+  {"query": "how does esbuild match imports with exports across files", "category": "behavioral", "expected_symbol": "matchImportsWithExportsForFile"},
+  {"query": "how does esbuild split code into separate chunks", "category": "behavioral", "expected_symbol": "computeCrossChunkDependencies"},
+  {"query": "how does esbuild generate output chunks in parallel", "category": "behavioral", "expected_symbol": "generateChunksInParallel"},
+  {"query": "how does esbuild mangle CSS and JS property names", "category": "behavioral", "expected_symbol": "mangleProps"},
+  {"query": "how does the resolver handle tsconfig path aliases", "category": "behavioral", "expected_symbol": "ParseTSConfigJSON"},
+  {"query": "how does esbuild parse and fold constant expressions", "category": "behavioral", "expected_symbol": "visitExpr"},
+  {"query": "how does esbuild lower ES2022 class features to ES6", "category": "behavioral", "expected_symbol": "lowerClass"},
+  {"query": "how does esbuild handle define substitution for process.env", "category": "behavioral", "expected_symbol": "ParseDefineExpr"}
 ]

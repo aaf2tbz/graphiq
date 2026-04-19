@@ -154,6 +154,8 @@ fn hyperedge_weight(kind: EdgeKind) -> f64 {
         EdgeKind::References => 0.3,
         EdgeKind::Tests => 0.2,
         EdgeKind::ReExports => 0.4,
+        EdgeKind::SharesConstant => 0.3,
+        EdgeKind::ReferencesConstant => 0.6,
     }
 }
 
