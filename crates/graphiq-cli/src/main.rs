@@ -221,6 +221,23 @@ fn cmd_search(
         engine = engine.with_goober(ci, hi);
     }
 
+    let spectral = graphiq_core::spectral::compute_spectral(&db).ok();
+    if let Some(ref spec) = spectral {
+        engine = engine.with_spectral(spec);
+    }
+
+    let predictive = graphiq_core::spectral::compute_predictive_model(&db).ok();
+    if let Some(ref pm) = predictive {
+        engine = engine.with_predictive(pm);
+    }
+
+    let (fp_vec, fp_id_map) = graphiq_core::spectral::compute_channel_fingerprints(&db);
+    engine = engine.with_fingerprints(&fp_vec, &fp_id_map);
+
+    if debug {
+        eprintln!("search mode: {}", engine.active_mode());
+    }
+
     let mut q = graphiq_core::search::SearchQuery::new(query)
         .top_k(top_k)
         .debug(debug);
@@ -233,6 +250,10 @@ fn cmd_search(
     }
 
     let result = engine.search(&q);
+
+    if debug {
+        eprintln!("search mode: {}", result.search_mode);
+    }
 
     if result.from_cache {
         eprintln!("(cached)");

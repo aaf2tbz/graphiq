@@ -8,6 +8,26 @@ use crate::edge::{BlastDirection, BlastRadius};
 use crate::fts::FtsSearch;
 use crate::graph::StructuralExpander;
 use crate::rerank::{Reranker, ScoredSymbol};
+use crate::spectral::{ChannelFingerprint, PredictiveModel, SpectralIndex};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchMode {
+    Fts,
+    GooberV5,
+    Geometric,
+    Deformed,
+}
+
+impl std::fmt::Display for SearchMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SearchMode::Fts => write!(f, "FTS"),
+            SearchMode::GooberV5 => write!(f, "GooberV5"),
+            SearchMode::Geometric => write!(f, "Geometric"),
+            SearchMode::Deformed => write!(f, "Deformed"),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SearchQuery {
@@ -64,6 +84,7 @@ pub struct SearchResult {
     pub total_fts_candidates: usize,
     pub total_expanded: usize,
     pub from_cache: bool,
+    pub search_mode: SearchMode,
 }
 
 pub struct SearchEngine<'a> {
@@ -71,6 +92,10 @@ pub struct SearchEngine<'a> {
     cache: &'a HotCache,
     cruncher_index: Option<&'a CruncherIndex>,
     holo_index: Option<&'a HoloIndex>,
+    spectral_index: Option<&'a SpectralIndex>,
+    predictive_model: Option<&'a PredictiveModel>,
+    fingerprints: Option<&'a [ChannelFingerprint]>,
+    fp_id_to_idx: Option<&'a HashMap<i64, usize>>,
 }
 
 impl<'a> SearchEngine<'a> {
@@ -80,6 +105,10 @@ impl<'a> SearchEngine<'a> {
             cache,
             cruncher_index: None,
             holo_index: None,
+            spectral_index: None,
+            predictive_model: None,
+            fingerprints: None,
+            fp_id_to_idx: None,
         }
     }
 
@@ -87,6 +116,47 @@ impl<'a> SearchEngine<'a> {
         self.cruncher_index = Some(ci);
         self.holo_index = Some(hi);
         self
+    }
+
+    pub fn with_spectral(mut self, si: &'a SpectralIndex) -> Self {
+        self.spectral_index = Some(si);
+        self
+    }
+
+    pub fn with_predictive(mut self, pm: &'a PredictiveModel) -> Self {
+        self.predictive_model = Some(pm);
+        self
+    }
+
+    pub fn with_fingerprints(
+        mut self,
+        fps: &'a [ChannelFingerprint],
+        id_map: &'a HashMap<i64, usize>,
+    ) -> Self {
+        self.fingerprints = Some(fps);
+        self.fp_id_to_idx = Some(id_map);
+        self
+    }
+
+    pub fn active_mode(&self) -> SearchMode {
+        if self.cruncher_index.is_some()
+            && self.holo_index.is_some()
+            && self.spectral_index.is_some()
+            && self.predictive_model.is_some()
+            && self.fingerprints.is_some()
+            && self.fp_id_to_idx.is_some()
+        {
+            SearchMode::Deformed
+        } else if self.cruncher_index.is_some()
+            && self.holo_index.is_some()
+            && self.spectral_index.is_some()
+        {
+            SearchMode::Geometric
+        } else if self.cruncher_index.is_some() && self.holo_index.is_some() {
+            SearchMode::GooberV5
+        } else {
+            SearchMode::Fts
+        }
     }
 
     pub fn search(&self, query: &SearchQuery) -> SearchResult {
@@ -99,13 +169,246 @@ impl<'a> SearchEngine<'a> {
                 total_fts_candidates: 0,
                 total_expanded: 0,
                 from_cache: true,
+                search_mode: self.active_mode(),
             };
         }
 
-        if let (Some(ci), Some(hi)) = (self.cruncher_index, self.holo_index) {
-            return self.search_goober_v5(query, ci, hi, query_hash);
+        match self.active_mode() {
+            SearchMode::Deformed => {
+                self.search_deformed(query, query_hash)
+            }
+            SearchMode::Geometric => {
+                self.search_geometric(query, query_hash)
+            }
+            SearchMode::GooberV5 => {
+                self.search_goober_v5(query, self.cruncher_index.unwrap(), self.holo_index.unwrap(), query_hash)
+            }
+            SearchMode::Fts => {
+                self.search_fts_fallback(query, query_hash)
+            }
+        }
+    }
+
+    fn search_deformed(
+        &self,
+        query: &SearchQuery,
+        query_hash: u64,
+    ) -> SearchResult {
+        let ci = self.cruncher_index.unwrap();
+        let hi = self.holo_index.unwrap();
+        let spec = self.spectral_index.unwrap();
+        let pm = self.predictive_model.unwrap();
+        let fps = self.fingerprints.unwrap();
+        let fp_map = self.fp_id_to_idx.unwrap();
+
+        let fts = FtsSearch::new(self.db);
+        let fts_results = fts.search(&query.query, Some(200));
+        let total_fts = fts_results.len();
+
+        let bm25_seeds: Vec<(i64, f64)> = fts_results
+            .iter()
+            .map(|r| (r.symbol.id, r.bm25_score))
+            .collect();
+
+        let goober_results = cruncher::geometric_search(
+            &query.query,
+            ci,
+            hi,
+            &bm25_seeds,
+            spec,
+            query.top_k,
+            1.0,
+            15,
+            5.0,
+            50,
+            false,
+            Some(pm),
+            Some(fps),
+            Some(fp_map),
+        );
+
+        let file_paths = self.load_file_paths();
+        let results: Vec<ScoredSymbol> = goober_results
+            .into_iter()
+            .filter_map(|(id, score)| {
+                let sym = self.db.get_symbol(id).ok()??;
+                let fp = file_paths.get(&sym.file_id).cloned();
+                if let Some(ref filter) = query.file_filter {
+                    if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
+                        return None;
+                    }
+                }
+                Some(ScoredSymbol {
+                    symbol: sym,
+                    score,
+                    breakdown: None,
+                    is_fts_hit: false,
+                    file_path: fp,
+                })
+            })
+            .collect();
+
+        for r in &results {
+            self.cache.put_source(r.symbol.id, r.symbol.source.clone());
         }
 
+        let blast_result = self.compute_blast(&results, query);
+
+        self.cache.put_results(query_hash, results.clone());
+
+        SearchResult {
+            results,
+            blast_radius: blast_result,
+            total_fts_candidates: total_fts,
+            total_expanded: 0,
+            from_cache: false,
+            search_mode: SearchMode::Deformed,
+        }
+    }
+
+    fn search_geometric(
+        &self,
+        query: &SearchQuery,
+        query_hash: u64,
+    ) -> SearchResult {
+        let ci = self.cruncher_index.unwrap();
+        let hi = self.holo_index.unwrap();
+        let spec = self.spectral_index.unwrap();
+
+        let fts = FtsSearch::new(self.db);
+        let fts_results = fts.search(&query.query, Some(200));
+        let total_fts = fts_results.len();
+
+        let bm25_seeds: Vec<(i64, f64)> = fts_results
+            .iter()
+            .map(|r| (r.symbol.id, r.bm25_score))
+            .collect();
+
+        let goober_results = cruncher::geometric_search(
+            &query.query,
+            ci,
+            hi,
+            &bm25_seeds,
+            spec,
+            query.top_k,
+            1.0,
+            15,
+            5.0,
+            50,
+            false,
+            None,
+            None,
+            None,
+        );
+
+        let file_paths = self.load_file_paths();
+        let results: Vec<ScoredSymbol> = goober_results
+            .into_iter()
+            .filter_map(|(id, score)| {
+                let sym = self.db.get_symbol(id).ok()??;
+                let fp = file_paths.get(&sym.file_id).cloned();
+                if let Some(ref filter) = query.file_filter {
+                    if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
+                        return None;
+                    }
+                }
+                Some(ScoredSymbol {
+                    symbol: sym,
+                    score,
+                    breakdown: None,
+                    is_fts_hit: false,
+                    file_path: fp,
+                })
+            })
+            .collect();
+
+        for r in &results {
+            self.cache.put_source(r.symbol.id, r.symbol.source.clone());
+        }
+
+        let blast_result = self.compute_blast(&results, query);
+
+        self.cache.put_results(query_hash, results.clone());
+
+        SearchResult {
+            results,
+            blast_radius: blast_result,
+            total_fts_candidates: total_fts,
+            total_expanded: 0,
+            from_cache: false,
+            search_mode: SearchMode::Geometric,
+        }
+    }
+
+    fn search_goober_v5(
+        &self,
+        query: &SearchQuery,
+        ci: &CruncherIndex,
+        hi: &HoloIndex,
+        query_hash: u64,
+    ) -> SearchResult {
+        let fts = FtsSearch::new(self.db);
+        let fts_results = fts.search(&query.query, Some(200));
+        let total_fts = fts_results.len();
+
+        let bm25_seeds: Vec<(i64, f64)> = fts_results
+            .iter()
+            .map(|r| (r.symbol.id, r.bm25_score))
+            .collect();
+
+        let goober_results = cruncher::goober_v5_search(
+            &query.query,
+            ci,
+            hi,
+            &bm25_seeds,
+            query.top_k,
+        );
+
+        let file_paths = self.load_file_paths();
+
+        let results: Vec<ScoredSymbol> = goober_results
+            .into_iter()
+            .filter_map(|(id, score)| {
+                let sym = self.db.get_symbol(id).ok()??;
+                let fp = file_paths.get(&sym.file_id).cloned();
+                if let Some(ref filter) = query.file_filter {
+                    if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
+                        return None;
+                    }
+                }
+                Some(ScoredSymbol {
+                    symbol: sym,
+                    score,
+                    breakdown: None,
+                    is_fts_hit: false,
+                    file_path: fp,
+                })
+            })
+            .collect();
+
+        for r in &results {
+            self.cache.put_source(r.symbol.id, r.symbol.source.clone());
+        }
+
+        let blast_result = self.compute_blast(&results, query);
+
+        self.cache.put_results(query_hash, results.clone());
+
+        SearchResult {
+            results,
+            blast_radius: blast_result,
+            total_fts_candidates: total_fts,
+            total_expanded: 0,
+            from_cache: false,
+            search_mode: SearchMode::GooberV5,
+        }
+    }
+
+    fn search_fts_fallback(
+        &self,
+        query: &SearchQuery,
+        query_hash: u64,
+    ) -> SearchResult {
         let mut results: Vec<ScoredSymbol>;
         let mut total_fts: usize;
         let mut total_expanded: usize;
@@ -161,27 +464,7 @@ impl<'a> SearchEngine<'a> {
             self.cache.put_source(r.symbol.id, r.symbol.source.clone());
         }
 
-        let blast_result = if query.blast_radius {
-            results.first().map(|top| {
-                blast::compute_blast_radius(
-                    self.db,
-                    top.symbol.id,
-                    query.blast_depth,
-                    BlastDirection::Both,
-                    None,
-                )
-                .unwrap_or_else(|_| BlastRadius {
-                    origin_name: top.symbol.name.clone(),
-                    origin_kind: top.symbol.kind.as_str().to_string(),
-                    origin_file: String::new(),
-                    forward: Vec::new(),
-                    backward: Vec::new(),
-                    max_depth: query.blast_depth,
-                })
-            })
-        } else {
-            None
-        };
+        let blast_result = self.compute_blast(&results, query);
 
         self.cache.put_results(query_hash, results.clone());
 
@@ -191,90 +474,31 @@ impl<'a> SearchEngine<'a> {
             total_fts_candidates: total_fts,
             total_expanded,
             from_cache: false,
+            search_mode: SearchMode::Fts,
         }
     }
 
-    fn search_goober_v5(
-        &self,
-        query: &SearchQuery,
-        ci: &CruncherIndex,
-        hi: &HoloIndex,
-        query_hash: u64,
-    ) -> SearchResult {
-        let fts = FtsSearch::new(self.db);
-        let fts_results = fts.search(&query.query, Some(200));
-        let total_fts = fts_results.len();
-
-        let bm25_seeds: Vec<(i64, f64)> = fts_results
-            .iter()
-            .map(|r| (r.symbol.id, r.bm25_score))
-            .collect();
-
-        let goober_results = cruncher::goober_v5_search(
-            &query.query,
-            ci,
-            hi,
-            &bm25_seeds,
-            query.top_k,
-        );
-
-        let file_paths = self.load_file_paths();
-
-        let results: Vec<ScoredSymbol> = goober_results
-            .into_iter()
-            .filter_map(|(id, score)| {
-                let sym = self.db.get_symbol(id).ok()??;
-                let fp = file_paths.get(&sym.file_id).cloned();
-                if let Some(ref filter) = query.file_filter {
-                    if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
-                        return None;
-                    }
-                }
-                Some(ScoredSymbol {
-                    symbol: sym,
-                    score,
-                    breakdown: None,
-                    is_fts_hit: false,
-                    file_path: fp,
-                })
-            })
-            .collect();
-
-        for r in &results {
-            self.cache.put_source(r.symbol.id, r.symbol.source.clone());
+    fn compute_blast(&self, results: &[ScoredSymbol], query: &SearchQuery) -> Option<BlastRadius> {
+        if !query.blast_radius {
+            return None;
         }
-
-        let blast_result = if query.blast_radius {
-            results.first().map(|top| {
-                blast::compute_blast_radius(
-                    self.db,
-                    top.symbol.id,
-                    query.blast_depth,
-                    BlastDirection::Both,
-                    None,
-                )
-                .unwrap_or_else(|_| BlastRadius {
-                    origin_name: top.symbol.name.clone(),
-                    origin_kind: top.symbol.kind.as_str().to_string(),
-                    origin_file: String::new(),
-                    forward: Vec::new(),
-                    backward: Vec::new(),
-                    max_depth: query.blast_depth,
-                })
+        results.first().map(|top| {
+            blast::compute_blast_radius(
+                self.db,
+                top.symbol.id,
+                query.blast_depth,
+                BlastDirection::Both,
+                None,
+            )
+            .unwrap_or_else(|_| BlastRadius {
+                origin_name: top.symbol.name.clone(),
+                origin_kind: top.symbol.kind.as_str().to_string(),
+                origin_file: String::new(),
+                forward: Vec::new(),
+                backward: Vec::new(),
+                max_depth: query.blast_depth,
             })
-        } else {
-            None
-        };
-
-        self.cache.put_results(query_hash, results.clone());
-
-        SearchResult {
-            results,
-            blast_radius: blast_result,
-            total_fts_candidates: total_fts,
-            total_expanded: 0,
-            from_cache: false,
-        }
+        })
     }
 
     fn load_file_paths(&self) -> HashMap<i64, String> {
@@ -335,10 +559,12 @@ mod tests {
     fn test_search_basic() {
         let (db, cache) = setup_engine();
         let engine = SearchEngine::new(&db, &cache);
+        assert_eq!(engine.active_mode(), SearchMode::Fts);
         let result = engine.search(&SearchQuery::new("authenticateUser"));
         assert!(!result.results.is_empty());
         assert_eq!(result.results[0].symbol.name, "authenticateUser");
         assert!(!result.from_cache);
+        assert_eq!(result.search_mode, SearchMode::Fts);
     }
 
     #[test]
@@ -392,5 +618,12 @@ mod tests {
         let engine2 = SearchEngine::new(&db, &cache2);
         let result2 = engine2.search(&SearchQuery::new("auth").file_filter("nonexistent"));
         assert!(result2.results.is_empty());
+    }
+
+    #[test]
+    fn test_active_mode_fts_without_indexes() {
+        let (db, cache) = setup_engine();
+        let engine = SearchEngine::new(&db, &cache);
+        assert_eq!(engine.active_mode(), SearchMode::Fts);
     }
 }

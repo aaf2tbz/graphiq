@@ -16,6 +16,10 @@ struct ServerState {
     cache: graphiq_core::cache::HotCache,
     cruncher_index: Option<graphiq_core::cruncher::CruncherIndex>,
     holo_index: Option<graphiq_core::cruncher::HoloIndex>,
+    spectral_index: Option<graphiq_core::spectral::SpectralIndex>,
+    predictive_model: Option<graphiq_core::spectral::PredictiveModel>,
+    fingerprints: Vec<graphiq_core::spectral::ChannelFingerprint>,
+    fp_id_to_idx: std::collections::HashMap<i64, usize>,
 }
 
 fn resolve_project_root(raw: &str) -> PathBuf {
@@ -86,6 +90,27 @@ fn ensure_indexed(state: &mut ServerState) -> Result<(), String> {
         }
     }
 
+    if state.spectral_index.is_none() && state.cruncher_index.is_some() {
+        if let Ok(si) = graphiq_core::spectral::compute_spectral(&state.db) {
+            log_err("spectral index built");
+            state.spectral_index = Some(si);
+        }
+    }
+
+    if state.predictive_model.is_none() && state.cruncher_index.is_some() {
+        if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&state.db) {
+            log_err("predictive model built");
+            state.predictive_model = Some(pm);
+        }
+    }
+
+    if state.fingerprints.is_empty() && state.cruncher_index.is_some() {
+        let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&state.db);
+        log_err(&format!("channel fingerprints built ({} symbols)", fps.len()));
+        state.fingerprints = fps;
+        state.fp_id_to_idx = id_map;
+    }
+
     Ok(())
 }
 
@@ -110,6 +135,21 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
         state.holo_index = Some(hi);
         log_err("goober v5 index rebuilt");
     }
+
+    if let Ok(si) = graphiq_core::spectral::compute_spectral(&state.db) {
+        log_err("spectral index rebuilt");
+        state.spectral_index = Some(si);
+    }
+
+    if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&state.db) {
+        log_err("predictive model rebuilt");
+        state.predictive_model = Some(pm);
+    }
+
+    let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&state.db);
+    log_err(&format!("channel fingerprints rebuilt ({} symbols)", fps.len()));
+    state.fingerprints = fps;
+    state.fp_id_to_idx = id_map;
 
     let msg = format!(
         "Indexed {} in {} files ({} symbols, {} edges)",
@@ -166,6 +206,10 @@ fn main() {
         cache,
         cruncher_index,
         holo_index,
+        spectral_index: None,
+        predictive_model: None,
+        fingerprints: Vec::new(),
+        fp_id_to_idx: std::collections::HashMap::new(),
     };
 
     if let Err(e) = ensure_indexed(&mut state) {
@@ -503,7 +547,7 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
                 Ok(s) => s,
                 Err(e) => return tool_error(&format!("lock error: {e}")),
             };
-            tool_search(&s.db, &s.cache, s.cruncher_index.as_ref(), s.holo_index.as_ref(), arguments)
+            tool_search(&s, arguments)
         }
         "blast" => {
             let s = match state.lock() {
@@ -582,10 +626,7 @@ fn tool_ok(text: String) -> Value {
 }
 
 fn tool_search(
-    db: &graphiq_core::db::GraphDb,
-    cache: &graphiq_core::cache::HotCache,
-    cruncher_index: Option<&graphiq_core::cruncher::CruncherIndex>,
-    holo_index: Option<&graphiq_core::cruncher::HoloIndex>,
+    state: &ServerState,
     args: Value,
 ) -> Value {
     let query = match args.get("query").and_then(|v| v.as_str()) {
@@ -604,9 +645,18 @@ fn tool_search(
         .min(50) as usize;
     let file_filter = args.get("file_filter").and_then(|v| v.as_str());
 
-    let mut engine = graphiq_core::search::SearchEngine::new(db, cache);
-    if let (Some(ci), Some(hi)) = (cruncher_index, holo_index) {
+    let mut engine = graphiq_core::search::SearchEngine::new(&state.db, &state.cache);
+    if let (Some(ci), Some(hi)) = (state.cruncher_index.as_ref(), state.holo_index.as_ref()) {
         engine = engine.with_goober(ci, hi);
+    }
+    if let Some(ref spec) = state.spectral_index {
+        engine = engine.with_spectral(spec);
+    }
+    if let Some(ref pm) = state.predictive_model {
+        engine = engine.with_predictive(pm);
+    }
+    if !state.fingerprints.is_empty() {
+        engine = engine.with_fingerprints(&state.fingerprints, &state.fp_id_to_idx);
     }
     let mut q = graphiq_core::search::SearchQuery::new(query).top_k(top_k);
     if let Some(f) = file_filter {
@@ -617,9 +667,10 @@ fn tool_search(
 
     let mut lines = Vec::new();
     lines.push(format!(
-        "Search: \"{}\" ({} results)",
+        "Search: \"{}\" ({} results, mode: {})",
         query,
-        result.results.len()
+        result.results.len(),
+        result.search_mode,
     ));
     lines.push(String::new());
 
@@ -815,8 +866,31 @@ fn tool_status(state: &ServerState) -> Value {
             let size = std::fs::metadata(&state.db_path)
                 .map(|m| m.len())
                 .unwrap_or(0);
+
+            let mut engine = graphiq_core::search::SearchEngine::new(&state.db, &state.cache);
+            if let (Some(ci), Some(hi)) = (state.cruncher_index.as_ref(), state.holo_index.as_ref()) {
+                engine = engine.with_goober(ci, hi);
+            }
+            if let Some(ref spec) = state.spectral_index {
+                engine = engine.with_spectral(spec);
+            }
+            if let Some(ref pm) = state.predictive_model {
+                engine = engine.with_predictive(pm);
+            }
+            if !state.fingerprints.is_empty() {
+                engine = engine.with_fingerprints(&state.fingerprints, &state.fp_id_to_idx);
+            }
+            let mode = engine.active_mode();
+
+            let mut artifacts = Vec::new();
+            artifacts.push(format!("cruncher: {}", if state.cruncher_index.is_some() { "ready" } else { "missing" }));
+            artifacts.push(format!("holo: {}", if state.holo_index.is_some() { "ready" } else { "missing" }));
+            artifacts.push(format!("spectral: {}", if state.spectral_index.is_some() { "ready" } else { "missing" }));
+            artifacts.push(format!("predictive: {}", if state.predictive_model.is_some() { "ready" } else { "missing" }));
+            artifacts.push(format!("fingerprints: {}", if !state.fingerprints.is_empty() { "ready" } else { "missing" }));
+
             let text = format!(
-                "GraphIQ v{}\n  Project:  {}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB: {}",
+                "GraphIQ v{}\n  Project:  {}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB: {}\n  Search mode: {}\n  Artifacts: {}",
                 SERVER_VERSION,
                 state.project_root.display(),
                 stats.files,
@@ -824,6 +898,8 @@ fn tool_status(state: &ServerState) -> Value {
                 stats.edges,
                 stats.file_edges,
                 human_bytes(size),
+                mode,
+                artifacts.join(", "),
             );
             tool_ok(text)
         }
