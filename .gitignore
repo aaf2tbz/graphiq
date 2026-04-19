@@ -3,3 +3,12 @@
 *.db
 *.db-wal
 *.db-shm
+--db
+--db-wal
+--db-shm
+--help
+signetai
+signetai-shm
+signetai-wal
+*.csv
+*-stderr.log
