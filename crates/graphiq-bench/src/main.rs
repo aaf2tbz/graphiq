@@ -521,11 +521,158 @@ fn cmd_diagnose(fe: &FullEngine, queries: &[BenchQuery]) {
     println!("{}", "=".repeat(60));
 }
 
+fn run_speed_bench(fe: &FullEngine, queries: &[BenchQuery]) {
+    use std::time::Instant;
+
+    let n_queries = queries.len();
+    let warmup_iters = 5;
+    let bench_iters = 50;
+
+    println!("\n{}", "=".repeat(70));
+    println!("  Speed Benchmark  ({} queries, {} iterations after {} warmup)", n_queries, bench_iters, warmup_iters);
+    println!("{}", "=".repeat(70));
+
+    let mut g_times: Vec<Vec<f64>> = vec![vec![]; n_queries];
+    let mut r_times: Vec<Vec<f64>> = vec![vec![]; n_queries];
+    let mut g_rr: Vec<f64> = vec![0.0; n_queries];
+    let mut r_rr: Vec<f64> = vec![0.0; n_queries];
+
+    for (qi, q) in queries.iter().enumerate() {
+        let expected = q.expected_symbol.as_deref().unwrap_or("");
+
+        for _ in 0..warmup_iters {
+            let _ = fe.run_router(&q.query, 10);
+            let _ = grep_search(fe.db, &q.query, 10);
+        }
+
+        for _ in 0..bench_iters {
+            let t = Instant::now();
+            let g_hits = fe.run_router(&q.query, 10);
+            g_times[qi].push(t.elapsed().as_micros() as f64);
+
+            let t = Instant::now();
+            let r_hits = grep_search(fe.db, &q.query, 10);
+            r_times[qi].push(t.elapsed().as_micros() as f64);
+
+            let g_rank = g_hits.iter().position(|(id, _)| {
+                let name = sym_name(fe.db, *id);
+                name == expected || expected.contains(&name) || name.contains(expected)
+            });
+            let r_rank = r_hits.iter().position(|(id, _)| {
+                let name = sym_name(fe.db, *id);
+                name == expected || expected.contains(&name) || name.contains(expected)
+            });
+            if g_rank.is_some() { g_rr[qi] = 1.0 / (g_rank.unwrap() as f64 + 1.0); }
+            if r_rank.is_some() { r_rr[qi] = 1.0 / (r_rank.unwrap() as f64 + 1.0); }
+        }
+    }
+
+    let g_mrr: f64 = g_rr.iter().sum::<f64>() / n_queries as f64;
+    let r_mrr: f64 = r_rr.iter().sum::<f64>() / n_queries as f64;
+
+    let mut all_g: Vec<f64> = g_times.iter().flatten().copied().collect();
+    let mut all_r: Vec<f64> = r_times.iter().flatten().copied().collect();
+    all_g.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    all_r.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let percentile = |v: &[f64], p: f64| -> f64 {
+        if v.is_empty() { return 0.0; }
+        let idx = ((p / 100.0) * (v.len() - 1) as f64).round() as usize;
+        v[idx.min(v.len() - 1)]
+    };
+
+    let g_med = percentile(&all_g, 50.0);
+    let g_p95 = percentile(&all_g, 95.0);
+    let g_p99 = percentile(&all_g, 99.0);
+    let r_med = percentile(&all_r, 50.0);
+    let r_p95 = percentile(&all_r, 95.0);
+    let _r_p99 = percentile(&all_r, 99.0);
+
+    println!("\n{:<12} {:>8} {:>8} {:>8}  {:>8} {:>8} {:>8}", "", "MRR", "Med(us)", "P95(us)", "MRR", "Med(us)", "P95(us)");
+    println!("{:<12} {:>8} {:>8} {:>8}  {:>8} {:>8} {:>8}", "", "----", "-------", "-------", "----", "-------", "-------");
+    println!("{:<12} {:>8.3} {:>8.0} {:>8.0}  {:>8.3} {:>8.0} {:>8.0}", "OVERALL",
+        g_mrr, g_med, g_p95, r_mrr, r_med, r_p95);
+
+    println!("\n--- Per Query ---\n");
+    println!("{:<35} {:>6} {:>8} {:>8}  {:>6} {:>8} {:>8}", "Query", "G RR", "G med", "G p95", "R RR", "R med", "R p95");
+    println!("{}", "-".repeat(90));
+    for (qi, q) in queries.iter().enumerate() {
+        let g_t = &mut g_times[qi];
+        let r_t = &mut r_times[qi];
+        g_t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        r_t.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!("{:<35} {:>6.3} {:>7.0}us {:>7.0}us  {:>6.3} {:>7.0}us {:>7.0}us",
+            truncate(&q.query, 35),
+            g_rr[qi], percentile(g_t, 50.0), percentile(g_t, 95.0),
+            r_rr[qi], percentile(r_t, 50.0), percentile(r_t, 95.0));
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("usage: graphiq-bench <db-path> <ndcg-queries.json> <mrr-queries.json>");
+        eprintln!("usage: graphiq-bench <db-path> [ndcg-queries.json] [mrr-queries.json]");
+        eprintln!("       graphiq-bench speed <db-path> <mrr-queries.json>");
         std::process::exit(1);
+    }
+
+    if args.get(1).map(|s| s.as_str()) == Some("speed") {
+        if args.len() < 4 {
+            eprintln!("usage: graphiq-bench speed <db-path> <mrr-queries.json>");
+            std::process::exit(1);
+        }
+        let db_path = &args[2];
+        let db = match GraphDb::open(Path::new(db_path)) {
+            Ok(d) => d,
+            Err(e) => { eprintln!("error opening database: {e}"); std::process::exit(1); }
+        };
+        let stats = db.stats().unwrap();
+        println!("GraphIQ Speed Benchmark");
+        println!("{} files, {} symbols, {} edges\n", stats.files, stats.symbols, stats.edges);
+
+        let fts = FtsSearch::new(&db);
+        let ci = match cruncher::build_cruncher_index(&db) {
+            Ok(idx) => idx,
+            Err(e) => { eprintln!("cruncher build failed: {e}"); std::process::exit(1); }
+        };
+        let hi = cruncher::build_holo_index(&db, &ci);
+        eprintln!("Computing spectral index...");
+        let spectral = match graphiq_core::spectral::compute_spectral(&db) {
+            Ok(mut idx) => {
+                let kappa = graphiq_core::spectral::compute_ricci_curvature(&idx.graph);
+                idx.graph.edge_curvature = Some(kappa);
+                Some(idx)
+            }
+            Err(e) => { eprintln!("spectral failed: {e}"); None }
+        };
+        let predictive = graphiq_core::spectral::compute_predictive_model(&db).ok();
+        let (fp_vec, fp_id_map) = graphiq_core::spectral::compute_channel_fingerprints(&db);
+        let self_model = graphiq_core::self_model::build_self_model(&db).ok();
+        let cache = HotCache::with_defaults();
+        cache.prewarm(&db, 200);
+        let mut engine = SearchEngine::new(&db, &cache).with_goober(&ci, &hi);
+        if let Some(ref spec) = spectral { engine = engine.with_spectral(spec); }
+        if let Some(ref pm) = predictive { engine = engine.with_predictive(pm); }
+        engine = engine.with_fingerprints(&fp_vec, &fp_id_map);
+        if let Some(ref sm) = self_model { engine = engine.with_self_model(sm); }
+
+        let fe = FullEngine {
+            db: &db, fts: &fts, ci: &ci, hi: &hi,
+            spectral: &spectral, predictive: &predictive,
+            fingerprints: &fp_vec, fp_id_to_idx: &fp_id_map,
+            cache: &cache, self_model: &self_model, engine,
+        };
+
+        let content = std::fs::read_to_string(&args[3]).unwrap_or_else(|e| {
+            eprintln!("error reading query file: {e}"); std::process::exit(1);
+        });
+        let mut queries: Vec<BenchQuery> = serde_json::from_str(&content).unwrap_or_else(|e| {
+            eprintln!("error parsing query file: {e}"); std::process::exit(1);
+        });
+        queries.truncate(10);
+
+        run_speed_bench(&fe, &queries);
+        return;
     }
 
     let db_path = &args[1];

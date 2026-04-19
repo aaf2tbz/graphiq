@@ -358,6 +358,24 @@ Expanded benchmark coverage from 3 to 5 codebases (adding flask/Python and junit
 
 **Importance as ranking signal doesn't move NDCG.** Fixed importance computation (broken `total_edges` normalization → sqrt-scaled max-degree). Tried multiplicative boost, tiebreaker, calibrated normalization — all negligible impact. Importance's value is in output display (role tags), not ranking.
 
+### Phase 23: Speed Benchmark — Warm Cache Latency
+
+Added `graphiq-bench speed <db> <mrr-queries.json>` — measures warm cache latency for both GraphIQ and Grep, taking first 10 MRR queries, 5 warmup iterations, 50 timed iterations, reporting median/p95 per query + overall MRR.
+
+**Results (10 queries each, 50 iterations, warm cache):**
+
+| Codebase | Syms | G IQ MRR | Grep MRR | G IQ med | Grep med | Speedup |
+|---|---|---|---|---|---|---|
+| signetai | 21K | **0.247** | 0.025 | **18us** | 124ms | 6,900x |
+| tokio | 18K | **0.558** | 0.186 | **13us** | 79ms | 6,100x |
+| esbuild | 12K | **0.150** | 0.100 | **19us** | 94ms | 4,900x |
+| flask | 2K | **0.646** | 0.557 | **7us** | 9ms | 1,300x |
+| junit5 | 34K | **0.445** | 0.084 | **16us** | 187ms | 11,700x |
+
+GraphIQ wins MRR on all 5 and is **1,300-11,700x faster** on warm cache.
+
+**Why the speed gap is so large:** Grep's `LIKE %term%` does a full table scan on every symbol's name AND source code for each query term. On 34K symbols with full source, that's 34K rows × multiple LIKE scans per term. GraphIQ uses BM25's FTS5 inverted index (O(1) per term lookup) plus pre-computed graph structures (spectral, predictive model, cruncher adjacency) that are built once at startup. The query-time cost is dominated by BM25 seed retrieval (~5ms first query, sub-20us cached) followed by graph expansion over pre-built adjacency lists.
+
 ## Cross-References to Roadmap
 
 These precedents from failed experiments are directly relevant to future phases:
