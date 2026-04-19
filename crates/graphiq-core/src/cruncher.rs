@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::db::GraphDb;
 use crate::lsa::extract_terms;
-use crate::spectral::SpectralIndex;
+use crate::spectral::{ChannelFingerprint, MdlExplanation, PredictiveModel, SpectralIndex};
 use crate::tokenize::decompose_identifier;
 
 const TOP_K_TERMS: usize = 30;
@@ -2360,19 +2360,20 @@ fn holo_query_name_cosine(query: &str, hi: &HoloIndex, symbol_i: usize) -> f64 {
 }
 
  struct V5Candidate {
-    idx: usize,
-    bm25_score: f64,
-    coverage_score: f64,
-    coverage_count: usize,
-    name_score: f64,
-    is_seed: bool,
-    walk_evidence: f64,
-    seed_paths: HashSet<usize>,
-    ng_score: f64,
-    coherence_score: f64,
-    holo_name_sim: f64,
-    structural_recall: bool,
-}
+     idx: usize,
+     bm25_score: f64,
+     coverage_score: f64,
+     coverage_count: usize,
+     name_score: f64,
+     is_seed: bool,
+     walk_evidence: f64,
+     seed_paths: HashSet<usize>,
+     ng_score: f64,
+     coherence_score: f64,
+     holo_name_sim: f64,
+     structural_recall: bool,
+     surprise_boost: f64,
+ }
 
 pub fn goober_v5_search(
     query: &str,
@@ -2434,6 +2435,7 @@ pub fn goober_v5_search(
                     coherence_score: coherence,
                     holo_name_sim: holo_name,
                     structural_recall: false,
+                    surprise_boost: 0.0,
                 },
             );
         }
@@ -2476,7 +2478,8 @@ pub fn goober_v5_search(
                         ng_score: ng,
                         coherence_score: coherence,
                         holo_name_sim: holo_name,
-                        structural_recall: true,
+                        structural_recall: false,
+                        surprise_boost: 0.0,
                     },
                 );
             }
@@ -2486,6 +2489,46 @@ pub fn goober_v5_search(
     let mut idf_sorted: Vec<f64> = query_terms.iter().map(|qt| qt.idf).collect();
     idf_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let idf_threshold = idf_sorted[idf_sorted.len() / 2];
+
+    for qt in &query_terms {
+        let ql = qt.text.to_lowercase();
+        if let Some(indices) = idx.name_to_indices.get(&ql) {
+            for &i in indices.iter().take(5) {
+                if candidates.contains_key(&i) {
+                    continue;
+                }
+                let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
+                let (name_s, _) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+                let channels = compute_sec_channels(&query_terms, idx, i);
+                let ng = negentropy(&channels);
+                let coherence = channel_coherence(&query_terms, idx, i);
+                let holo_name = holo_query_name_cosine(query, hi, i);
+
+                candidates.insert(
+                    i,
+                    V5Candidate {
+                        idx: i,
+                        bm25_score: 0.0,
+                        coverage_score: cov_score,
+                        coverage_count: cov_count,
+                        name_score: name_s,
+                        is_seed: true,
+                        walk_evidence: 0.0,
+                        seed_paths: {
+                            let mut sp = HashSet::new();
+                            sp.insert(i);
+                            sp
+                        },
+                        ng_score: ng,
+                        coherence_score: coherence,
+                        holo_name_sim: holo_name,
+                        structural_recall: true,
+                        surprise_boost: 0.0,
+                    },
+                );
+            }
+        }
+    }
 
     if matches!(intent, QueryIntent::Informational) {
         let seed_indices: Vec<usize> = candidates.keys().cloned().collect();
@@ -2553,6 +2596,7 @@ pub fn goober_v5_search(
                         coherence_score: coherence,
                         holo_name_sim: holo_name,
                         structural_recall: false,
+                        surprise_boost: 0.0,
                     }
                 });
 
@@ -2719,6 +2763,9 @@ pub fn geometric_search(
     walk_weight: f64,
     heat_top_k: usize,
     use_curvature: bool,
+    predictive: Option<&PredictiveModel>,
+    fingerprints: Option<&[ChannelFingerprint]>,
+    fp_id_to_idx: Option<&HashMap<i64, usize>>,
 ) -> Vec<(i64, f64)> {
     let query_terms = build_query_terms(query, &idx.global_idf);
     if query_terms.is_empty() {
@@ -2736,6 +2783,43 @@ pub fn geometric_search(
         0.0
     };
 
+    let intent_weights: [f64; 5] = match intent {
+        QueryIntent::Navigational => [5.0, 0.8, 1.0, 0.1, 0.05],
+        QueryIntent::Informational => [3.0, 1.5, 2.0, 0.25, 0.15],
+    };
+    let channel_adj: [f64; 5] = if let (Some(fps), Some(fp_map)) = (fingerprints, fp_id_to_idx) {
+        crate::spectral::channel_capacity_weights(fps, fp_map, &query_terms.iter().map(|qt| qt.text.clone()).collect::<Vec<_>>(), bm25_seeds)
+    } else {
+        [0.0, 0.0, 0.0, 0.0, 0.0]
+    };
+    let (bm25_w, cov_w, name_w, ng_w, coh_w) = (
+        intent_weights[0] + channel_adj[0],
+        intent_weights[1] + channel_adj[1],
+        intent_weights[2] + channel_adj[2],
+        intent_weights[3] + channel_adj[3],
+        intent_weights[4] + channel_adj[4],
+    );
+
+    let surprise_map: HashMap<usize, f64> = if let Some(pm) = predictive {
+        let mut map = HashMap::new();
+        for &(id, _) in bm25_seeds.iter().take(MAX_SEEDS) {
+            if let Some(&ci) = idx.id_to_idx.get(&id) {
+                if let Some(&si) = pm.sym_id_to_idx.get(&id) {
+                    let qt_strings: Vec<String> = query_terms.iter().map(|qt| qt.text.clone()).collect();
+                    let surprise = crate::spectral::predictive_surprise(pm, &qt_strings, si);
+                    map.insert(ci, surprise);
+                }
+            }
+        }
+        if !map.is_empty() {
+            let max_surprise = map.values().cloned().fold(0.0f64, f64::max).max(1e-10);
+            map.iter_mut().for_each(|(_, v)| *v /= max_surprise);
+        }
+        map
+    } else {
+        HashMap::new()
+    };
+
     let mut candidates: HashMap<usize, V5Candidate> = HashMap::new();
 
     for &(id, score) in bm25_seeds.iter().take(MAX_SEEDS) {
@@ -2746,6 +2830,8 @@ pub fn geometric_search(
             let ng = negentropy(&channels);
             let coherence = channel_coherence(&query_terms, idx, i);
             let holo_name = holo_query_name_cosine(query, hi, i);
+
+            let surprise_boost = surprise_map.get(&i).copied().unwrap_or(0.0);
 
             let mut sp = HashSet::new();
             sp.insert(i);
@@ -2765,6 +2851,7 @@ pub fn geometric_search(
                     coherence_score: coherence,
                     holo_name_sim: holo_name,
                     structural_recall: false,
+                    surprise_boost,
                 },
             );
         }
@@ -2788,6 +2875,19 @@ pub fn geometric_search(
                 let coherence = channel_coherence(&query_terms, idx, i);
                 let holo_name = holo_query_name_cosine(query, hi, i);
 
+                let surprise_boost = if let Some(pm) = predictive {
+                    if let Some(&si) = pm.sym_id_to_idx.get(&idx.symbol_ids[i]) {
+                        let qt_strings: Vec<String> = query_terms.iter().map(|qt| qt.text.clone()).collect();
+                        let surprise = crate::spectral::predictive_surprise(pm, &qt_strings, si);
+                        let max_s = surprise_map.values().cloned().fold(0.0f64, f64::max).max(1e-10);
+                        (surprise / max_s).min(1.0)
+                    } else {
+                        0.0
+                    }
+                } else {
+                    0.0
+                };
+
                 candidates.insert(
                     i,
                     V5Candidate {
@@ -2807,6 +2907,7 @@ pub fn geometric_search(
                         coherence_score: coherence,
                         holo_name_sim: holo_name,
                         structural_recall: true,
+                        surprise_boost,
                     },
                 );
             }
@@ -2910,6 +3011,19 @@ pub fn geometric_search(
                     let coherence = channel_coherence(&query_terms, idx, ci);
                     let holo_name = holo_query_name_cosine(query, hi, ci);
 
+                    let surprise_boost = if let Some(pm) = predictive {
+                        if let Some(&si) = pm.sym_id_to_idx.get(&sym_id) {
+                            let qt_strings: Vec<String> = query_terms.iter().map(|qt| qt.text.clone()).collect();
+                            let surprise = crate::spectral::predictive_surprise(pm, &qt_strings, si);
+                            let max_s = surprise_map.values().cloned().fold(0.0f64, f64::max).max(1e-10);
+                            (surprise / max_s).min(1.0)
+                        } else {
+                            0.0
+                        }
+                    } else {
+                        0.0
+                    };
+
                     let entry = candidates.entry(ci).or_insert_with(|| {
                         let (ns, _) = name_coverage(&query_terms, &idx.term_sets[ci].name_terms);
                         V5Candidate {
@@ -2925,10 +3039,12 @@ pub fn geometric_search(
                             coherence_score: coherence,
                             holo_name_sim: holo_name,
                             structural_recall: false,
+                            surprise_boost: 0.0,
                         }
                     });
 
                     entry.walk_evidence = entry.walk_evidence.max(cov_score * normalized_heat * ricci_boost);
+                    entry.surprise_boost = entry.surprise_boost.max(surprise_boost);
                     entry.seed_paths.insert(seed_indices[0]);
                 }
             }
@@ -2937,11 +3053,6 @@ pub fn geometric_search(
 
     let max_ng = candidates.values().map(|c| c.ng_score).fold(0.0f64, f64::max).max(1e-10);
     let max_coherence = candidates.values().map(|c| c.coherence_score).fold(0.0f64, f64::max).max(1e-10);
-
-    let (bm25_w, cov_w, name_w, ng_w, coh_w) = match intent {
-        QueryIntent::Navigational => (5.0, 0.8, 1.0, 0.1, 0.05),
-        QueryIntent::Informational => (3.0, 1.5, 2.0, 0.25, 0.15),
-    };
 
     let holo_gate = 0.25f64;
     let holo_max_w = 2.0;
@@ -2959,16 +3070,8 @@ pub fn geometric_search(
             let walk_norm = if idf_sum > 0.0 { c.walk_evidence / idf_sum } else { 0.0 };
 
             let base = if c.is_seed {
-                let cov_cap = if matches!(intent, QueryIntent::Navigational) {
-                    cov_norm.min(0.2)
-                } else {
-                    cov_norm.min(0.5)
-                };
-                let name_cap = if matches!(intent, QueryIntent::Navigational) {
-                    name_norm.min(0.3)
-                } else {
-                    name_norm.min(0.5)
-                };
+                let cov_cap = cov_norm.min(0.5);
+                let name_cap = name_norm.min(0.5);
                 bm25_w * c.bm25_score + cov_w * cov_cap + name_w * name_cap
             } else {
                 1.5 * cov_norm + 2.0 * name_norm + walk_weight * walk_norm
@@ -3003,7 +3106,9 @@ pub fn geometric_search(
                 0.0
             };
 
-            let raw = (base + holo_additive + structural_bonus) * coverage_frac.powf(0.3) * ng_boost * seed_bonus * kb * tp;
+            let surprise_bonus = 1.0 + 0.08 * c.surprise_boost;
+
+            let raw = (base + holo_additive + structural_bonus) * coverage_frac.powf(0.3) * ng_boost * seed_bonus * kb * tp * surprise_bonus;
 
             if raw > 0.0 {
                 Some((c.idx, raw))
@@ -3031,6 +3136,40 @@ pub fn geometric_search(
         }
     }
 
+    let scored_for_mdl: Vec<(i64, f64)> = scored
+        .iter()
+        .map(|(i, s)| (idx.symbol_ids[*i], *s))
+        .collect();
+
+    let mdl = if let (Some(fps), Some(fp_map)) = (fingerprints, fp_id_to_idx) {
+        let idx_clone = idx;
+        Some(crate::spectral::mdl_explanation_set(
+            &scored_for_mdl,
+            &query_terms.iter().map(|qt| qt.text.clone()).collect::<Vec<_>>(),
+            &|sym_id: i64| -> Option<(std::collections::HashSet<String>, std::collections::HashSet<String>, std::collections::HashMap<String, f64>)> {
+                let ci = *idx_clone.id_to_idx.get(&sym_id)?;
+                let ts = &idx_clone.term_sets[ci];
+                Some((
+                    ts.name_terms.clone(),
+                    ts.sig_terms.clone(),
+                    ts.terms.clone(),
+                ))
+            },
+            fps,
+            fp_map,
+        ))
+    } else {
+        None
+    };
+
+    let use_mdl = mdl.as_ref().map_or(false, |m| m.covered_frac > 0.5);
+    let mdl_penalty = if use_mdl {
+        let m = mdl.as_ref().unwrap();
+        1.0 + 0.1 * m.marginal_gain
+    } else {
+        1.0
+    };
+
     let mut results: Vec<(i64, f64)> = Vec::with_capacity(top_k);
     let mut file_counts: HashMap<i64, usize> = HashMap::new();
 
@@ -3041,7 +3180,7 @@ pub fn geometric_search(
             continue;
         }
         *fc += 1;
-        results.push((idx.symbol_ids[i], score));
+        results.push((idx.symbol_ids[i], score * mdl_penalty));
         if results.len() >= top_k {
             break;
         }

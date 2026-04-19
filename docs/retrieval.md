@@ -1,6 +1,6 @@
 # Retrieval Engine
 
-GraphIQ's retrieval engine is a 5-layer pipeline that combines BM25 text search with structural graph analysis and holographic name matching. Every layer is deterministic — no LLMs, no neural embeddings, no learned weights.
+GraphIQ's retrieval engine is a 6-layer pipeline that combines BM25 text search with structural graph analysis, spectral heat diffusion, and predictive deformation. Every layer is deterministic — no LLMs, no neural embeddings, no learned weights.
 
 ## The Pipeline
 
@@ -15,29 +15,34 @@ Query: "rate limit middleware"
 +----------+----------+
            v
 +------------------------------------------+
-|  Layer 2: Goober Reranker                 |  --> ~100 candidates
-|  BM25-dominant seed scoring               |
-|  IDF-gated graph walk (depth 2)           |
-|  Walk evidence for non-seeds              |
+|  Layer 2: Spectral Expansion              |  --> ~100 candidates
+|  Chebyshev heat diffusion on graph Laplacian |
+|  O(K|E|) per query, no eigendecomposition  |
 +----------+-------------------------------+
            v
 +------------------------------------------+
-|  Layer 3: Query Intent + SEC              |
-|  Navigational vs informational weights    |
-|  NG scoring (negentropy + coherence)      |
+|  Layer 3: Query Deformation              |
+|  Predictive surprise (D_KL free energy)  |
+|  Channel capacity routing (role blending) |
+|  MDL explanation sets (coverage stopping) |
 +----------+-------------------------------+
            v
 +------------------------------------------+
-|  Layer 4: Holographic Name Gate           |
+|  Layer 4: SEC + NG Scoring                |
+|  Intent-adjusted weights                 |
+|  Negentropy + channel coherence boost     |
++----------+-------------------------------+
+           v
++------------------------------------------+
+|  Layer 5: Holographic Name Gate           |
 |  FFT cosine similarity per candidate      |
 |  Threshold gate (0.25) + specificity      |
-|  Only boosts confident matches            |
 +----------+-------------------------------+
            v
 +------------------------------------------+
-|  Layer 5: Confidence-Preserving Fusion    |  --> top_k
-|  If BM25 rank-1 has 1.2x+ gap, lock it   |
-|  Kind boosts, test penalties              |
+|  Layer 6: Confidence-Preserving Fusion    |  --> top_k
+|  BM25 confidence lock, kind boosts,       |
+|  test penalties, per-file diversity       |
 +------------------------------------------+
 ```
 
@@ -60,39 +65,77 @@ The `hints` column is the secret weapon. At index time, GraphIQ infers 19 behavi
 
 BM25 returns the top 30 seeds in ~5ms. These seeds are the starting point for all downstream scoring.
 
-## Layer 2: Goober Reranker
+## Layer 2: Spectral Expansion
 
-The core insight behind Goober: **BM25 seed ordering is generally correct, and structural reranking must be conservative to avoid introducing noise.**
+BM25 seeds are expanded via Chebyshev polynomial approximation of the graph Laplacian's heat kernel. This replaces the BFS graph walk used in earlier versions (GooberV1–V5).
 
-### Seed Scoring
+### Chebyshev Heat Diffusion
 
-Each BM25 seed gets scored with a BM25-dominant weighted sum:
+The graph Laplacian L = D⁻¹ᐟ²(D - W)D⁻¹ᐟ² captures the graph's connectivity structure. The heat kernel e^(-tL) propagates signal from seed nodes across structural distance — symbols close in the call/import/type graph receive more heat than distant ones.
+
+Direct computation requires eigendecomposition (O(n³)). Chebyshev approximation computes the heat kernel in O(K|E|) per query where K is the polynomial order (15):
 
 ```
-seed_score = W_bm25 * bm25_norm + W_cov * min(cov_norm, cap) + W_name * min(name_norm, cap)
+f(T̃) ≈ Σ cₖ Tₖ(T̃)    (Clenshaw quadrature for coefficients)
+T̃ = 2L/λ_max - I       (rescaled Laplacian to [-1, 1])
 ```
 
-Weights depend on query intent (see Layer 3):
-- **Navigational**: bm25=5.0, coverage=0.8, name=1.0 (preserve BM25 ordering)
-- **Informational**: bm25=3.0, coverage=1.5, name=2.0 (allow more structural differentiation)
+Only one parameter matters: `chebyshev_order=15`. Heat_t (0.3–5.0) and walk_weight (1.0–10.0) are remarkably insensitive across their full ranges (673 combinations tested on esbuild).
 
-The cap prevents structural norms from overriding BM25 when seed scores are close — this was the key fix for codebases with generic function names.
+### Candidate Gating
 
-### IDF-Gated Graph Walk
+Heat-diffused candidates must pass two gates before entering scoring:
+1. **IDF gate**: Match at least one query term with above-median IDF (filters generic utility functions)
+2. **Coverage gate**: Match at least one query term in the symbol's own text (prevents pure structural-only hits)
 
-From the top 8 seeds, a BFS walk explores the code graph:
-- **Depth**: 2 hops
-- **Breadth**: 25 expanded candidates per seed
-- **Gate**: Each candidate must match at least one query term with above-median IDF. This filters generic utility functions that match only common terms.
-- **Quality filter**: Non-seed candidates require ≥2 seed paths (reached from multiple seeds). Single-path candidates are discarded.
+## Layer 3: Query Deformation
 
-Walk candidates are scored by coverage + name + walk evidence (coverage × proximity × edge weight).
+Three adaptive signals that reshape scoring based on each query's structural context. These are computed per-query from pre-built infrastructure (predictive model + channel fingerprints), not at index time.
 
-### Confidence Lock
+### 3A: Predictive Surprise (Free Energy)
 
-If BM25's rank-1 result has a >1.2x score gap over rank-2, it gets locked at position 1. Demoting a confident BM25 result is almost always a mistake — the confidence lock prevents the graph walk from inserting wrong candidates above correct results.
+For each symbol, a conditional term model is built from its 1-hop structural neighborhood — the symbol's own terms (weight 2) plus its neighbors' terms (weight 1), Laplace-smoothed (α=0.1) against a 5K-term background vocabulary.
 
-## Layer 3: Query Intent + SEC
+At query time, the Kullback-Leibler divergence D_KL(query || symbol_predicted) measures how surprising the query is given the symbol's graph context:
+
+```
+surprise = Σ_q p(q) × log(p(q) / p_cond(q))
+```
+
+High surprise means the query's terms are unexpected in this symbol's neighborhood — suggesting a novel, potentially relevant match. Applied as a mild multiplicative boost (0.08 weight) after normalization.
+
+**What it helps**: `symbol-partial` queries on esbuild (+0.029 NDCG). Short common words like "embedding" or "cache" are ambiguous to BM25 but have very different neighborhood distributions — the surprise signal disambiguates them.
+
+### 3B: Channel Capacity Routing
+
+Replaces the binary Navigational/Informational intent classifier with data-driven weight adjustments. Each symbol has a structural role (from Phase 10B ChannelFingerprints):
+
+| Role | Meaning | Weight Adjustment |
+|---|---|---|
+| orchestrator | Calls many functions | +0.4 coverage, +0.1 NG |
+| library | Called by many, self-contained | +0.5 BM25 |
+| boundary | High-entropy edge distribution | +0.3 coverage, +0.1 coherence |
+| worker | Moderate call graph | +0.3 BM25 |
+| isolate | Few edges | +0.4 BM25 |
+
+The adjustments are **additive** to the intent-based weights, not replacements. This was critical — replacing weights entirely caused NDCG regression on all 3 codebases.
+
+### 3C: MDL Explanation Sets
+
+After scoring and ranking, a greedy set cover tracks which query terms each result explains. It stops when the marginal information gain per symbol cost drops below 0.05:
+
+```
+for each result in ranked order:
+    new_terms = terms explained by this symbol not yet covered
+    if new_terms == 0: skip
+    cost = 1 + log(rank) × 0.5
+    efficiency = |new_terms| / (n_terms × cost)
+    if efficiency < 0.05: STOP
+```
+
+A diversity bonus (up to 0.15) rewards explanation sets that span multiple structural roles. The MDL score is applied as a multiplier on final scores, but only when >50% of query terms are covered (otherwise disabled to avoid penalizing short queries).
+
+## Layer 4: SEC + Intent Scoring
 
 ### Query Intent Classification
 
@@ -101,7 +144,7 @@ Queries are classified as either **navigational** or **informational**:
 - **Navigational**: Symbol lookups, exact name queries, path-based queries. These benefit from preserving BM25 ordering — the user knows what they want, and BM25 is already right.
 - **Informational**: "How does X work", "handle Y", abstract descriptions. These benefit from deeper structural exploration — the user doesn't know the exact name, so the graph walk finds relevant symbols BM25 might miss.
 
-Intent affects scoring weights (navigational caps structural norms lower) and walk aggressiveness.
+Intent provides the base scoring weights (navigational caps structural norms lower). Channel capacity routing from Layer 3 adds additive adjustments on top.
 
 ### Structural Evidence Convolution (SEC)
 
@@ -143,7 +186,7 @@ Applied as a multiplicative boost: `ng_boost = 1.0 + 0.25 * ng_norm + 0.15 * coh
 
 This means NG can only promote candidates, never demote them. A symbol with a flat, generic channel profile gets boost 1.0 (no change). A symbol where query terms concentrate in specific channels gets boosted proportionally.
 
-## Layer 4: Holographic Name Gate
+## Layer 5: Holographic Name Gate
 
 The most recent addition and the one that required the most experimentation to get right.
 
@@ -183,7 +226,7 @@ The holographic boost is **additive** (not multiplicative) to the base score, wh
 
 On esbuild (descriptive names like `convertOKLCHToOKLAB`, `lowerAndMinifyCSSColor`), correct matches have high holographic similarity (>0.5) that easily passes the gate. On tokio (generic names like `run`, `poll`), correct matches have low similarity (<0.2) that stays gated out. The gate adapts to the codebase without any codebase-specific tuning.
 
-## Layer 5: Confidence-Preserving Fusion
+## Layer 6: Confidence-Preserving Fusion
 
 Final ranking applies kind boosts (functions/types over variables/imports), test penalties (demote test files in production queries), and per-file diversity limits (max 3 results from the same file).
 

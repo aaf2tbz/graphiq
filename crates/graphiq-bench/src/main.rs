@@ -3,7 +3,7 @@ use std::path::Path;
 use graphiq_core::cruncher;
 use graphiq_core::db::GraphDb;
 use graphiq_core::fts::FtsSearch;
-use graphiq_core::spectral::SpectralIndex;
+use graphiq_core::spectral::{ChannelFingerprint, PredictiveModel, SpectralIndex};
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct BenchQuery {
@@ -84,8 +84,8 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-const N_METHODS: usize = 9;
-const METHOD_NAMES: [&str; N_METHODS] = ["BM25", "CRv1", "CRv2", "Goober", "GooV3", "GooV4", "GooV5", "Geometric", "Curved"];
+const N_METHODS: usize = 10;
+const METHOD_NAMES: [&str; N_METHODS] = ["BM25", "CRv1", "CRv2", "Goober", "GooV3", "GooV4", "GooV5", "Geometric", "Curved", "Deformed"];
 
 fn run_searches(
     db: &GraphDb,
@@ -93,6 +93,9 @@ fn run_searches(
     ci: &cruncher::CruncherIndex,
     hi: &cruncher::HoloIndex,
     spectral: &Option<SpectralIndex>,
+    predictive: &Option<PredictiveModel>,
+    fingerprints: &Option<Vec<ChannelFingerprint>>,
+    fp_id_to_idx: &Option<std::collections::HashMap<i64, usize>>,
     query: &str,
     top_k: usize,
 ) -> [Vec<(i64, f64)>; N_METHODS] {
@@ -110,18 +113,24 @@ fn run_searches(
     let goober_v5 = cruncher::goober_v5_search(query, ci, hi, &bm25, top_k);
 
     let geometric = if let Some(spec) = spectral {
-        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, false)
+        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, false, None, None, None)
     } else {
         Vec::new()
     };
 
     let curved = if let Some(spec) = spectral {
-        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, true)
+        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, true, None, None, None)
     } else {
         Vec::new()
     };
 
-    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5, geometric, curved]
+    let deformed = if let Some(spec) = spectral {
+        cruncher::geometric_search(query, ci, hi, &bm25, spec, top_k, 1.0, 15, 5.0, 50, false, predictive.as_ref(), fingerprints.as_deref(), fp_id_to_idx.as_ref())
+    } else {
+        Vec::new()
+    };
+
+    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5, geometric, curved, deformed]
 }
 
 fn run_ndcg_benchmark(
@@ -130,6 +139,9 @@ fn run_ndcg_benchmark(
     ci: &cruncher::CruncherIndex,
     hi: &cruncher::HoloIndex,
     spectral: &Option<SpectralIndex>,
+    predictive: &Option<PredictiveModel>,
+    fingerprints: &Option<Vec<ChannelFingerprint>>,
+    fp_id_to_idx: &Option<std::collections::HashMap<i64, usize>>,
     queries: &[BenchQuery],
 ) {
     println!("\n{}", "=".repeat(76));
@@ -144,7 +156,7 @@ fn run_ndcg_benchmark(
 
     for q in queries {
         let ideal = compute_ideal_rels(db, q);
-        let results = run_searches(db, fts, ci, hi, spectral, &q.query, 10);
+        let results = run_searches(db, fts, ci, hi, spectral, predictive, fingerprints, fp_id_to_idx, &q.query, 10);
 
         for (mi, hits) in results.iter().enumerate() {
             let rels: Vec<f64> = hits
@@ -226,6 +238,9 @@ fn run_mrr_benchmark(
     ci: &cruncher::CruncherIndex,
     hi: &cruncher::HoloIndex,
     spectral: &Option<SpectralIndex>,
+    predictive: &Option<PredictiveModel>,
+    fingerprints: &Option<Vec<ChannelFingerprint>>,
+    fp_id_to_idx: &Option<std::collections::HashMap<i64, usize>>,
     queries: &[BenchQuery],
 ) {
     println!("\n{}", "=".repeat(76));
@@ -244,7 +259,7 @@ fn run_mrr_benchmark(
     let mut all: [Vec<MrrResult>; N_METHODS] = Default::default();
 
     for q in queries {
-        let results = run_searches(db, fts, ci, hi, spectral, &q.query, 10);
+        let results = run_searches(db, fts, ci, hi, spectral, predictive, fingerprints, fp_id_to_idx, &q.query, 10);
 
         for (mi, hits) in results.iter().enumerate() {
             let expected = q.expected_symbol.as_deref().unwrap_or("");
@@ -394,6 +409,20 @@ fn main() {
         }
     };
 
+    eprintln!("Computing predictive model...");
+    let predictive = match graphiq_core::spectral::compute_predictive_model(&db) {
+        Ok(pm) => Some(pm),
+        Err(e) => {
+            eprintln!("  predictive model failed: {e}");
+            None
+        }
+    };
+
+    eprintln!("Computing channel fingerprints...");
+    let (fp_vec, fp_id_map) = graphiq_core::spectral::compute_channel_fingerprints(&db);
+    let fingerprints = Some(fp_vec);
+    let fp_id_to_idx = Some(fp_id_map);
+
     let ndcg_file = args.get(2).map(|s| s.as_str());
     let mrr_file = args.get(3).map(|s| s.as_str());
 
@@ -406,7 +435,7 @@ fn main() {
             eprintln!("error parsing NDCG query file: {e}");
             std::process::exit(1);
         });
-        run_ndcg_benchmark(&db, &fts, &ci, &hi, &spectral, &queries);
+        run_ndcg_benchmark(&db, &fts, &ci, &hi, &spectral, &predictive, &fingerprints, &fp_id_to_idx, &queries);
     }
 
     if let Some(file) = mrr_file {
@@ -418,7 +447,7 @@ fn main() {
             eprintln!("error parsing MRR query file: {e}");
             std::process::exit(1);
         });
-        run_mrr_benchmark(&db, &fts, &ci, &hi, &spectral, &queries);
+        run_mrr_benchmark(&db, &fts, &ci, &hi, &spectral, &predictive, &fingerprints, &fp_id_to_idx, &queries);
     }
 
     if ndcg_file.is_none() && mrr_file.is_none() {
@@ -496,6 +525,7 @@ fn cmd_tune(args: &[String]) {
                             &fts.search(&q.query, Some(10)).into_iter()
                                 .map(|r| (r.symbol.id, r.bm25_score)).collect::<Vec<_>>(),
                             &spectral, 10, heat_t, cheb_order, walk_weight, heat_top_k, false,
+                            None, None, None,
                         );
                         let rels: Vec<f64> = results.iter()
                             .map(|(id, _)| q.relevance_of(&sym_name(&db, *id)) as f64)
@@ -521,6 +551,7 @@ fn cmd_tune(args: &[String]) {
                             &fts.search(&q.query, Some(10)).into_iter()
                                 .map(|r| (r.symbol.id, r.bm25_score)).collect::<Vec<_>>(),
                             &spectral, 10, heat_t, cheb_order, walk_weight, heat_top_k, false,
+                            None, None, None,
                         );
                         let found = results.iter().position(|(id, _)| {
                             let name = sym_name(&db, *id);

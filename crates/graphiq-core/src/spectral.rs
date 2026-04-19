@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::params;
 
@@ -1049,6 +1049,362 @@ pub struct ChannelFingerprint {
     pub tests: f64,
     pub entropy: f64,
     pub role: String,
+}
+
+pub struct PredictiveModel {
+    pub symbol_ids: Vec<i64>,
+    pub sym_id_to_idx: HashMap<i64, usize>,
+    pub conditional_terms: Vec<HashMap<String, f64>>,
+    pub background_terms: HashMap<String, f64>,
+}
+
+pub fn compute_predictive_model(db: &GraphDb) -> Result<PredictiveModel, String> {
+    let conn = db.conn();
+
+    let mut sym_stmt = conn
+        .prepare("SELECT id FROM symbols ORDER BY id")
+        .unwrap();
+    let symbol_ids: Vec<i64> = sym_stmt
+        .query_map([], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .flatten()
+        .collect();
+    drop(sym_stmt);
+
+    let id_to_idx: HashMap<i64, usize> = symbol_ids
+        .iter()
+        .enumerate()
+        .map(|(i, &id)| (id, i))
+        .collect();
+
+    let n = symbol_ids.len();
+
+    let mut text_stmt = conn
+        .prepare(
+            "SELECT id, name, name_decomposed, signature, doc_comment, source \
+             FROM symbols",
+        )
+        .unwrap();
+    let sym_texts: Vec<(i64, Vec<String>)> = text_stmt
+        .query_map([], |row| {
+            let id: i64 = row.get(0)?;
+            let name: String = row.get::<_, String>(1).unwrap_or_default();
+            let decomp: String = row.get::<_, String>(2).unwrap_or_default();
+            let sig: String = row.get::<_, String>(3).unwrap_or_default();
+            let doc: String = row.get::<_, String>(4).unwrap_or_default();
+            let src: String = row.get::<_, String>(5).unwrap_or_default();
+            let raw = format!("{} {} {} {} {}", name, decomp, sig, doc, src);
+            let terms: Vec<String> = raw
+                .split_whitespace()
+                .filter(|t| t.len() >= 2)
+                .map(|t| t.to_lowercase())
+                .collect();
+            Ok((id, terms))
+        })
+        .unwrap()
+        .flatten()
+        .collect();
+    drop(text_stmt);
+
+    let sym_terms_map: HashMap<i64, Vec<String>> = sym_texts.into_iter().collect();
+
+    let mut edge_stmt = conn
+        .prepare("SELECT source_id, target_id, kind FROM edges")
+        .unwrap();
+    let edges: Vec<(i64, i64, String)> = edge_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .unwrap()
+        .flatten()
+        .collect();
+    drop(edge_stmt);
+
+    let structural_kinds: HashSet<&str> = [
+        "calls", "imports", "extends", "implements", "references", "tests",
+    ].iter().copied().collect();
+
+    let mut neighbors: Vec<HashSet<usize>> = vec![HashSet::new(); n];
+    for (src, tgt, kind) in &edges {
+        if !structural_kinds.contains(kind.as_str()) {
+            continue;
+        }
+        if let (Some(&si), Some(&ti)) = (id_to_idx.get(src), id_to_idx.get(tgt)) {
+            neighbors[si].insert(ti);
+            neighbors[ti].insert(si);
+        }
+    }
+
+    let vocab_size = 5000usize;
+    let mut bg_tf: HashMap<String, f64> = HashMap::new();
+    let mut bg_total = 0.0f64;
+
+    for i in 0..n {
+        let terms = sym_terms_map.get(&symbol_ids[i]).cloned().unwrap_or_default();
+        for t in &terms {
+            *bg_tf.entry(t.clone()).or_default() += 1.0;
+            bg_total += 1.0;
+        }
+    }
+
+    let mut bg_sorted: Vec<(String, f64)> = bg_tf.into_iter().collect();
+    bg_sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    bg_sorted.truncate(vocab_size);
+
+    let bg_sum: f64 = bg_sorted.iter().map(|(_, c)| c).sum();
+    let background_terms: HashMap<String, f64> = bg_sorted
+        .into_iter()
+        .map(|(t, c)| (t, c / bg_sum))
+        .collect();
+
+    let conditional_terms: Vec<HashMap<String, f64>> = (0..n)
+        .map(|i| {
+            let own_terms = sym_terms_map.get(&symbol_ids[i]).cloned().unwrap_or_default();
+            let mut local_tf: HashMap<String, f64> = HashMap::new();
+            let mut local_total = 0.0f64;
+
+            for t in &own_terms {
+                *local_tf.entry(t.clone()).or_default() += 2.0;
+                local_total += 2.0;
+            }
+
+            for &ni in &neighbors[i] {
+                let ni_terms = sym_terms_map.get(&symbol_ids[ni]).cloned().unwrap_or_default();
+                for t in &ni_terms {
+                    *local_tf.entry(t.clone()).or_default() += 1.0;
+                    local_total += 1.0;
+                }
+            }
+
+            if local_total < 1e-10 {
+                return HashMap::new();
+            }
+
+            let smoothed_alpha = 0.1;
+            let vocab_n = background_terms.len() as f64;
+            let mut model: HashMap<String, f64> = HashMap::new();
+            for (t, &bg_p) in &background_terms {
+                let raw = local_tf.get(t).copied().unwrap_or(0.0) / local_total;
+                let smoothed = (1.0 - smoothed_alpha) * raw + smoothed_alpha * bg_p;
+                model.insert(t.clone(), smoothed);
+            }
+
+            let residual = 1.0 - model.values().sum::<f64>();
+            if residual > 0.0 {
+                if let Some(bg_default) = background_terms.values().next() {
+                    for v in model.values_mut() {
+                        *v += residual / vocab_n;
+                    }
+                }
+            }
+
+            model
+        })
+        .collect();
+
+    eprintln!("  predictive model: {} symbols, {} vocab terms", n, background_terms.len());
+
+    Ok(PredictiveModel {
+        symbol_ids,
+        sym_id_to_idx: id_to_idx,
+        conditional_terms,
+        background_terms,
+    })
+}
+
+pub fn predictive_surprise(
+    model: &PredictiveModel,
+    query_terms: &[String],
+    sym_idx: usize,
+) -> f64 {
+    let cond = &model.conditional_terms[sym_idx];
+    let bg = &model.background_terms;
+
+    let mut kl = 0.0f64;
+    for qt in query_terms {
+        let q_lower = qt.to_lowercase();
+        let q_prob = 1.0 / query_terms.len() as f64;
+
+        let p_q = cond.get(&q_lower).copied().unwrap_or_else(|| {
+            bg.get(&q_lower).copied().unwrap_or(1e-6)
+        });
+
+        if p_q > 1e-15 {
+            kl += q_prob * (q_prob / p_q).ln();
+        }
+    }
+
+    kl.max(0.0)
+}
+
+pub fn channel_capacity_weights(
+    fingerprints: &[ChannelFingerprint],
+    id_to_idx: &HashMap<i64, usize>,
+    query_terms: &[String],
+    top_seeds: &[(i64, f64)],
+) -> [f64; 5] {
+    let n = fingerprints.len();
+
+    let mut seed_roles: Vec<(usize, f64)> = Vec::new();
+    for &(id, score) in top_seeds.iter().take(10) {
+        if let Some(&i) = id_to_idx.get(&id) {
+            if i < n {
+                seed_roles.push((i, score));
+            }
+        }
+    }
+
+    if seed_roles.is_empty() {
+        return [0.0, 0.0, 0.0, 0.0, 0.0];
+    }
+
+    let mut role_counts: HashMap<String, (f64, f64)> = HashMap::new();
+    for (i, score) in &seed_roles {
+        let role = &fingerprints[*i].role;
+        let entry = role_counts.entry(role.clone()).or_default();
+        entry.0 += 1.0;
+        entry.1 += score;
+    }
+
+    let total_weight: f64 = role_counts.values().map(|(c, s)| c * s).sum::<f64>().max(1e-10);
+
+    let mut adjustment = [0.0f64; 5];
+    for (role, (count, score_w)) in &role_counts {
+        let influence = (count * score_w) / total_weight;
+        match role.as_str() {
+            "orchestrator" => {
+                adjustment[2] += influence * 0.4;
+                adjustment[3] += influence * 0.1;
+            }
+            "library" => {
+                adjustment[0] += influence * 0.5;
+                adjustment[3] += influence * 0.05;
+            }
+            "boundary" => {
+                adjustment[2] += influence * 0.3;
+                adjustment[4] += influence * 0.1;
+            }
+            "worker" => {
+                adjustment[0] += influence * 0.3;
+            }
+            "isolate" => {
+                adjustment[0] += influence * 0.4;
+            }
+            _ => {}
+        }
+    }
+
+    let n_qt = query_terms.len() as f64;
+    if n_qt > 1.0 {
+        let breadth_factor = (3.0 / n_qt).min(1.0);
+        adjustment[2] += 0.2 * breadth_factor;
+    }
+
+    adjustment
+}
+
+pub struct MdlExplanation {
+    pub covered_terms: HashSet<String>,
+    pub covered_frac: f64,
+    pub marginal_gain: f64,
+    pub cost: f64,
+}
+
+pub fn mdl_explanation_set(
+    results: &[(i64, f64)],
+    query_terms: &[String],
+    term_lookup: &dyn Fn(i64) -> Option<(HashSet<String>, HashSet<String>, HashMap<String, f64>)>,
+    fingerprints: &[ChannelFingerprint],
+    id_to_idx: &HashMap<i64, usize>,
+) -> MdlExplanation {
+    if results.is_empty() || query_terms.is_empty() {
+        return MdlExplanation {
+            covered_terms: HashSet::new(),
+            covered_frac: 0.0,
+            marginal_gain: 0.0,
+            cost: 0.0,
+        };
+    }
+
+    let n_terms = query_terms.len();
+    let term_set: HashSet<String> = query_terms.iter().map(|t| t.to_lowercase()).collect();
+    let mut covered: HashSet<String> = HashSet::new();
+
+    let mut explanation_cost = 0.0f64;
+    let mut info_gain = 0.0f64;
+    let mut prev_gain = 0.0f64;
+
+    for (rank, &(sym_id, score)) in results.iter().enumerate() {
+        if covered.len() >= n_terms {
+            break;
+        }
+
+        let (name_terms, sig_terms, terms_map) = match term_lookup(sym_id) {
+            Some(t) => t,
+            None => continue,
+        };
+
+        let mut new_covered = 0usize;
+        for qt in query_terms {
+            let q_lower = qt.to_lowercase();
+            if covered.contains(&q_lower) {
+                continue;
+            }
+            if name_terms.contains(&q_lower)
+                || sig_terms.contains(&q_lower)
+                || terms_map.contains_key(&q_lower)
+            {
+                covered.insert(q_lower);
+                new_covered += 1;
+            }
+        }
+
+        if new_covered == 0 {
+            continue;
+        }
+
+        let symbol_cost = 1.0 + (rank as f64).log2().max(0.0) * 0.5;
+        explanation_cost += symbol_cost;
+
+        let marginal = new_covered as f64 / n_terms as f64;
+        let gain = marginal - prev_gain;
+        info_gain += gain;
+
+        if rank >= 3 {
+            let efficiency = gain / symbol_cost;
+            if efficiency < 0.05 {
+                break;
+            }
+        }
+
+        prev_gain = marginal;
+    }
+
+    let covered_frac = covered.len() as f64 / n_terms as f64;
+
+    let diversity_bonus = {
+        let roles_seen: HashSet<String> = results
+            .iter()
+            .take(covered.len().max(3))
+            .filter_map(|(id, _)| {
+                id_to_idx.get(id).map(|&i| fingerprints[i].role.clone())
+            })
+            .collect();
+        (roles_seen.len() as f64 / 5.0).min(1.0) * 0.15
+    };
+
+    let mdl_score = (info_gain + diversity_bonus) / (explanation_cost + 1.0).log2().max(1.0);
+
+    MdlExplanation {
+        covered_terms: covered,
+        covered_frac,
+        marginal_gain: mdl_score,
+        cost: explanation_cost,
+    }
 }
 
 pub fn compute_channel_fingerprints(db: &GraphDb) -> (Vec<ChannelFingerprint>, HashMap<i64, usize>) {

@@ -1,8 +1,8 @@
 # GraphIQ
 
-Instant, accurate code search powered by BM25 + structural graph analysis + spectral heat diffusion. No embeddings. No model dependencies. Drop a codebase in and search.
+Instant, accurate code search powered by BM25 + structural graph analysis + spectral heat diffusion + predictive deformation. No embeddings. No model dependencies. Drop a codebase in and search.
 
-**GooberV5: NDCG 0.504 (esbuild), 0.444 (signetai), 0.367 (tokio) — Geometric: NDCG 0.503, 0.443, 0.368**
+**Deformed: NDCG 0.510 (esbuild), 0.440 (signetai), 0.371 (tokio)**
 
 ## How It Works
 
@@ -13,8 +13,12 @@ Query: "rate limit middleware"
   BM25/FTS  -->  30 seeds
         |
         v
-  [V5] Graph Walk (BFS, depth 2, IDF-gated)
   [Geo] Chebyshev Heat Diffusion (spectral graph)
+        |
+        v
+  Predictive Surprise (D_KL query vs graph context)
+  Channel Capacity Routing (structural role blending)
+  MDL Explanation Sets (greedy coverage + stopping)
         |
         v
   SEC + NG Scoring  -->  structural rerank
@@ -26,25 +30,25 @@ Query: "rate limit middleware"
   Confidence Lock  -->  top_k results
 ```
 
-Two retrieval modes. GooberV5 uses BFS graph walks to expand candidates. Geometric uses Chebyshev polynomial approximation of the graph Laplacian's heat kernel — diffusion-based expansion that naturally propagates relevance across structural distance. Both feed into the same SEC + negentropy + holographic scoring pipeline. See [docs/retrieval.md](docs/retrieval.md) for full pipeline details.
+BM25 retrieves seeds. Chebyshev heat diffusion propagates relevance across the graph's structural topology. Phase 11 adds three deformation signals: predictive surprise (how unexpected is this query given the symbol's neighborhood?), channel capacity routing (structural role-aware weight blending instead of binary Nav/Info), and MDL explanation sets (greedy coverage with early stopping). All feed into the SEC + negentropy + holographic scoring pipeline. See [docs/retrieval.md](docs/retrieval.md) for full pipeline details.
 
 ## Benchmarks
 
 NDCG@10 across 3 codebases (v3 queries, 7 categories):
 
-| Codebase | BM25 | GooV4 | GooV5 | **Geometric** |
-|---|---|---|---|---|
-| esbuild (Go) | 0.315 | 0.383 | **0.504** | 0.503 |
-| signetai (TS) | 0.334 | 0.388 | **0.444** | 0.443 |
-| tokio (Rust) | 0.249 | 0.246 | 0.367 | **0.368** |
+| Codebase | BM25 | GooV4 | GooV5 | Geometric | **Deformed** |
+|---|---|---|---|---|---|
+| esbuild (Go) | 0.315 | 0.383 | 0.504 | 0.501 | **0.510** |
+| signetai (TS) | 0.334 | 0.388 | 0.444 | **0.441** | 0.440 |
+| tokio (Rust) | 0.249 | 0.246 | 0.367 | 0.368 | **0.371** |
 
 MRR across 3 codebases (v3 queries, disjoint from NDCG):
 
-| Codebase | BM25 | GooV4 | GooV5 | **Geometric** |
-|---|---|---|---|---|
-| esbuild | 0.624 | 0.652 | 0.669 | **0.676** |
-| signetai | 0.843 | 0.810 | **0.924** | 0.924 |
-| tokio | 0.627 | 0.560 | **0.637** | 0.636 |
+| Codebase | BM25 | GooV4 | GooV5 | Geometric | **Deformed** |
+|---|---|---|---|---|---|
+| esbuild | 0.624 | 0.652 | 0.669 | **0.676** | 0.676 |
+| signetai | 0.843 | 0.810 | 0.885 | **0.924** | 0.924 |
+| tokio | 0.627 | 0.560 | 0.612 | 0.637 | **0.674** |
 
 Full results including per-category and per-query breakdowns: [docs/benchmarks.md](docs/benchmarks.md)
 
@@ -128,7 +132,7 @@ graphiq blast RateLimiter --depth 5 --direction forward
 
 ### `graphiq spectral`
 
-Compute the spectral embedding (Laplacian eigendecomposition + Chebyshev heat kernel infrastructure). Required for the Geometric search mode.
+Compute the spectral embedding (Laplacian eigendecomposition + Chebyshev heat kernel infrastructure). Required for the Geometric and Deformed search modes.
 
 ```bash
 graphiq spectral --db .graphiq/graphiq.db
@@ -220,7 +224,7 @@ Manual configuration for any MCP client:
 
 ## Documentation
 
-- [docs/retrieval.md](docs/retrieval.md) — Retrieval pipeline, SEC, NG scoring, holographic name gate, geometric search
+- [docs/retrieval.md](docs/retrieval.md) — Retrieval pipeline, SEC, NG scoring, holographic name gate, geometric search, deformation
 - [docs/benchmarks.md](docs/benchmarks.md) — Full benchmark results and methodology
 - [docs/research.md](docs/research.md) — Experimental history and lessons learned
 - [ROADMAP.md](docs/ROADMAP.md) — Current state and next steps
