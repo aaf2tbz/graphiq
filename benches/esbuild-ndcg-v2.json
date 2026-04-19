@@ -1,0 +1,48 @@
+[
+  {"query": "MinifyRenamer", "category": "symbol-exact", "relevance": {"MinifyRenamer": 3}},
+  {"query": "CacheSet", "category": "symbol-exact", "relevance": {"CacheSet": 3}},
+  {"query": "ChunkBuilder", "category": "symbol-exact", "relevance": {"ChunkBuilder": 3, "MakeChunkBuilder": 1}},
+  {"query": "DataURL", "category": "symbol-exact", "relevance": {"DataURL": 3}},
+  {"query": "Lexer", "category": "symbol-exact", "relevance": {"Lexer": 3}},
+  {"query": "BitSet", "category": "symbol-exact", "relevance": {"BitSet": 3}},
+  {"query": "Bundle", "category": "symbol-exact", "relevance": {"Bundle": 3}},
+  {"query": "convertMessagesToPublic", "category": "symbol-exact", "relevance": {"convertMessagesToPublic": 3}},
+  {"query": "parseJSXElement", "category": "symbol-exact", "relevance": {"parseJSXElement": 3}},
+  {"query": "computeCrossChunkDependencies", "category": "symbol-exact", "relevance": {"computeCrossChunkDependencies": 3}},
+
+  {"query": "sourcemap", "category": "symbol-partial", "relevance": {"SourceMap": 3, "ChunkBuilder": 2, "appendMappingToBuffer": 1}},
+  {"query": "renamer", "category": "symbol-partial", "relevance": {"MinifyRenamer": 3, "Renamer": 2}},
+  {"query": "cache", "category": "symbol-partial", "relevance": {"CacheSet": 3, "CSSCache": 1}},
+  {"query": "chunk", "category": "symbol-partial", "relevance": {"ChunkBuilder": 3, "computeCrossChunkDependencies": 2, "Chunk": 1}},
+  {"query": "mangle", "category": "symbol-partial", "relevance": {"mangleFontWeight": 3, "mangleNumber": 2, "MinifyRenamer": 1}},
+  {"query": "validate", "category": "symbol-partial", "relevance": {"validateSourceMap": 3, "validateLogLevel": 2, "validateColor": 1}},
+  {"query": "lower", "category": "symbol-partial", "relevance": {"lowerNullishCoalescing": 3, "lowerPrivateGet": 2}},
+  {"query": "resolver", "category": "symbol-partial", "relevance": {"Resolver": 3, "PathPair": 1}},
+  {"query": "ast node", "category": "symbol-partial", "relevance": {"SLocal": 3, "STry": 2, "SThrow": 1}},
+  {"query": "encode", "category": "symbol-partial", "relevance": {"encodeVLQ": 3, "encodePacket": 2}},
+
+  {"query": "parse a JSX element into an AST node", "category": "nl-descriptive", "relevance": {"parseJSXElement": 3, "EJSXText": 1}},
+  {"query": "compute cross-chunk dependencies for code splitting", "category": "nl-descriptive", "relevance": {"computeCrossChunkDependencies": 3, "generateUniqueKeyPrefix": 1}},
+  {"query": "simplify boolean expressions during tree shaking", "category": "nl-descriptive", "relevance": {"SimplifyBooleanExpr": 3}},
+  {"query": "scan all import dependencies recursively", "category": "nl-descriptive", "relevance": {"scanAllDependencies": 3, "Bundle": 1}},
+  {"query": "canonicalize filesystem paths and handle errors", "category": "nl-descriptive", "relevance": {"canonicalizeError": 3, "ContextError": 1}},
+  {"query": "convert internal log messages to public API types", "category": "nl-descriptive", "relevance": {"convertMessagesToPublic": 3}},
+
+  {"query": "how does esbuild split code into chunks", "category": "nl-abstract", "relevance": {"ChunkBuilder": 3, "computeCrossChunkDependencies": 2, "Chunk": 1}},
+  {"query": "how are CSS rules hashed for deduplication", "category": "nl-abstract", "relevance": {"HashRules": 3, "HashMediaQueries": 2}},
+  {"query": "how does the minifier rename symbols to shorter names", "category": "nl-abstract", "relevance": {"MinifyRenamer": 3, "NumberToMinifiedName": 2, "mangleNumber": 1}},
+  {"query": "how are source maps generated for output chunks", "category": "nl-abstract", "relevance": {"SourceMap": 3, "appendMappingToBuffer": 2, "DataForSourceMap": 1}},
+
+  {"query": "canonicalizeError fs_real.go", "category": "error-debug", "relevance": {"canonicalizeError": 3, "ContextError": 2}},
+  {"query": "contextError api error response", "category": "error-debug", "relevance": {"ContextError": 3, "convertMessagesToPublic": 1}},
+  {"query": "decodePacket stdio protocol parse error", "category": "error-debug", "relevance": {"decodePacket": 3, "encodePacket": 1}},
+
+  {"query": "js_lexer.go", "category": "file-path", "relevance": {"Lexer": 3, "Expect": 2}},
+  {"query": "js_parser_lower.go", "category": "file-path", "relevance": {"lowerNullishCoalescing": 3, "captureThis": 2, "lowerPrivateGet": 1}},
+  {"query": "sourcemap.go", "category": "file-path", "relevance": {"encodeVLQ": 3, "appendMappingToBuffer": 2, "MakeChunkBuilder": 1}},
+
+  {"query": "all parser implementations across languages", "category": "cross-cutting", "relevance": {"Parse": 3, "parseGradient": 2, "parseJSXElement": 1}},
+  {"query": "all AST statement and expression type structs", "category": "cross-cutting", "relevance": {"SLocal": 3, "STry": 2, "SThrow": 1, "EJSXText": 1}},
+  {"query": "all printer functions that format output", "category": "cross-cutting", "relevance": {"printNumber": 3, "mangleFontWeight": 2, "appendMappingToBuffer": 1}},
+  {"query": "all filesystem abstraction types", "category": "cross-cutting", "relevance": {"FS": 3, "InMemoryOpenedFile": 2, "canonicalizeError": 1}}
+]

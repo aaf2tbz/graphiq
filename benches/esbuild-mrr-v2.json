@@ -1,0 +1,23 @@
+[
+  {"query": "MinifyRenamer", "expected_symbol": "MinifyRenamer", "category": "exact"},
+  {"query": "CacheSet", "expected_symbol": "CacheSet", "category": "exact"},
+  {"query": "ChunkBuilder", "expected_symbol": "ChunkBuilder", "category": "exact"},
+  {"query": "DataURL", "expected_symbol": "DataURL", "category": "exact"},
+  {"query": "Lexer", "expected_symbol": "Lexer", "category": "exact"},
+  {"query": "computeCrossChunkDependencies", "expected_symbol": "computeCrossChunkDependencies", "category": "exact"},
+  {"query": "SimplifyBooleanExpr", "expected_symbol": "SimplifyBooleanExpr", "category": "exact"},
+  {"query": "DeadRuleRemover", "expected_symbol": "DeadRuleRemover", "category": "exact"},
+  {"query": "encodeVLQ", "expected_symbol": "encodeVLQ", "category": "exact"},
+  {"query": "parseGradient", "expected_symbol": "parseGradient", "category": "exact"},
+
+  {"query": "rename symbols to short names for minification", "expected_symbol": "MinifyRenamer", "category": "nl"},
+  {"query": "cache parsed AST results for reuse", "expected_symbol": "CacheSet", "category": "nl"},
+  {"query": "build source map chunks for output files", "expected_symbol": "ChunkBuilder", "category": "nl"},
+  {"query": "parse data URLs for inline imports", "expected_symbol": "DataURL", "category": "nl"},
+  {"query": "tokenize JavaScript source into tokens", "expected_symbol": "Lexer", "category": "nl"},
+  {"query": "compute dependencies between split chunks", "expected_symbol": "computeCrossChunkDependencies", "category": "nl"},
+  {"query": "simplify boolean expressions during optimization", "expected_symbol": "SimplifyBooleanExpr", "category": "nl"},
+  {"query": "remove dead CSS rules during minification", "expected_symbol": "DeadRuleRemover", "category": "nl"},
+  {"query": "encode VLQ numbers for source map data", "expected_symbol": "encodeVLQ", "category": "nl"},
+  {"query": "parse CSS gradient function syntax", "expected_symbol": "parseGradient", "category": "nl"}
+]
