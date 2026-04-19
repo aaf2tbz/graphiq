@@ -11,6 +11,8 @@ use crate::rerank::{Reranker, ScoredSymbol};
 use crate::spectral::{ChannelFingerprint, PredictiveModel, SpectralIndex};
 use crate::query_family::{self, QueryFamily, RetrievalPolicy};
 use crate::file_router;
+use crate::trace::{RetrievalTrace, TraceCollector, SeedHit, SeedOrigin, TraceScoreBreakdown, ConfidenceReport, TraceEdge};
+use crate::self_model::RepoSelfModel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
@@ -41,6 +43,7 @@ pub struct SearchQuery {
     pub file_filter: Option<String>,
     pub blast_radius: bool,
     pub blast_depth: usize,
+    pub collect_trace: bool,
 }
 
 impl SearchQuery {
@@ -54,6 +57,7 @@ impl SearchQuery {
             file_filter: None,
             blast_radius: false,
             blast_depth: 3,
+            collect_trace: false,
         }
     }
 
@@ -64,6 +68,12 @@ impl SearchQuery {
 
     pub fn debug(mut self, d: bool) -> Self {
         self.debug = d;
+        self.collect_trace = d;
+        self
+    }
+
+    pub fn with_trace(mut self) -> Self {
+        self.collect_trace = true;
         self
     }
 
@@ -88,6 +98,7 @@ pub struct SearchResult {
     pub from_cache: bool,
     pub search_mode: SearchMode,
     pub query_family: QueryFamily,
+    pub traces: HashMap<i64, RetrievalTrace>,
 }
 
 pub struct SearchEngine<'a> {
@@ -99,6 +110,7 @@ pub struct SearchEngine<'a> {
     predictive_model: Option<&'a PredictiveModel>,
     fingerprints: Option<&'a [ChannelFingerprint]>,
     fp_id_to_idx: Option<&'a HashMap<i64, usize>>,
+    self_model: Option<&'a RepoSelfModel>,
 }
 
 impl<'a> SearchEngine<'a> {
@@ -112,6 +124,7 @@ impl<'a> SearchEngine<'a> {
             predictive_model: None,
             fingerprints: None,
             fp_id_to_idx: None,
+            self_model: None,
         }
     }
 
@@ -138,6 +151,11 @@ impl<'a> SearchEngine<'a> {
     ) -> Self {
         self.fingerprints = Some(fps);
         self.fp_id_to_idx = Some(id_map);
+        self
+    }
+
+    pub fn with_self_model(mut self, model: &'a RepoSelfModel) -> Self {
+        self.self_model = Some(model);
         self
     }
 
@@ -175,6 +193,7 @@ impl<'a> SearchEngine<'a> {
                 from_cache: true,
                 search_mode: self.active_mode(),
                 query_family: family,
+                traces: HashMap::new(),
             };
         }
 
@@ -265,11 +284,25 @@ impl<'a> SearchEngine<'a> {
             .map(|r| (r.symbol.id, r.bm25_score))
             .collect();
 
+        let bm25_original = bm25_seeds.clone();
+        let mut seeds = bm25_seeds;
+        if matches!(family, QueryFamily::NaturalAbstract) {
+            if let Some(model) = self.self_model {
+                let expanded = model.expand_query(&query.query);
+                let existing: HashSet<i64> = seeds.iter().map(|(id, _)| *id).collect();
+                for (sid, score) in expanded {
+                    if !existing.contains(&sid) {
+                        seeds.push((sid, score * 5.0));
+                    }
+                }
+            }
+        }
+
         let goober_results = cruncher::geometric_search(
             &query.query,
             ci,
             hi,
-            &bm25_seeds,
+            &seeds,
             spec,
             query.top_k,
             policy.bm25_lock_strength,
@@ -282,6 +315,134 @@ impl<'a> SearchEngine<'a> {
             fp_map,
             policy.evidence_weight,
         );
+
+        let mut traces: HashMap<i64, RetrievalTrace> = HashMap::new();
+
+        if query.collect_trace {
+            let bm25_max = seeds.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
+            for &(id, score) in seeds.iter().take(20) {
+                let existing = traces.entry(id).or_insert_with(|| RetrievalTrace {
+                    query_family: family,
+                    search_mode: SearchMode::Deformed,
+                    seeds: Vec::new(),
+                    expansions: Vec::new(),
+                    evidence_edges: Vec::new(),
+                    score: TraceScoreBreakdown {
+                        bm25_raw: 0.0,
+                        coverage_score: 0.0,
+                        name_score: 0.0,
+                        walk_evidence: 0.0,
+                        holo_name_sim: 0.0,
+                        negentropy: 0.0,
+                        coherence: 0.0,
+                        surprise_boost: 0.0,
+                        structural_bonus: 0.0,
+                        is_seed: false,
+                        bm25_locked: false,
+                        final_score: 0.0,
+                    },
+                    confidence: ConfidenceReport {
+                        seed_strength: 0.0,
+                        evidence_channels: 0,
+                        coverage_fraction: 0.0,
+                        has_name_match: false,
+                        has_structural_path: false,
+                    },
+                });
+                existing.seeds.push(SeedHit {
+                    symbol_id: id,
+                    origin: SeedOrigin::Bm25,
+                    raw_score: score / bm25_max,
+                });
+                existing.score.bm25_raw = score / bm25_max;
+                existing.score.is_seed = true;
+            }
+
+            let query_lower = query.query.to_lowercase();
+            let query_terms: Vec<&str> = query_lower.split_whitespace().filter(|w| w.len() >= 2).collect();
+            let outgoing_cache: HashMap<i64, Vec<crate::edge::Edge>> = HashMap::new();
+            let incoming_cache: HashMap<i64, Vec<crate::edge::Edge>> = HashMap::new();
+
+            for &(id, final_score) in &goober_results {
+                let trace = traces.entry(id).or_insert_with(|| RetrievalTrace {
+                    query_family: family,
+                    search_mode: SearchMode::Deformed,
+                    seeds: Vec::new(),
+                    expansions: Vec::new(),
+                    evidence_edges: Vec::new(),
+                    score: TraceScoreBreakdown {
+                        bm25_raw: 0.0,
+                        coverage_score: 0.0,
+                        name_score: 0.0,
+                        walk_evidence: 0.0,
+                        holo_name_sim: 0.0,
+                        negentropy: 0.0,
+                        coherence: 0.0,
+                        surprise_boost: 0.0,
+                        structural_bonus: 0.0,
+                        is_seed: false,
+                        bm25_locked: false,
+                        final_score: 0.0,
+                    },
+                    confidence: ConfidenceReport {
+                        seed_strength: 0.0,
+                        evidence_channels: 0,
+                        coverage_fraction: 0.0,
+                        has_name_match: false,
+                        has_structural_path: false,
+                    },
+                });
+                trace.score.final_score = final_score;
+
+                if let Ok(Some(sym)) = self.db.get_symbol(id) {
+                    let sym_name_lower = sym.name.to_lowercase();
+                    trace.confidence.has_name_match = query_terms.iter().any(|t| sym_name_lower.contains(t));
+                }
+
+                let out_edges = self.db.edges_from(id).unwrap_or_default();
+                let in_edges = self.db.edges_to(id).unwrap_or_default();
+                let mut ev_count = 0usize;
+                for edge in out_edges.iter().chain(in_edges.iter()) {
+                    let ev_kind = edge.metadata.get("evidence")
+                        .and_then(|e| e.get("kind"))
+                        .and_then(|k| k.as_str())
+                        .unwrap_or("unknown");
+                    if ev_kind != "incidental" {
+                        ev_count += 1;
+                        let other_id = if edge.source_id == id { edge.target_id } else { edge.source_id };
+                        trace.evidence_edges.push(TraceEdge {
+                            from_symbol_id: edge.source_id,
+                            to_symbol_id: edge.target_id,
+                            edge_kind: edge.kind.as_str().to_string(),
+                            evidence_kind: ev_kind.to_string(),
+                            weight: 1.0,
+                        });
+                        if !trace.seeds.iter().any(|s| s.symbol_id == other_id) {
+                            trace.expansions.push(crate::trace::ExpansionStep {
+                                from_symbol_id: id,
+                                to_symbol_id: other_id,
+                                edge_kind: edge.kind.as_str().to_string(),
+                                evidence_kind: Some(ev_kind.to_string()),
+                                heat_contribution: 0.0,
+                            });
+                        }
+                    }
+                }
+                trace.confidence.evidence_channels = ev_count.min(5);
+                if !trace.expansions.is_empty() {
+                    trace.confidence.has_structural_path = true;
+                }
+            }
+
+            if !bm25_original.is_empty() && bm25_original.len() >= 2 {
+                let ratio = bm25_original[0].1 / bm25_original[1].1.max(1e-10);
+                if ratio > 1.2 {
+                    if let Some(trace) = traces.get_mut(&bm25_original[0].0) {
+                        trace.score.bm25_locked = true;
+                    }
+                }
+            }
+        }
 
         let file_paths = self.load_file_paths();
         let mut results: Vec<ScoredSymbol> = goober_results
@@ -322,6 +483,7 @@ impl<'a> SearchEngine<'a> {
             from_cache: false,
             search_mode: SearchMode::Deformed,
             query_family: family,
+            traces,
         }
     }
 
@@ -345,11 +507,24 @@ impl<'a> SearchEngine<'a> {
             .map(|r| (r.symbol.id, r.bm25_score))
             .collect();
 
+        let mut seeds = bm25_seeds;
+        if matches!(family, QueryFamily::NaturalAbstract) {
+            if let Some(model) = self.self_model {
+                let expanded = model.expand_query(&query.query);
+                let existing: HashSet<i64> = seeds.iter().map(|(id, _)| *id).collect();
+                for (sid, score) in expanded {
+                    if !existing.contains(&sid) {
+                        seeds.push((sid, score * 5.0));
+                    }
+                }
+            }
+        }
+
         let goober_results = cruncher::geometric_search(
             &query.query,
             ci,
             hi,
-            &bm25_seeds,
+            &seeds,
             spec,
             query.top_k,
             policy.bm25_lock_strength,
@@ -362,6 +537,62 @@ impl<'a> SearchEngine<'a> {
             None,
             policy.evidence_weight,
         );
+
+        let mut traces: HashMap<i64, RetrievalTrace> = HashMap::new();
+        if query.collect_trace {
+            let bm25_max = seeds.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
+            for &(id, score) in seeds.iter().take(20) {
+                let t = traces.entry(id).or_insert_with(|| RetrievalTrace {
+                    query_family: family,
+                    search_mode: SearchMode::Geometric,
+                    seeds: Vec::new(),
+                    expansions: Vec::new(),
+                    evidence_edges: Vec::new(),
+                    score: TraceScoreBreakdown {
+                        bm25_raw: score / bm25_max,
+                        coverage_score: 0.0,
+                        name_score: 0.0,
+                        walk_evidence: 0.0,
+                        holo_name_sim: 0.0,
+                        negentropy: 0.0,
+                        coherence: 0.0,
+                        surprise_boost: 0.0,
+                        structural_bonus: 0.0,
+                        is_seed: true,
+                        bm25_locked: false,
+                        final_score: 0.0,
+                    },
+                    confidence: ConfidenceReport {
+                        seed_strength: score / bm25_max,
+                        evidence_channels: 0,
+                        coverage_fraction: 0.0,
+                        has_name_match: false,
+                        has_structural_path: false,
+                    },
+                });
+                t.seeds.push(SeedHit { symbol_id: id, origin: SeedOrigin::Bm25, raw_score: score / bm25_max });
+            }
+            for &(id, final_score) in &goober_results {
+                let t = traces.entry(id).or_insert_with(|| RetrievalTrace {
+                    query_family: family,
+                    search_mode: SearchMode::Geometric,
+                    seeds: Vec::new(),
+                    expansions: Vec::new(),
+                    evidence_edges: Vec::new(),
+                    score: TraceScoreBreakdown {
+                        bm25_raw: 0.0, coverage_score: 0.0, name_score: 0.0,
+                        walk_evidence: 0.0, holo_name_sim: 0.0, negentropy: 0.0,
+                        coherence: 0.0, surprise_boost: 0.0, structural_bonus: 0.0,
+                        is_seed: false, bm25_locked: false, final_score: 0.0,
+                    },
+                    confidence: ConfidenceReport {
+                        seed_strength: 0.0, evidence_channels: 0, coverage_fraction: 0.0,
+                        has_name_match: false, has_structural_path: false,
+                    },
+                });
+                t.score.final_score = final_score;
+            }
+        }
 
         let file_paths = self.load_file_paths();
         let mut results: Vec<ScoredSymbol> = goober_results
@@ -402,6 +633,7 @@ impl<'a> SearchEngine<'a> {
             from_cache: false,
             search_mode: SearchMode::Geometric,
             query_family: family,
+            traces,
         }
     }
 
@@ -448,6 +680,7 @@ impl<'a> SearchEngine<'a> {
             from_cache: false,
             search_mode: SearchMode::Fts,
             query_family: family,
+            traces: HashMap::new(),
         }
     }
 
@@ -517,6 +750,7 @@ impl<'a> SearchEngine<'a> {
             from_cache: false,
             search_mode: SearchMode::GooberV5,
             query_family: family,
+            traces: HashMap::new(),
         }
     }
 
@@ -593,6 +827,7 @@ impl<'a> SearchEngine<'a> {
             from_cache: false,
             search_mode: SearchMode::Fts,
             query_family: family,
+            traces: HashMap::new(),
         }
     }
 

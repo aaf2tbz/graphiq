@@ -4,6 +4,10 @@ use graphiq_core::cruncher;
 use graphiq_core::db::GraphDb;
 use graphiq_core::fts::FtsSearch;
 use graphiq_core::spectral::{ChannelFingerprint, PredictiveModel, SpectralIndex};
+use graphiq_core::search::{SearchEngine, SearchQuery, SearchMode};
+use graphiq_core::cache::HotCache;
+use graphiq_core::query_family::QueryFamily;
+use graphiq_core::self_model::RepoSelfModel;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct BenchQuery {
@@ -84,8 +88,65 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
-const N_METHODS: usize = 10;
-const METHOD_NAMES: [&str; N_METHODS] = ["BM25", "CRv1", "CRv2", "Goober", "GooV3", "GooV4", "GooV5", "Geometric", "Curved", "Deformed"];
+fn bootstrap_ci(data: &[f64], n_bootstrap: usize, seed: u64) -> (f64, f64) {
+    if data.len() < 2 {
+        let mean = if data.is_empty() { 0.0 } else { data[0] };
+        return (mean, mean);
+    }
+    let n = data.len();
+    let mut rng = SimpleRng::new(seed);
+    let mut bootstrap_means: Vec<f64> = Vec::with_capacity(n_bootstrap);
+    for _ in 0..n_bootstrap {
+        let mut sum = 0.0f64;
+        for _ in 0..n {
+            let idx = rng.next() as usize % n;
+            sum += data[idx];
+        }
+        bootstrap_means.push(sum / n as f64);
+    }
+    bootstrap_means.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let lo = bootstrap_means[n_bootstrap * 5 / 100];
+    let hi = bootstrap_means[n_bootstrap * 95 / 100];
+    (lo, hi)
+}
+
+struct SimpleRng {
+    state: u64,
+}
+
+impl SimpleRng {
+    fn new(seed: u64) -> Self {
+        Self { state: if seed == 0 { 1 } else { seed } }
+    }
+    fn next(&mut self) -> u64 {
+        self.state ^= self.state << 13;
+        self.state ^= self.state >> 7;
+        self.state ^= self.state << 17;
+        self.state
+    }
+}
+
+#[derive(Debug, Clone)]
+enum FailureKind {
+    NoCandidate,
+    UnderRanked { best_rank: usize },
+    WrongSymbol,
+    FamilyMisclassified { actual: QueryFamily },
+}
+
+impl std::fmt::Display for FailureKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FailureKind::NoCandidate => write!(f, "no_candidate"),
+            FailureKind::UnderRanked { best_rank } => write!(f, "under_ranked(best={})", best_rank),
+            FailureKind::WrongSymbol => write!(f, "wrong_symbol"),
+            FailureKind::FamilyMisclassified { actual } => write!(f, "family_misclassified({:?})", actual),
+        }
+    }
+}
+
+const N_METHODS: usize = 11;
+const METHOD_NAMES: [&str; N_METHODS] = ["BM25", "CRv1", "CRv2", "Goober", "GooV3", "GooV4", "GooV5", "Geometric", "Curved", "Deformed", "Routed"];
 
 fn run_searches(
     db: &GraphDb,
@@ -96,6 +157,8 @@ fn run_searches(
     predictive: &Option<PredictiveModel>,
     fingerprints: &Option<Vec<ChannelFingerprint>>,
     fp_id_to_idx: &Option<std::collections::HashMap<i64, usize>>,
+    cache: &HotCache,
+    self_model: &Option<RepoSelfModel>,
     query: &str,
     top_k: usize,
 ) -> [Vec<(i64, f64)>; N_METHODS] {
@@ -130,7 +193,27 @@ fn run_searches(
         Vec::new()
     };
 
-    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5, geometric, curved, deformed]
+    let routed = {
+        let mut engine = SearchEngine::new(db, cache);
+        engine = engine.with_goober(ci, hi);
+        if let Some(ref spec) = spectral {
+            engine = engine.with_spectral(spec);
+        }
+        if let Some(ref pm) = predictive {
+            engine = engine.with_predictive(pm);
+        }
+        if let (Some(fps), Some(fp_map)) = (fingerprints.as_deref(), fp_id_to_idx.as_ref()) {
+            engine = engine.with_fingerprints(fps, fp_map);
+        }
+        if let Some(ref sm) = self_model {
+            engine = engine.with_self_model(sm);
+        }
+        let q = SearchQuery::new(query).top_k(top_k);
+        let result = engine.search(&q);
+        result.results.iter().map(|r| (r.symbol.id, r.score)).collect()
+    };
+
+    [bm25, cr_v1, cr_v2, goober, goober_v3, goober_v4, goober_v5, geometric, curved, deformed, routed]
 }
 
 fn run_ndcg_benchmark(
@@ -142,6 +225,8 @@ fn run_ndcg_benchmark(
     predictive: &Option<PredictiveModel>,
     fingerprints: &Option<Vec<ChannelFingerprint>>,
     fp_id_to_idx: &Option<std::collections::HashMap<i64, usize>>,
+    cache: &HotCache,
+    self_model: &Option<RepoSelfModel>,
     queries: &[BenchQuery],
 ) {
     println!("\n{}", "=".repeat(76));
@@ -156,7 +241,7 @@ fn run_ndcg_benchmark(
 
     for q in queries {
         let ideal = compute_ideal_rels(db, q);
-        let results = run_searches(db, fts, ci, hi, spectral, predictive, fingerprints, fp_id_to_idx, &q.query, 10);
+        let results = run_searches(db, fts, ci, hi, spectral, predictive, fingerprints, fp_id_to_idx, cache, self_model, &q.query, 10);
 
         for (mi, hits) in results.iter().enumerate() {
             let rels: Vec<f64> = hits
@@ -183,25 +268,61 @@ fn run_ndcg_benchmark(
 
     println!("\n--- Overall ---\n");
     println!(
-        "{:<12} {:>8} {:>6} {:>6} {:>6} {:>6}",
-        "Method", "NDCG@10", "H@1", "H@3", "H@5", "H@10"
+        "{:<12} {:>8} {:>18} {:>6} {:>6} {:>6} {:>6}",
+        "Method", "NDCG@10", "95% CI", "H@1", "H@3", "H@5", "H@10"
     );
-    println!("{}", "-".repeat(50));
+    println!("{}", "-".repeat(74));
     for (mi, name) in METHOD_NAMES.iter().enumerate() {
         let avg: f64 = all_ndcg[mi].iter().sum::<f64>() / n as f64;
+        let (ci_lo, ci_hi) = bootstrap_ci(&all_ndcg[mi], 1000, 42 + mi as u64);
         let h1 = all_hits[mi].iter().filter(|h| h[0]).count();
         let h3 = all_hits[mi].iter().filter(|h| h[1]).count();
         let h5 = all_hits[mi].iter().filter(|h| h[2]).count();
         let h10 = all_hits[mi].iter().filter(|h| h[3]).count();
         println!(
-            "{:<12} {:>8.3} {:>6} {:>6} {:>6} {:>6}",
-            name, avg, h1, h3, h5, h10
+            "{:<12} {:>8.3} [{:.3}, {:.3}] {:>6} {:>6} {:>6} {:>6}",
+            name, avg, ci_lo, ci_hi, h1, h3, h5, h10
         );
     }
 
-    println!("\n--- By Category ---\n");
+    println!("\n--- Per-Family Regression Gate ---\n");
     let mut cats: Vec<&String> = cat_data.keys().collect();
     cats.sort();
+    let mut regressions: Vec<(String, usize, String, f64, f64)> = Vec::new();
+    for cat in &cats {
+        let d = &cat_data[*cat];
+        let ndcg_vals: Vec<f64> = d.iter().map(|v| v.iter().sum::<f64>() / v.len() as f64).collect();
+        let best_idx = ndcg_vals.iter().enumerate()
+            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        let routed_idx = 10;
+        let routed_ndcg = ndcg_vals[routed_idx];
+        let deformed_ndcg = ndcg_vals[9];
+        let best_ndcg = ndcg_vals[best_idx];
+        println!(
+            "{:<20} best={:.3}({}) deformed={:.3} routed={:.3} gap={:+.3}",
+            cat,
+            best_ndcg,
+            METHOD_NAMES[best_idx],
+            deformed_ndcg,
+            routed_ndcg,
+            routed_ndcg - deformed_ndcg,
+        );
+        if routed_ndcg < deformed_ndcg - 0.05 {
+            regressions.push(((*cat).clone(), d[routed_idx].len(), "Routed vs Deformed".into(), deformed_ndcg, routed_ndcg));
+        }
+    }
+    if !regressions.is_empty() {
+        println!("\n  REGRESSION GATES TRIGGERED:");
+        for (cat, n, desc, baseline, actual) in &regressions {
+            println!("    {} (n={}): {} dropped {:.3} -> {:.3} ({:.3})", cat, n, desc, baseline, actual, actual - baseline);
+        }
+    } else {
+        println!("\n  No regression gates triggered.");
+    }
+
+    println!("\n--- By Category ---\n");
     let header = format!(
         "{:<20} {}",
         "Category",
@@ -241,6 +362,8 @@ fn run_mrr_benchmark(
     predictive: &Option<PredictiveModel>,
     fingerprints: &Option<Vec<ChannelFingerprint>>,
     fp_id_to_idx: &Option<std::collections::HashMap<i64, usize>>,
+    cache: &HotCache,
+    self_model: &Option<RepoSelfModel>,
     queries: &[BenchQuery],
 ) {
     println!("\n{}", "=".repeat(76));
@@ -257,12 +380,16 @@ fn run_mrr_benchmark(
     }
 
     let mut all: [Vec<MrrResult>; N_METHODS] = Default::default();
+    let mut failure_clusters: std::collections::HashMap<String, Vec<(String, String)>> = std::collections::HashMap::new();
+    let cluster_names = ["no_candidate", "under_ranked", "wrong_symbol", "family_misclassified"];
 
     for q in queries {
-        let results = run_searches(db, fts, ci, hi, spectral, predictive, fingerprints, fp_id_to_idx, &q.query, 10);
+        let results = run_searches(db, fts, ci, hi, spectral, predictive, fingerprints, fp_id_to_idx, cache, self_model, &q.query, 10);
+
+        let classified_family = graphiq_core::query_family::classify_query_family(&q.query);
+        let expected = q.expected_symbol.as_deref().unwrap_or("");
 
         for (mi, hits) in results.iter().enumerate() {
-            let expected = q.expected_symbol.as_deref().unwrap_or("");
             let found_rank = hits.iter().position(|(id, _)| {
                 let name = sym_name(db, *id);
                 name == expected || expected.contains(&name) || name.contains(expected)
@@ -284,6 +411,37 @@ fn run_mrr_benchmark(
                 accuracy,
                 found_rank,
             });
+
+            if mi == 9 && found_rank.is_none() {
+                let has_any = !hits.is_empty();
+                if !has_any {
+                    failure_clusters.entry("no_candidate".into()).or_default()
+                        .push((q.query.clone(), q.category.clone()));
+                } else {
+                    let best_file_match = hits.iter().any(|(id, _)| {
+                        if let Ok(Some(sym)) = db.get_symbol(*id) {
+                            if let Some(ref exp) = q.expected_symbol {
+                                let sym_file = db.conn()
+                                    .query_row("SELECT path FROM files WHERE id = ?", [sym.file_id], |r| r.get::<_, String>(0))
+                                    .unwrap_or_default();
+                                let exp_syms = db.symbols_by_name(exp).unwrap_or_default();
+                                exp_syms.iter().any(|s| s.file_id == sym.file_id)
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    });
+                    if best_file_match {
+                        failure_clusters.entry("wrong_symbol".into()).or_default()
+                            .push((q.query.clone(), q.category.clone()));
+                    } else {
+                        failure_clusters.entry("under_ranked".into()).or_default()
+                            .push((q.query.clone(), q.category.clone()));
+                    }
+                }
+            }
         }
     }
 
@@ -338,6 +496,22 @@ fn run_mrr_benchmark(
             .map(|mi| format!("{:>6}", fmt(all[mi][i].found_rank)))
             .collect();
         println!("{:<28} {}", truncate(&q.query, 28), vals.join(""));
+    }
+
+    println!("\n--- Failure Autopsy (Deformed) ---\n");
+    for cluster in &cluster_names {
+        if let Some(failures) = failure_clusters.get(*cluster) {
+            println!("  {} ({} failures):", cluster, failures.len());
+            for (query, category) in failures.iter().take(10) {
+                println!("    [{}] {}", category, truncate(query, 50));
+            }
+            if failures.len() > 10 {
+                println!("    ... and {} more", failures.len() - 10);
+            }
+        }
+    }
+    if failure_clusters.is_empty() {
+        println!("  No failures detected for Deformed method.");
     }
 }
 
@@ -423,8 +597,14 @@ fn main() {
     let fingerprints = Some(fp_vec);
     let fp_id_to_idx = Some(fp_id_map);
 
+    eprintln!("Building self-model...");
+    let self_model = graphiq_core::self_model::build_self_model(&db).ok();
+
     let ndcg_file = args.get(2).map(|s| s.as_str());
     let mrr_file = args.get(3).map(|s| s.as_str());
+
+    let cache = HotCache::with_defaults();
+    cache.prewarm(&db, 200);
 
     if let Some(file) = ndcg_file {
         let content = std::fs::read_to_string(file).unwrap_or_else(|e| {
@@ -435,7 +615,7 @@ fn main() {
             eprintln!("error parsing NDCG query file: {e}");
             std::process::exit(1);
         });
-        run_ndcg_benchmark(&db, &fts, &ci, &hi, &spectral, &predictive, &fingerprints, &fp_id_to_idx, &queries);
+        run_ndcg_benchmark(&db, &fts, &ci, &hi, &spectral, &predictive, &fingerprints, &fp_id_to_idx, &cache, &self_model, &queries);
     }
 
     if let Some(file) = mrr_file {
@@ -447,7 +627,7 @@ fn main() {
             eprintln!("error parsing MRR query file: {e}");
             std::process::exit(1);
         });
-        run_mrr_benchmark(&db, &fts, &ci, &hi, &spectral, &predictive, &fingerprints, &fp_id_to_idx, &queries);
+        run_mrr_benchmark(&db, &fts, &ci, &hi, &spectral, &predictive, &fingerprints, &fp_id_to_idx, &cache, &self_model, &queries);
     }
 
     if ndcg_file.is_none() && mrr_file.is_none() {

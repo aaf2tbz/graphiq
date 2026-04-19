@@ -273,6 +273,11 @@ fn cmd_search(
     let (fp_vec, fp_id_map) = graphiq_core::spectral::compute_channel_fingerprints(&db);
     engine = engine.with_fingerprints(&fp_vec, &fp_id_map);
 
+    let self_model = graphiq_core::self_model::build_self_model(&db).ok();
+    if let Some(ref sm) = self_model {
+        engine = engine.with_self_model(sm);
+    }
+
     if debug {
         eprintln!("search mode: {}", engine.active_mode());
     }
@@ -334,6 +339,9 @@ fn cmd_search(
                     print!(" {}={:.2}", name, val);
                 }
                 println!();
+            }
+            if let Some(trace) = result.traces.get(&scored.symbol.id) {
+                eprintln!("{}", trace.format_debug(&scored.symbol.name));
             }
         }
     }

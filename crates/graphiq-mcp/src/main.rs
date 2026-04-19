@@ -20,6 +20,7 @@ struct ServerState {
     predictive_model: Option<graphiq_core::spectral::PredictiveModel>,
     fingerprints: Vec<graphiq_core::spectral::ChannelFingerprint>,
     fp_id_to_idx: std::collections::HashMap<i64, usize>,
+    self_model: Option<graphiq_core::self_model::RepoSelfModel>,
 }
 
 fn resolve_project_root(raw: &str) -> PathBuf {
@@ -111,6 +112,13 @@ fn ensure_indexed(state: &mut ServerState) -> Result<(), String> {
         state.fp_id_to_idx = id_map;
     }
 
+    if state.self_model.is_none() && state.cruncher_index.is_some() {
+        if let Ok(sm) = graphiq_core::self_model::build_self_model(&state.db) {
+            log_err(&format!("self-model built ({} concepts)", sm.concepts.len()));
+            state.self_model = Some(sm);
+        }
+    }
+
     Ok(())
 }
 
@@ -150,6 +158,11 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
     log_err(&format!("channel fingerprints rebuilt ({} symbols)", fps.len()));
     state.fingerprints = fps;
     state.fp_id_to_idx = id_map;
+
+    if let Ok(sm) = graphiq_core::self_model::build_self_model(&state.db) {
+        log_err(&format!("self-model built ({} concepts)", sm.concepts.len()));
+        state.self_model = Some(sm);
+    }
 
     let msg = format!(
         "Indexed {} in {} files ({} symbols, {} edges)",
@@ -217,6 +230,7 @@ fn main() {
         predictive_model: None,
         fingerprints: Vec::new(),
         fp_id_to_idx: std::collections::HashMap::new(),
+        self_model: None,
     };
 
     if let Err(e) = ensure_indexed(&mut state) {
@@ -622,7 +636,14 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
                 Ok(s) => s,
                 Err(e) => return tool_error(&format!("lock error: {e}")),
             };
-            tool_why(&s.db, &s.cache, s.cruncher_index.as_ref(), s.holo_index.as_ref(), arguments)
+            let needs_spectral = s.spectral_index.is_some();
+            let needs_predictive = s.predictive_model.is_some();
+            let needs_fingerprints = !s.fingerprints.is_empty();
+            let ci_ptr = s.cruncher_index.as_ref().map(|ci| ci as *const _);
+            let hi_ptr = s.holo_index.as_ref().map(|hi| hi as *const _);
+            let spec_ptr = s.spectral_index.as_ref().map(|si| si as *const _);
+            let pm_ptr = s.predictive_model.as_ref().map(|pm| pm as *const _);
+            tool_why(&s.db, &s.cache, s.cruncher_index.as_ref(), s.holo_index.as_ref(), s.spectral_index.as_ref(), s.predictive_model.as_ref(), if s.fingerprints.is_empty() { None } else { Some(&s.fingerprints) }, if s.fp_id_to_idx.is_empty() { None } else { Some(&s.fp_id_to_idx) }, arguments)
         }
         "interrogate" => {
             let s = match state.lock() {
@@ -697,6 +718,9 @@ fn tool_search(
     }
     if !state.fingerprints.is_empty() {
         engine = engine.with_fingerprints(&state.fingerprints, &state.fp_id_to_idx);
+    }
+    if let Some(ref sm) = state.self_model {
+        engine = engine.with_self_model(sm);
     }
     let mut q = graphiq_core::search::SearchQuery::new(query).top_k(top_k);
     if let Some(f) = file_filter {
@@ -920,6 +944,9 @@ fn tool_status(state: &ServerState) -> Value {
             }
             if !state.fingerprints.is_empty() {
                 engine = engine.with_fingerprints(&state.fingerprints, &state.fp_id_to_idx);
+            }
+            if let Some(ref sm) = state.self_model {
+                engine = engine.with_self_model(sm);
             }
             let mode = engine.active_mode();
 
@@ -1193,6 +1220,10 @@ fn tool_why(
     cache: &graphiq_core::cache::HotCache,
     cruncher_index: Option<&graphiq_core::cruncher::CruncherIndex>,
     holo_index: Option<&graphiq_core::cruncher::HoloIndex>,
+    spectral_index: Option<&graphiq_core::spectral::SpectralIndex>,
+    predictive_model: Option<&graphiq_core::spectral::PredictiveModel>,
+    fingerprints: Option<&[graphiq_core::spectral::ChannelFingerprint]>,
+    fp_id_to_idx: Option<&std::collections::HashMap<i64, usize>>,
     args: Value,
 ) -> Value {
     let query = match args.get("query").and_then(|v| v.as_str()) {
@@ -1208,7 +1239,17 @@ fn tool_why(
     if let (Some(ci), Some(hi)) = (cruncher_index, holo_index) {
         engine = engine.with_goober(ci, hi);
     }
-    let q = graphiq_core::search::SearchQuery::new(query).top_k(20);
+    if let Some(spec) = spectral_index {
+        engine = engine.with_spectral(spec);
+    }
+    if let Some(pm) = predictive_model {
+        engine = engine.with_predictive(pm);
+    }
+    if let (Some(fps), Some(fp_map)) = (fingerprints, fp_id_to_idx) {
+        engine = engine.with_fingerprints(fps, fp_map);
+    }
+
+    let q = graphiq_core::search::SearchQuery::new(query).top_k(20).with_trace();
     let result = engine.search(&q);
 
     let scored = match result.results.iter().find(|r| r.symbol.name == symbol_name) {
@@ -1216,10 +1257,15 @@ fn tool_why(
         None => return tool_error(&format!("'{}' not found in search results for '{}'", symbol_name, query)),
     };
 
+    if let Some(trace) = result.traces.get(&scored.symbol.id) {
+        return tool_ok(trace.format_why(symbol_name, query));
+    }
+
     let sym = &scored.symbol;
     let mut lines = Vec::new();
     lines.push(format!("=== Why did '{}' rank for '{}'? ===", sym.name, query));
     lines.push(format!("Score: {:.4}", scored.score));
+    lines.push(format!("Family: {}  Mode: {}", result.query_family, result.search_mode));
 
     let rank = result.results.iter().position(|r| r.symbol.name == symbol_name).unwrap_or(0);
     if rank < 5 {
@@ -1279,7 +1325,7 @@ fn tool_why(
     }
 
     if !evidence_chain.is_empty() {
-        lines.push("\nEvidence chain:".into());
+        lines.push("\nEvidence chain (reconstructed, no trace available):".into());
         for ec in evidence_chain.iter().take(15) {
             lines.push(ec.clone());
         }
