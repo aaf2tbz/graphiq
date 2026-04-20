@@ -429,6 +429,43 @@ All 5 experiments were neutral or negative — the current configuration is alre
 - `category` field made optional in bench queries (#[serde(default)])
 - Both NDCG and MRR run on any query file passed to the bench binary
 
+### Phase 25: Artifact Disk Cache
+
+CLI search was rebuilding two expensive artifacts on every invocation: HoloIndex (~10s for 30K term FFT vectors) and PredictiveModel (~4s for 20K symbols × 5K vocab terms). Warm cache time was 14s. Target: sub-second.
+
+**Two new compact cache formats:**
+
+1. **HoloF32Cache** — HoloIndex's `name_holos` cached as flat f32 buffer (f64→f32 quantization). Query-term FFT vectors are computed on-the-fly at query time (5-10 terms × FFT = microseconds). The key insight: `holo_random_unit(holo_hash_seed(t))` is fully deterministic, so term_freq doesn't need caching — only name_holos do.
+
+2. **PredictiveCompactCache** — PredictiveModel compressed from 20K × 5K HashMap<String, f64> entries to top-200 per symbol by KL divergence from background, using shared vocab index (Vec<String>) with u32 indices and f32 values. Terms not in top-K fall through to background (already correct behavior in `predictive_surprise`).
+
+**Cache freshness:** CacheManifest checks DB stats (symbol_count, edge_count, file_count). Any change invalidates all cache files. `reindex` and `upgrade-index` explicitly call `ac.invalidate()`.
+
+**Results (signetai, 20,870 symbols):**
+
+| Metric | Before | After |
+|---|---|---|
+| Cold search | ~29s | ~36s (builds + caches) |
+| Warm search | ~14s | **~850ms** |
+| Cache size | 24MB (4 artifacts) | **75MB** (7 artifacts) |
+
+| Artifact | Size |
+|---|---|
+| cruncher.bin.zst | 6.5MB |
+| holo_f32.bin.zst | 42MB |
+| spectral.bin.zst | 17MB |
+| predictive_compact.bin.zst | 8.8MB |
+| fingerprints.bin.zst | 78KB |
+| self_model.bin.zst | 356KB |
+
+**Search quality:** Zero regression — scores identical to 3 decimal places. f32 quantization preserves holographic cosine similarity because the vectors are normalized unit vectors and f32 has 7 decimal digits of precision (plenty for cosine in [-1, 1]).
+
+**Key lessons:**
+- f32 quantization of normalized vectors is lossless for cosine similarity at code search precision levels
+- Lazy recomputation of deterministic functions (holo_random_unit from hash seed) eliminates the need to cache per-term FFT vectors
+- Top-K truncation by divergence from background (KL) is safe for predictive surprise — the truncated terms are definitionally close to background
+- 16x speedup (14s → 850ms) with 3x cache size increase (24MB → 75MB) is an excellent trade
+
 ## Cross-References to Roadmap
 
 These precedents from failed experiments are directly relevant to future phases:

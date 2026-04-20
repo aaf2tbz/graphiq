@@ -7,7 +7,7 @@ use crate::db::GraphDb;
 use crate::edge::EdgeKind;
 use crate::symbol::{SymbolBuilder, SymbolKind};
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Subsystem {
     pub id: usize,
     pub name: String,
@@ -19,6 +19,7 @@ pub struct Subsystem {
     pub cohesion: f64,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SubsystemIndex {
     pub subsystems: Vec<Subsystem>,
     pub symbol_to_subsystem: HashMap<i64, usize>,

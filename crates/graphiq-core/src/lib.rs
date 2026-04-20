@@ -1,3 +1,4 @@
+pub mod artifact_cache;
 pub mod behavioral;
 pub mod blast;
 pub mod briefing;

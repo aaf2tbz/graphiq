@@ -82,8 +82,19 @@ fn ensure_indexed(state: &mut ServerState) -> Result<(), String> {
 
     state.cache.prewarm(&state.db, 200);
 
+    let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
+    let ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &state.db);
+
     if state.cruncher_index.is_none() && stats.files > 0 {
-        if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
+        if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
+            let hi = ac.load_holo().unwrap_or_else(|| {
+                let hi = graphiq_core::cruncher::build_holo_index(&state.db, &ci);
+                hi
+            });
+            state.cruncher_index = Some(ci);
+            state.holo_index = Some(hi);
+            log_err("goober v5 index loaded from cache");
+        } else if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
             let hi = graphiq_core::cruncher::build_holo_index(&state.db, &ci);
             state.cruncher_index = Some(ci);
             state.holo_index = Some(hi);
@@ -92,28 +103,43 @@ fn ensure_indexed(state: &mut ServerState) -> Result<(), String> {
     }
 
     if state.spectral_index.is_none() && state.cruncher_index.is_some() {
-        if let Ok(si) = graphiq_core::spectral::compute_spectral(&state.db) {
+        if let Some(si) = ac.load::<graphiq_core::spectral::SpectralIndex>("spectral") {
+            log_err("spectral index loaded from cache");
+            state.spectral_index = Some(si);
+        } else if let Ok(si) = graphiq_core::spectral::compute_spectral(&state.db) {
             log_err("spectral index built");
             state.spectral_index = Some(si);
         }
     }
 
     if state.predictive_model.is_none() && state.cruncher_index.is_some() {
-        if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&state.db) {
+        if let Some(pm) = ac.load_predictive() {
+            log_err("predictive model loaded from cache");
+            state.predictive_model = Some(pm);
+        } else if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&state.db) {
             log_err("predictive model built");
             state.predictive_model = Some(pm);
         }
     }
 
     if state.fingerprints.is_empty() && state.cruncher_index.is_some() {
-        let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&state.db);
-        log_err(&format!("channel fingerprints built ({} symbols)", fps.len()));
-        state.fingerprints = fps;
-        state.fp_id_to_idx = id_map;
+        if let Some(cached) = ac.load::<(Vec<graphiq_core::spectral::ChannelFingerprint>, std::collections::HashMap<i64, usize>)>("fingerprints") {
+            log_err(&format!("channel fingerprints loaded from cache ({} symbols)", cached.0.len()));
+            state.fingerprints = cached.0;
+            state.fp_id_to_idx = cached.1;
+        } else {
+            let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&state.db);
+            log_err(&format!("channel fingerprints built ({} symbols)", fps.len()));
+            state.fingerprints = fps;
+            state.fp_id_to_idx = id_map;
+        }
     }
 
     if state.self_model.is_none() && state.cruncher_index.is_some() {
-        if let Ok(sm) = graphiq_core::self_model::build_self_model(&state.db) {
+        if let Some(sm) = ac.load::<graphiq_core::self_model::RepoSelfModel>("self_model") {
+            log_err(&format!("self-model loaded from cache ({} concepts)", sm.concepts.len()));
+            state.self_model = Some(sm);
+        } else if let Ok(sm) = graphiq_core::self_model::build_self_model(&state.db) {
             log_err(&format!("self-model built ({} concepts)", sm.concepts.len()));
             state.self_model = Some(sm);
         }
@@ -137,32 +163,44 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
     state.cache = graphiq_core::cache::HotCache::with_defaults();
     state.cache.prewarm(&state.db, 200);
 
+    let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
+    let mut ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &state.db);
+    ac.invalidate();
+
     if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
         let hi = graphiq_core::cruncher::build_holo_index(&state.db, &ci);
+        ac.save("cruncher", &ci);
+        ac.save_holo(&hi);
         state.cruncher_index = Some(ci);
         state.holo_index = Some(hi);
         log_err("goober v5 index rebuilt");
     }
 
     if let Ok(si) = graphiq_core::spectral::compute_spectral(&state.db) {
+        ac.save("spectral", &si);
         log_err("spectral index rebuilt");
         state.spectral_index = Some(si);
     }
 
     if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&state.db) {
+        ac.save_predictive(&pm);
         log_err("predictive model rebuilt");
         state.predictive_model = Some(pm);
     }
 
     let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&state.db);
+    ac.save("fingerprints", &(fps.clone(), id_map.clone()));
     log_err(&format!("channel fingerprints rebuilt ({} symbols)", fps.len()));
     state.fingerprints = fps;
     state.fp_id_to_idx = id_map;
 
     if let Ok(sm) = graphiq_core::self_model::build_self_model(&state.db) {
+        ac.save("self_model", &sm);
         log_err(&format!("self-model built ({} concepts)", sm.concepts.len()));
         state.self_model = Some(sm);
     }
+
+    ac.save_manifest(&state.db);
 
     let msg = format!(
         "Indexed {} in {} files ({} symbols, {} edges)",
@@ -207,15 +245,24 @@ fn main() {
 
     let cache = graphiq_core::cache::HotCache::with_defaults();
 
-    let (cruncher_index, holo_index) = match graphiq_core::cruncher::build_cruncher_index(&db) {
-        Ok(ci) => {
-            let hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
-            log_err("goober v5 index built");
-            (Some(ci), Some(hi))
-        }
-        Err(e) => {
-            log_err(&format!("cruncher build failed (falling back to FTS): {e}"));
-            (None, None)
+    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+    let ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &db);
+
+    let (cruncher_index, holo_index) = if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
+        let hi = ac.load_holo().unwrap_or_else(|| graphiq_core::cruncher::build_holo_index(&db, &ci));
+        log_err("goober v5 index loaded from cache");
+        (Some(ci), Some(hi))
+    } else {
+        match graphiq_core::cruncher::build_cruncher_index(&db) {
+            Ok(ci) => {
+                let hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
+                log_err("goober v5 index built");
+                (Some(ci), Some(hi))
+            }
+            Err(e) => {
+                log_err(&format!("cruncher build failed (falling back to FTS): {e}"));
+                (None, None)
+            }
         }
     };
 

@@ -270,33 +270,81 @@ fn cmd_search(
     let cache = graphiq_core::cache::HotCache::with_defaults();
     cache.prewarm(&db, 200);
 
-    let goober = graphiq_core::cruncher::build_cruncher_index(&db).ok().map(|ci| {
-        let hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
-        (ci, hi)
-    });
+    let db_dir = db_path.parent().unwrap_or(db_path);
+    let mut ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &db);
+
+    let goober = if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
+        let hi = if let Some(cached_hi) = ac.load_holo() {
+            cached_hi
+        } else {
+            let hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
+            ac.save_holo(&hi);
+            hi
+        };
+        Some((ci, hi))
+    } else {
+        graphiq_core::cruncher::build_cruncher_index(&db).ok().map(|ci| {
+            ac.save("cruncher", &ci);
+            let hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
+            ac.save_holo(&hi);
+            (ci, hi)
+        })
+    };
 
     let mut engine = graphiq_core::search::SearchEngine::new(&db, &cache);
     if let Some((ref ci, ref hi)) = goober {
         engine = engine.with_goober(ci, hi);
     }
 
-    let spectral = graphiq_core::spectral::compute_spectral(&db).ok();
+    let spectral = if let Some(si) = ac.load::<graphiq_core::spectral::SpectralIndex>("spectral") {
+        Some(si)
+    } else {
+        let si = graphiq_core::spectral::compute_spectral(&db).ok();
+        if let Some(ref s) = si {
+            ac.save("spectral", s);
+        }
+        si
+    };
     if let Some(ref spec) = spectral {
         engine = engine.with_spectral(spec);
     }
 
-    let predictive = graphiq_core::spectral::compute_predictive_model(&db).ok();
+    let predictive = if let Some(pm) = ac.load_predictive() {
+        Some(pm)
+    } else {
+        let pm = graphiq_core::spectral::compute_predictive_model(&db).ok();
+        if let Some(ref p) = pm {
+            ac.save_predictive(p);
+        }
+        pm
+    };
     if let Some(ref pm) = predictive {
         engine = engine.with_predictive(pm);
     }
 
-    let (fp_vec, fp_id_map) = graphiq_core::spectral::compute_channel_fingerprints(&db);
+    let (fp_vec, fp_id_map) = if let Some(cached) = ac.load::<(Vec<graphiq_core::spectral::ChannelFingerprint>, std::collections::HashMap<i64, usize>)>("fingerprints") {
+        cached
+    } else {
+        let fps = graphiq_core::spectral::compute_channel_fingerprints(&db);
+        ac.save("fingerprints", &(fps.0.clone(), fps.1.clone()));
+        fps
+    };
     engine = engine.with_fingerprints(&fp_vec, &fp_id_map);
 
-    let self_model = graphiq_core::self_model::build_self_model(&db).ok();
+    let self_model = if let Some(sm) = ac.load::<graphiq_core::self_model::RepoSelfModel>("self_model") {
+        Some(sm)
+    } else {
+        let sm = graphiq_core::self_model::build_self_model(&db).ok();
+        if let Some(ref s) = sm {
+            ac.save("self_model", s);
+        }
+        sm
+    };
     if let Some(ref sm) = self_model {
         engine = engine.with_self_model(sm);
     }
+
+    ac.save_manifest(&db);
 
     if debug {
         eprintln!("search mode: {}", engine.active_mode());
@@ -517,6 +565,8 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
 
     let manifest = graphiq_core::manifest::build_manifest_all_ready(&db);
     let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+    let ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &db);
+    ac.invalidate();
     if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
         eprintln!("  warning: failed to write manifest: {e}");
     }

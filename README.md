@@ -290,17 +290,16 @@ graphiq/
 ### Storage Layout
 
 ```
-.graphiq/graphiq.db
-  ├── symbols          # name, kind, signature, source, file, line
-  ├── edges            # source, target, kind
-  ├── files            # path, language, symbol_count
-  ├── edges_fts        # FTS5 index (name, decomposed, hints, sig, source)
-  ├── manifest.json    # artifact freshness tracking
-  └── [computed at query time]
-      ├── spectral     # Chebyshev heat diffusion infrastructure
-      ├── cruncher     # adjacency lists, term sets, IDF
-      ├── predictive   # conditional term models per symbol
-      └── fingerprints # channel fingerprint vectors per symbol
+.graphiq/
+├── graphiq.db              SQLite database (symbols, edges, FTS5 index)
+├── manifest.json           artifact freshness tracking
+└── cache/                  precomputed artifacts (zstd-compressed)
+    ├── cruncher.bin.zst
+    ├── holo_f32.bin.zst
+    ├── spectral.bin.zst
+    ├── predictive_compact.bin.zst
+    ├── fingerprints.bin.zst
+    └── self_model.bin.zst
 ```
 
 ### Operating System Support
@@ -313,7 +312,51 @@ graphiq/
 
 ## Benchmarks
 
-See [docs/benchmarks.md](docs/benchmarks.md) for full results including per-category breakdowns, deep graph edge counts, and router performance analysis.
+v6 unified pipeline. 3 codebases (TypeScript, Rust, Go). Separate NDCG (20 queries/codebase) and MRR (25 queries/codebase) query sets.
+
+### Accuracy vs Grep
+
+| Metric | Grep | GraphIQ | Δ |
+|---|---|---|---|
+| MRR@10 | 0.941 | **0.959** | +1.9% |
+| NDCG@10 | 0.288 | **0.378** | +31% |
+| Combined | 0.615 | **0.669** | +8.7% |
+
+| Category | Grep | GraphIQ | Winner |
+|---|---|---|---|
+| symbol-exact | 0.887 | **0.899** | GraphIQ |
+| symbol-partial | **0.711** | 0.708 | Grep (marginal) |
+| nl-descriptive | 0.069 | **0.289** | GraphIQ (4.2x) |
+| nl-abstract | 0.030 | **0.216** | GraphIQ (7.2x) |
+| error-debug | 0.159 | **0.268** | GraphIQ (1.7x) |
+| file-path | **0.066** | 0.048 | Grep |
+| cross-cutting | 0.000 | **0.137** | GraphIQ |
+
+### Search Speed
+
+All artifacts cached to disk after first query. Subsequent CLI searches load from cache.
+
+| Metric | Time |
+|---|---|
+| Cold search (first run) | ~30s |
+| Warm search (cached) | **~850ms** |
+| In-process query (MCP/bench) | ~18μs |
+
+### Artifact Cache
+
+```
+.graphiq/cache/           Total: ~75MB
+├── cruncher.bin.zst      6.5MB   adjacency lists, term sets, IDF
+├── holo_f32.bin.zst      42MB    holographic name vectors (f32)
+├── spectral.bin.zst      17MB    Chebyshev heat diffusion
+├── predictive_compact.bin.zst  8.8MB  conditional term models (top-200/symbol)
+├── fingerprints.bin.zst  78KB    channel fingerprint vectors
+└── self_model.bin.zst    356KB   deterministic concept nodes
+```
+
+Cache is validated against DB stats on every search — stale cache is transparently rebuilt. `graphiq reindex` and `graphiq upgrade-index` invalidate the cache automatically.
+
+See [docs/benchmarks.md](docs/benchmarks.md) for full per-codebase breakdowns and methodology.
 
 ## Documentation
 

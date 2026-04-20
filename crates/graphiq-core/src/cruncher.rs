@@ -33,13 +33,14 @@ const EDGE_WEIGHT_EXTENDS: f64 = 0.9;
 const EDGE_WEIGHT_IMPLEMENTS: f64 = 0.9;
 const EDGE_WEIGHT_TESTS: f64 = 0.3;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Edge {
     pub target: usize,
     pub weight: f64,
     pub kind_weight: f64,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct CruncherIndex {
     pub n: usize,
     pub symbol_ids: Vec<i64>,
@@ -60,6 +61,7 @@ pub struct CruncherIndex {
     pub structural_degree: Vec<f64>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TermSet {
     pub terms: HashMap<String, f64>,
     pub name_terms: HashSet<String>,
@@ -2290,9 +2292,10 @@ fn holo_cosine(a: &[f64], b: &[f64]) -> f64 {
     a.iter().zip(b.iter()).map(|(x, y)| x * y).sum::<f64>() / (na * nb)
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct HoloIndex {
     pub name_holos: Vec<Vec<f64>>,
-    term_freq: HashMap<String, (Vec<f64>, Vec<f64>)>,
+    pub term_freq: HashMap<String, (Vec<f64>, Vec<f64>)>,
 }
 
 pub fn build_holo_index(_db: &GraphDb, idx: &CruncherIndex) -> HoloIndex {
@@ -2352,6 +2355,9 @@ pub fn holo_query_name_cosine(query: &str, hi: &HoloIndex, symbol_i: usize) -> f
     for t in &all_terms {
         if let Some((re, im)) = hi.term_freq.get(t) {
             let tv = holo_from_freq(re, im);
+            for j in 0..HOLO_DIM { q_holo[j] += tv[j]; }
+        } else {
+            let tv = holo_random_unit(holo_hash_seed(t));
             for j in 0..HOLO_DIM { q_holo[j] += tv[j]; }
         }
     }

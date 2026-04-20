@@ -7,6 +7,7 @@ use crate::tokenize::decompose_identifier;
 
 pub const SPECTRAL_DIM: usize = 50;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SpectralIndex {
     pub symbol_ids: Vec<i64>,
     pub symbol_coords: Vec<Vec<f64>>,
@@ -16,6 +17,7 @@ pub struct SpectralIndex {
     pub graph: SparseGraph,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 struct SparseSym {
     n: usize,
     entries: HashMap<(usize, usize), f64>,
@@ -56,6 +58,7 @@ impl SparseSym {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct SparseGraph {
     pub n: usize,
     pub adj: SparseSym,
@@ -1043,7 +1046,7 @@ pub fn store_ricci_curvature(
     Ok(count)
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChannelFingerprint {
     pub calls_out: f64,
     pub calls_in: f64,
@@ -1056,6 +1059,7 @@ pub struct ChannelFingerprint {
     pub role: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct PredictiveModel {
     pub symbol_ids: Vec<i64>,
     pub sym_id_to_idx: HashMap<i64, usize>,

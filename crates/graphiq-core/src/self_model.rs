@@ -5,7 +5,7 @@ use rusqlite::params;
 use crate::db::GraphDb;
 use crate::subsystems::{self, SubsystemIndex};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ConceptKind {
     Subsystem,
     Concern,
@@ -37,7 +37,7 @@ impl ConceptKind {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ConceptNode {
     pub id: i64,
     pub kind: ConceptKind,
@@ -52,6 +52,7 @@ pub struct ConceptNode {
     pub description: String,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct RepoSelfModel {
     pub concepts: Vec<ConceptNode>,
     pub subsystem_index: SubsystemIndex,
