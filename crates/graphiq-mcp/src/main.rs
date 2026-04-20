@@ -156,9 +156,35 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
     }
 
     let indexer = graphiq_core::index::Indexer::new(&state.db);
-    let result = indexer
-        .index_project(&state.project_root)
-        .map_err(|e| format!("index failed: {e}"))?;
+    let result = match indexer.index_project(&state.project_root) {
+        Ok(r) => r,
+        Err(e) => {
+            let err_str = e.to_string();
+            if err_str.contains("malformed") || err_str.contains("database disk image") {
+                log_err(&format!("corrupted database detected, deleting and recreating: {}", db_path.display()));
+                drop(indexer);
+
+                let wal = db_path.with_extension("db-wal");
+                let shm = db_path.with_extension("db-shm");
+                let _ = std::fs::remove_file(db_path);
+                let _ = std::fs::remove_file(&wal);
+                let _ = std::fs::remove_file(&shm);
+
+                if let Some(parent) = db_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+
+                state.db = graphiq_core::db::GraphDb::open(db_path)
+                    .map_err(|e2| format!("failed to recreate database: {e2}"))?;
+
+                let indexer2 = graphiq_core::index::Indexer::new(&state.db);
+                indexer2.index_project(&state.project_root)
+                    .map_err(|e2| format!("re-index after recovery failed: {e2}"))?
+            } else {
+                return Err(format!("index failed: {e}"));
+            }
+        }
+    };
 
     state.cache = graphiq_core::cache::HotCache::with_defaults();
     state.cache.prewarm(&state.db, 200);
@@ -236,10 +262,32 @@ fn main() {
     let db = match graphiq_core::db::GraphDb::open(&db_path) {
         Ok(d) => d,
         Err(e) => {
-            let msg = format!("failed to open database {}: {e}", db_path.display());
-            log_err(&msg);
-            send_error(-1, -32603, &msg);
-            std::process::exit(1);
+            let err_str = e.to_string();
+            if err_str.contains("malformed") || err_str.contains("database disk image") {
+                log_err(&format!("corrupted database detected at startup, deleting and recreating: {}", db_path.display()));
+                let wal = db_path.with_extension("db-wal");
+                let shm = db_path.with_extension("db-shm");
+                let _ = std::fs::remove_file(&db_path);
+                let _ = std::fs::remove_file(&wal);
+                let _ = std::fs::remove_file(&shm);
+                if let Some(parent) = db_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match graphiq_core::db::GraphDb::open(&db_path) {
+                    Ok(d) => d,
+                    Err(e2) => {
+                        let msg = format!("failed to recreate database {}: {e2}", db_path.display());
+                        log_err(&msg);
+                        send_error(-1, -32603, &msg);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                let msg = format!("failed to open database {}: {e}", db_path.display());
+                log_err(&msg);
+                send_error(-1, -32603, &msg);
+                std::process::exit(1);
+            }
         }
     };
 

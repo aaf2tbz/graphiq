@@ -110,6 +110,11 @@ enum Commands {
         #[arg(long)]
         compact: bool,
     },
+    Context {
+        symbol: String,
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+    },
     #[cfg(feature = "embed")]
     EmbedTest {
         text: Option<String>,
@@ -157,6 +162,7 @@ fn main() {
         Commands::Constants { db, query, top } => cmd_constants(&db, query.as_deref(), top),
         Commands::DeepGraph { db } => cmd_deep_graph(&db),
         Commands::Briefing { db, compact } => cmd_briefing(&db, compact),
+        Commands::Context { symbol, db } => cmd_context(&symbol, &db),
         #[cfg(feature = "embed")]
         Commands::EmbedTest { text } => cmd_embed_test(text.as_deref().unwrap_or("hello world")),
     }
@@ -167,13 +173,7 @@ fn cmd_index(path: &std::path::Path, db_path: &std::path::Path, do_embed: bool) 
         std::fs::create_dir_all(parent).unwrap();
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     print!("Indexing {} ... ", path.display());
     let indexer = graphiq_core::index::Indexer::new(&db);
@@ -236,13 +236,7 @@ fn cmd_search(
         std::process::exit(1);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
     if let Ok(Some(manifest)) = graphiq_core::manifest::read_manifest(db_dir) {
@@ -430,13 +424,7 @@ fn cmd_blast(symbol_name: &str, db_path: &std::path::Path, depth: usize, directi
         std::process::exit(1);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     let candidates = db.symbols_by_name(symbol_name).unwrap_or_default();
     let sym = match candidates.first() {
@@ -534,13 +522,7 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
         std::process::exit(1);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     print!("Reindexing {} ... ", path.display());
     let indexer = graphiq_core::index::Indexer::new(&db);
@@ -579,13 +561,7 @@ fn cmd_lsa(db_path: &std::path::Path) {
         std::process::exit(1);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     eprintln!("Computing LSA (anisotropic hypersphere)...");
     let lsa = match graphiq_core::lsa::compute_lsa(&db) {
@@ -627,13 +603,7 @@ fn cmd_spectral(db_path: &std::path::Path) {
         std::process::exit(1);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     eprintln!("Computing spectral embedding (k={})...", graphiq_core::spectral::SPECTRAL_DIM);
     let index = match graphiq_core::spectral::compute_spectral(&db) {
@@ -666,13 +636,7 @@ fn cmd_subsystems(db_path: &std::path::Path, compute_roles: bool) {
         std::process::exit(1);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     eprintln!("Detecting subsystems...");
     let index = match graphiq_core::subsystems::detect_subsystems(&db) {
@@ -725,13 +689,7 @@ fn cmd_roles(db_path: &std::path::Path, subsystem_filter: Option<usize>, top: us
         std::process::exit(1);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     let table_exists: bool = db
         .conn()
@@ -800,13 +758,7 @@ fn cmd_doctor(db_path: &std::path::Path) {
         std::process::exit(1);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     let stats = match db.stats() {
         Ok(s) => s,
@@ -911,13 +863,7 @@ fn cmd_upgrade_index(db_path: &std::path::Path) {
         std::process::exit(1);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
     let existing = graphiq_core::manifest::read_manifest(db_dir).ok().flatten();
@@ -988,13 +934,7 @@ fn cmd_constants(db_path: &std::path::Path, query: Option<&str>, top: usize) {
         std::process::exit(1);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(db_path) {
-        Ok(db) => db,
-        Err(e) => {
-            eprintln!("failed to open database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(db_path);
 
     let entries = match graphiq_core::numeric_bridges::query_constants(&db, query, top) {
         Ok(e) => e,
@@ -1031,8 +971,19 @@ fn cmd_constants(db_path: &std::path::Path, query: Option<&str>, top: usize) {
     }
 }
 
+fn open_db_or_exit(db_path: &std::path::Path) -> graphiq_core::db::GraphDb {
+    match graphiq_core::db::GraphDb::open(db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("error opening database: {e}");
+            eprintln!("hint: try deleting {} and re-indexing", db_path.display());
+            std::process::exit(1);
+        }
+    }
+}
+
 fn cmd_deep_graph(db_path: &std::path::Path) {
-    let db = graphiq_core::db::GraphDb::open(db_path).expect("open db");
+    let db = open_db_or_exit(db_path);
     let stats = graphiq_core::deep_graph::compute_deep_graph_edges(&db).expect("compute");
     println!(
         "deep graph: {} type-flow, {} error-type, {} data-shape edges",
@@ -1046,7 +997,7 @@ fn cmd_deep_graph(db_path: &std::path::Path) {
 }
 
 fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
-    let db = graphiq_core::db::GraphDb::open(db_path).expect("open db");
+    let db = open_db_or_exit(db_path);
     let result = if compact {
         graphiq_core::briefing::generate_briefing_compact(&db)
     } else {
@@ -1355,13 +1306,7 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
             let _ = std::fs::remove_file(&db_path);
         }
 
-        let db = match graphiq_core::db::GraphDb::open(&db_path) {
-            Ok(d) => d,
-            Err(e) => {
-                eprintln!("  error opening database: {e}");
-                std::process::exit(1);
-            }
-        };
+        let db = open_db_or_exit(&db_path);
 
         print!("  Indexing {} ... ", project_path.display());
         let indexer = graphiq_core::index::Indexer::new(&db);
@@ -1429,6 +1374,90 @@ fn which_graphiq() -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn cmd_context(symbol_name: &str, db_path: &std::path::Path) {
+    if !db_path.exists() {
+        eprintln!("database not found: {}", db_path.display());
+        eprintln!("run `graphiq index <path>` first");
+        std::process::exit(1);
+    }
+
+    let db = open_db_or_exit(db_path);
+
+    let candidates = db.symbols_by_name(symbol_name).unwrap_or_default();
+    let sym = match candidates.first() {
+        Some(s) => s,
+        None => {
+            eprintln!("symbol not found: {}", symbol_name);
+            std::process::exit(1);
+        }
+    };
+
+    if candidates.len() > 1 {
+        eprintln!(
+            "Found {} symbols named '{}', using first (id={})",
+            candidates.len(),
+            symbol_name,
+            sym.id
+        );
+    }
+
+    let cache = graphiq_core::cache::HotCache::with_defaults();
+    cache.prewarm(&db, 200);
+    let neighborhood = cache.load_neighborhood(&db, sym.id);
+
+    println!("=== {} ({}) ===", sym.name, sym.kind.as_str());
+
+    if let Some(ref sig) = sym.signature {
+        println!("Signature: {}", sig);
+    }
+    println!("Location: line {}-{}", sym.line_start, sym.line_end);
+    println!();
+    println!("Source:");
+    println!("{}", sym.source);
+
+    if let Some(n) = neighborhood {
+        if !n.callers.is_empty() {
+            println!();
+            println!("Called by:");
+            for (caller, _) in &n.callers {
+                println!("  - {}", caller.name);
+            }
+        }
+        if !n.callees.is_empty() {
+            println!();
+            println!("Calls:");
+            for (callee, _) in &n.callees {
+                println!("  - {}", callee.name);
+            }
+        }
+        if !n.members.is_empty() {
+            println!();
+            println!("Contains:");
+            for member in &n.members {
+                println!("  - {} ({})", member.name, member.kind.as_str());
+            }
+        }
+        if let Some(ref container) = n.container {
+            println!();
+            println!("Contained in: {}", container.name);
+        }
+        if !n.parents.is_empty() {
+            println!();
+            println!("Extends/Implements:");
+            for parent in &n.parents {
+                println!("  - {}", parent.name);
+            }
+        }
+        if !n.tests.is_empty() {
+            println!();
+            println!("Tested by:");
+            for test in &n.tests {
+                println!("  - {}", test.name);
+            }
+        }
+    }
 }
 
 fn cmd_demo() {
@@ -2250,13 +2279,7 @@ end
     println!("  tests/ auth_test.rs, middleware_test.rs");
     println!();
 
-    let db = match graphiq_core::db::GraphDb::open(&demo_db) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error opening database: {e}");
-            std::process::exit(1);
-        }
-    };
+    let db = open_db_or_exit(&demo_db);
 
     let t = Instant::now();
     let indexer = graphiq_core::index::Indexer::new(&db);
