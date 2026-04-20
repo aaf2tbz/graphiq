@@ -28,42 +28,17 @@ Per-category NDCG@10 (3-codebase average):
 
 GraphIQ wins 5 of 7 categories. File-path queries remain grep's strength. See [docs/benchmarks.md](docs/benchmarks.md) for per-codebase breakdowns and methodology.
 
-## How It Works
+## Pipeline
 
 ```
-Query: "how does the timer wheel expire deadlines"
-              |
-              v
-   Query Family Router (query_family.rs)
-   Classifies into one of 8 families
-              |
-              v
-   Seed Generation (seeds.rs)
-   BM25 FTS -> name lookup -> graph walk -> numeric bridges -> self-model
-   ~100 seed candidates
-              |
-              v
-   Spectral Expansion (pipeline.rs)
-   Chebyshev heat diffusion on graph Laplacian (K=15)
-   ~200 candidates
-              |
-              v
-   Unified Scoring (scoring.rs)
-   IDF coverage + holographic name gate + predictive surprise + MDL
-              |
-              v
-   Confidence Fusion
-   BM25 lock -> kind boosts -> file diversity
-   -> top_k results
+Query -> Query Family Router (8 families)
+      -> Seed Generation: BM25 -> name lookup -> graph walk -> numeric bridges -> self-model (~100 candidates)
+      -> Spectral Expansion: Chebyshev heat diffusion on graph Laplacian (~200 candidates)
+      -> Unified Scoring: IDF coverage + holographic name gate + predictive surprise + MDL
+      -> Confidence Fusion: BM25 lock -> kind boosts -> file diversity -> top_k results
 ```
 
-**Seed Generation** — BM25 FTS produces initial seeds, expanded through identifier decomposition, structural graph walks (calls, imports, type flow), numeric bridges (shared constants), and self-model concept nodes. `SeedConfig::for_family()` controls which expansions fire based on query family.
-
-**Spectral Expansion** — Chebyshev polynomial approximation of the graph Laplacian's heat kernel. Heat propagates from seed symbols across structural edges so symbols structurally connected to seeds get discovered even if their names share no terms with the query. O(K|E|) per query instead of O(n^3) eigendecomposition.
-
-**Unified Scoring** — Single `score_candidates()` function parameterized by `ScoreConfig`: IDF-weighted coverage fractions, predictive surprise (KL divergence from conditional term models), MDL explanation sets (greedy set cover), and holographic name gating (FFT cosine similarity).
-
-**Confidence Fusion** — BM25 confidence lock (rank-1 gap > 1.2x), kind boosts (functions/types over variables/imports), per-file diversity limits.
+See the pipeline docs for how each stage works: [seeds](docs/how-seed-generation-works.md), [heat kernel](docs/how-heat-kernel-works.md), [scoring](docs/how-scoring-works.md), [holographic matching](docs/how-holographic-matching-works.md), [predictive scoring](docs/how-predictive-scoring-works.md).
 
 ### Query Families
 
@@ -228,8 +203,13 @@ graphiq/
 
 ## Documentation
 
+- [docs/how-seed-generation-works.md](docs/how-seed-generation-works.md)
+- [docs/how-heat-kernel-works.md](docs/how-heat-kernel-works.md)
+- [docs/how-scoring-works.md](docs/how-scoring-works.md)
+- [docs/how-holographic-matching-works.md](docs/how-holographic-matching-works.md)
+- [docs/how-predictive-scoring-works.md](docs/how-predictive-scoring-works.md)
+- [docs/benchmarks.md](docs/benchmarks.md) — full results and methodology
 - [docs/retrieval.md](docs/retrieval.md) — pipeline details
-- [docs/benchmarks.md](docs/benchmarks.md) — full benchmark results and methodology
 - [docs/research.md](docs/research.md) — experimental log
 
 ## License
