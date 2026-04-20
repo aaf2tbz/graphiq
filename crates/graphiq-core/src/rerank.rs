@@ -1,10 +1,14 @@
 use std::collections::HashMap;
 
 use crate::db::GraphDb;
-use crate::directory_expand::DirectorySibling;
 use crate::fts::FtsResult;
 use crate::graph::ExpansionEntry;
 use crate::symbol::{Symbol, SymbolKind, Visibility};
+
+pub struct DirectorySibling {
+    symbol: Symbol,
+    proximity: f64,
+}
 
 #[derive(Debug, Clone)]
 pub struct HeuristicConfig {

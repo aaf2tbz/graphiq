@@ -1,6 +1,6 @@
 use crate::db::GraphDb;
 use crate::fts::{FtsResult, FtsSearch};
-use crate::hrr::HrrIndex;
+pub struct HrrIndex;
 use crate::rerank::{Reranker, ScoredSymbol};
 use std::collections::HashMap;
 
@@ -384,109 +384,13 @@ fn is_particle(w: &str) -> bool {
 }
 
 fn hrr_semantic_expand(
-    db: &GraphDb,
-    query: &str,
-    hrr_idx: &HrrIndex,
-    top_k: usize,
-    debug: bool,
+    _db: &GraphDb,
+    _query: &str,
+    _hrr_idx: &HrrIndex,
+    _top_k: usize,
+    _debug: bool,
 ) -> Option<DecomposedResult> {
-    let hrr_hits = crate::hrr::hrr_search(query, hrr_idx, 20);
-    if hrr_hits.is_empty() {
-        return None;
-    }
-
-    let seed_ids: Vec<i64> = hrr_hits.iter().map(|(id, _)| *id).collect();
-    let expanded_query = crate::hrr::hrr_expand_query(&seed_ids, hrr_idx);
-    if expanded_query.is_empty() {
-        return None;
-    }
-
-    let mut evidence_counts: HashMap<i64, usize> = HashMap::new();
-    let mut all_scored: HashMap<i64, ScoredSymbol> = HashMap::new();
-
-    let fts = FtsSearch::new(db);
-    let file_paths = load_file_paths(db);
-
-    let main_fts = fts.search(query, Some(50));
-    for r in &main_fts {
-        let reranker = Reranker::new(db, debug).for_query(query);
-        let single: Vec<FtsResult> = vec![r.clone()];
-        let reranked = reranker.rerank(&single, &[], &[], &file_paths, 10);
-        for res in reranked {
-            let sid = res.symbol.id;
-            *evidence_counts.entry(sid).or_insert(0) += 2;
-            let entry = all_scored.entry(sid).or_insert_with(|| res.clone());
-            if res.score > entry.score {
-                *entry = res;
-            }
-        }
-    }
-
-    let expanded_terms: Vec<&str> = expanded_query.split_whitespace().collect();
-    let chunk_size = 3.max(expanded_terms.len() / 3);
-    for chunk in expanded_terms.chunks(chunk_size) {
-        let subquery = chunk.join(" ");
-        let fts_results = fts.search(&subquery, Some(30));
-        let reranker = Reranker::new(db, debug).for_query(&subquery);
-        let reranked = reranker.rerank(&fts_results, &[], &[], &file_paths, 15);
-        for res in reranked {
-            let sid = res.symbol.id;
-            *evidence_counts.entry(sid).or_insert(0) += 1;
-            let entry = all_scored.entry(sid).or_insert_with(|| res.clone());
-            if res.score > entry.score {
-                *entry = res;
-            }
-        }
-    }
-
-    for &(sym_id, hrr_score) in &hrr_hits {
-        if let Ok(Some(sym)) = db.get_symbol(sym_id) {
-            let fp = file_paths.get(&sym.file_id).cloned();
-            let scored = ScoredSymbol {
-                symbol: sym,
-                score: hrr_score * 5.0,
-                breakdown: None,
-                is_fts_hit: false,
-                file_path: fp,
-            };
-            *evidence_counts.entry(sym_id).or_insert(0) += 1;
-            let entry = all_scored.entry(sym_id).or_insert_with(|| scored.clone());
-            if scored.score > entry.score {
-                *entry = scored;
-            }
-        }
-    }
-
-    let mut final_results: Vec<ScoredSymbol> = all_scored
-        .into_values()
-        .map(|mut r| {
-            let count = evidence_counts.get(&r.symbol.id).copied().unwrap_or(1);
-            if count >= 3 {
-                r.score *= 1.5;
-            } else if count >= 2 {
-                r.score *= 1.2;
-            }
-            r
-        })
-        .collect();
-
-    final_results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-    final_results.truncate(top_k);
-
-    if final_results.is_empty() {
-        return None;
-    }
-
-    let mut subqueries = vec![query.to_string(), expanded_query.clone()];
-    for chunk in expanded_terms.chunks(chunk_size) {
-        subqueries.push(chunk.join(" "));
-    }
-
-    Some(DecomposedResult {
-        results: final_results,
-        subqueries,
-        evidence_counts,
-    })
+    None
 }
 
 fn load_file_paths(db: &GraphDb) -> HashMap<i64, String> {
