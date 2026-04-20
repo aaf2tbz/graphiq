@@ -37,6 +37,13 @@ impl<'a> Indexer<'a> {
     }
 
     pub fn index_project(&self, root: &Path) -> Result<IndexStats, Box<dyn std::error::Error>> {
+        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        self.db.set_meta("project_root", &canonical.to_string_lossy())?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        self.db.set_meta("indexed_at", &now.to_string())?;
         let files: Vec<PathBuf> = walk_project(root).collect();
         let stats = self.index_files(root, &files)?;
         Ok(stats)

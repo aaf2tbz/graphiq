@@ -70,6 +70,79 @@ fn resolve_db_path(project_root: &Path) -> PathBuf {
     project_root.join(".graphiq").join("graphiq.db")
 }
 
+fn discover_db(project_root: &Path) -> Option<PathBuf> {
+    let direct = project_root.join(".graphiq").join("graphiq.db");
+    if direct.exists() {
+        return Some(direct);
+    }
+
+    let mut found: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(project_root) {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join(".graphiq").join("graphiq.db");
+            if candidate.exists() {
+                found.push(candidate);
+            }
+        }
+    }
+
+    if found.len() == 1 {
+        log_err(&format!(
+            "discovered nested index: {}",
+            found[0].display()
+        ));
+        Some(found.into_iter().next().unwrap())
+    } else if found.len() > 1 {
+        log_err(&format!(
+            "ambiguous: found {} nested indexes, using direct path",
+            found.len()
+        ));
+        None
+    } else {
+        None
+    }
+}
+
+fn parse_args() -> (Option<PathBuf>, Option<PathBuf>) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut db_override: Option<PathBuf> = None;
+    let mut project_arg: Option<PathBuf> = None;
+
+    if let Ok(val) = std::env::var("GRAPHIQ_DB") {
+        if !val.is_empty() {
+            db_override = Some(PathBuf::from(&val));
+            log_err(&format!("GRAPHIQ_DB override: {}", val));
+        }
+    }
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--db" => {
+                if i + 1 < args.len() {
+                    db_override = Some(PathBuf::from(&args[i + 1]));
+                    i += 2;
+                } else {
+                    log_err("--db requires a path argument");
+                    i += 1;
+                }
+            }
+            arg => {
+                if !arg.starts_with('-') && project_arg.is_none() {
+                    project_arg = Some(PathBuf::from(arg));
+                }
+                i += 1;
+            }
+        }
+    }
+
+    (project_arg, db_override)
+}
+
+fn db_is_empty(db: &graphiq_core::db::GraphDb) -> bool {
+    db.stats().map(|s| s.files == 0).unwrap_or(true)
+}
+
 fn ensure_indexed(state: &mut ServerState) -> Result<(), String> {
     let stats = state
         .db
@@ -247,10 +320,66 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
 }
 
 fn main() {
-    let raw_arg = std::env::args().nth(1).unwrap_or_else(|| ".".into());
+    let (project_arg, db_override) = parse_args();
+
+    let raw_arg = project_arg
+        .as_deref()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| ".".into());
 
     let project_root = resolve_project_root(&raw_arg);
-    let db_path = resolve_db_path(&project_root);
+    let db_path = match db_override {
+        Some(ref p) => {
+            let resolved = if p.is_absolute() {
+                p.clone()
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| cwd.join(p))
+                    .unwrap_or_else(|_| p.clone())
+            };
+            let resolved = resolved.canonicalize().unwrap_or(resolved);
+            log_err(&format!("--db override: {}", resolved.display()));
+            resolved
+        }
+        None => {
+            let computed = resolve_db_path(&project_root);
+            if !computed.exists() {
+                if let Some(discovered) = discover_db(&project_root) {
+                    discovered
+                } else {
+                    computed
+                }
+            } else {
+                computed
+            }
+        }
+    };
+
+    let project_root = {
+        let db_dir_project = db_path
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|p| p.to_path_buf());
+        if let Ok(temp_db) = graphiq_core::db::GraphDb::open(&db_path) {
+            if let Ok(Some(stored)) = temp_db.get_meta("project_root") {
+                let stored_path = PathBuf::from(&stored);
+                if stored_path != project_root && stored_path.exists() {
+                    log_err(&format!(
+                        "DB was indexed from {} but server was given {}. Using stored root.",
+                        stored_path.display(),
+                        project_root.display()
+                    ));
+                    stored_path
+                } else {
+                    project_root
+                }
+            } else {
+                db_dir_project.unwrap_or(project_root)
+            }
+        } else {
+            db_dir_project.unwrap_or(project_root)
+        }
+    };
 
     log_err(&format!("project root: {}", project_root.display()));
     log_err(&format!("db path: {}", db_path.display()));
@@ -259,13 +388,16 @@ fn main() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    let state = Arc::new(Mutex::new(ServerState {
-        project_root: project_root.clone(),
-        db_path: db_path.clone(),
-        db: graphiq_core::db::GraphDb::open(&db_path).unwrap_or_else(|e| {
+    let db_open_result = graphiq_core::db::GraphDb::open(&db_path);
+    let db = match db_open_result {
+        Ok(d) => d,
+        Err(e) => {
             let err_str = e.to_string();
             if err_str.contains("malformed") || err_str.contains("database disk image") {
-                log_err(&format!("corrupted database detected at startup, deleting and recreating: {}", db_path.display()));
+                log_err(&format!(
+                    "corrupted database detected at startup, deleting and recreating: {}",
+                    db_path.display()
+                ));
                 let wal = db_path.with_extension("db-wal");
                 let shm = db_path.with_extension("db-shm");
                 let _ = std::fs::remove_file(&db_path);
@@ -284,7 +416,21 @@ fn main() {
                 log_err(&msg);
                 std::process::exit(1);
             }
-        }),
+        }
+    };
+
+    if db_is_empty(&db) {
+        log_err(&format!(
+            "database is empty at {}. Use the 'index' tool or run 'graphiq index {}' to populate it.",
+            db_path.display(),
+            project_root.display()
+        ));
+    }
+
+    let state = Arc::new(Mutex::new(ServerState {
+        project_root: project_root.clone(),
+        db_path: db_path.clone(),
+        db,
         cache: graphiq_core::cache::HotCache::with_defaults(),
         cruncher_index: None,
         holo_index: None,
@@ -696,6 +842,19 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
 
     if !arguments.is_object() {
         return tool_error("arguments must be a JSON object");
+    }
+
+    if tool_name != "index" && tool_name != "status" && tool_name != "doctor" {
+        let s = match state.lock() {
+            Ok(s) => s,
+            Err(e) => return tool_error(&format!("lock error: {e}")),
+        };
+        if db_is_empty(&s.db) {
+            return tool_error(&format!(
+                "Database is empty at {}. Use the 'index' tool to populate it.",
+                s.db_path.display()
+            ));
+        }
     }
 
     match tool_name {

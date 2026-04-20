@@ -168,12 +168,32 @@ fn main() {
     }
 }
 
+fn resolve_db(project_path: &std::path::Path, db_arg: &std::path::Path) -> PathBuf {
+    if let Ok(val) = std::env::var("GRAPHIQ_DB") {
+        if !val.is_empty() {
+            let p = PathBuf::from(&val);
+            if p.is_absolute() {
+                return p;
+            }
+            return std::env::current_dir().map(|cwd| cwd.join(&p)).unwrap_or(p);
+        }
+    }
+    let computed = project_path.join(".graphiq").join("graphiq.db");
+    if db_arg == std::path::Path::new(".graphiq/graphiq.db") {
+        computed
+    } else {
+        db_arg.to_path_buf()
+    }
+}
+
 fn cmd_index(path: &std::path::Path, db_path: &std::path::Path, do_embed: bool) {
+    let db_path = resolve_db(path, db_path);
+
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).unwrap();
     }
 
-    let db = open_db_or_exit(db_path);
+    let db = open_db_or_exit(&db_path);
 
     print!("Indexing {} ... ", path.display());
     let indexer = graphiq_core::index::Indexer::new(&db);

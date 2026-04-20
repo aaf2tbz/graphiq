@@ -174,6 +174,27 @@ impl GraphDb {
         Ok(version)
     }
 
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>, DbError> {
+        let result = self.conn.query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![key],
+            |row| row.get::<_, String>(0),
+        );
+        match result {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DbError::from(e)),
+        }
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<(), DbError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
     // --- Files ---
 
     pub fn upsert_file(
