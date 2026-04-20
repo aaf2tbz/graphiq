@@ -4,9 +4,9 @@ Source: [`crates/graphiq-core/src/spectral.rs`](../crates/graphiq-core/src/spect
 
 ## The Idea
 
-For every symbol in the codebase, we can build a simple language model: "given this symbol, what terms are likely to appear nearby?" If a query contains terms that are *surprising* (unlikely) under a symbol's local model, that symbol is probably not relevant. If the query terms are *expected* (likely), the symbol might be relevant even if BM25 didn't find it.
+For every symbol in the codebase, we build a simple conditional term model from its structural neighborhood. At query time, we compute how "expected" the query terms are under each symbol's model. Symbols whose neighborhoods align with the query get a small boost — not because alignment means the symbol is the answer, but because alignment is a discriminative signal that separates plausible matches from the long tail of loosely-related candidates.
 
-This is called **predictive surprise** — it measures how much a query deviates from what a symbol's neighborhood "predicts."
+The mechanism is KL divergence from a background model. After normalization across the candidate pool, it becomes a mild ranking refinement.
 
 ## Building the Model
 
@@ -43,7 +43,7 @@ The full conditional model for 20K symbols with a 5000-term vocabulary would be 
 
 ## Predictive Surprise
 
-`predictive_surprise()` computes a KL-divergence-like measure between the query's term distribution and a symbol's conditional model:
+`predictive_surprise()` computes KL divergence between a uniform query distribution and each symbol's conditional term model:
 
 ```rust
 for each query term t:
@@ -52,21 +52,19 @@ for each query term t:
     kl += q_prob * ln(q_prob / p_q)
 ```
 
-High KL divergence means: "this query's terms are unlikely under this symbol's model" — the symbol is surprised by the query. Low KL means the query terms are expected.
+A high KL value means the query's terms are unlikely under this symbol's model — the symbol's neighborhood doesn't predict these terms. A low KL value means the query terms are expected.
 
-### How Surprise Enters Scoring
+### How It Actually Works in Scoring
 
-Surprise is **inverted** in its effect: high surprise means the symbol is *less* likely to be relevant. But in the actual scoring formula, it's used as a small bonus:
+Despite the name "surprise," the signal is used as a **positive discriminative boost** after normalization:
 
-```rust
-surprise_bonus = 1.0 + 0.08 * surprise_boost
-```
+1. Raw KL divergence is computed for every candidate.
+2. All values are normalized to [0, 1] by dividing by the maximum across the pool.
+3. The normalized value is applied as a small multiplicative bonus: `1.0 + 0.08 * normalized_surprise`.
 
-Where `surprise_boost` is the surprise value normalized by the maximum across all candidates. This is a subtle signal — at most 8% bonus — that slightly boosts symbols whose local term neighborhoods align well with the query.
+This means symbols with higher relative alignment (lower raw surprise, which after normalization corresponds to candidates that stand out from the pool) get a slight edge. The 0.08 coefficient keeps it subtle — at most 8% bonus — because the signal is noisy as a primary ranker.
 
-### Why It's Subtle
-
-Benchmarking showed that predictive surprise as a primary signal caused regressions on some codebases (esbuild lost 0.044 NDCG when predictive surprise was removed, but the effect is highly nonlinear). The 0.08 coefficient was tuned to provide consistent small gains without creating pathological cases.
+The practical effect: for ambiguous short queries like "cache" or "embedding," where BM25 returns many candidates with similar scores, the surprise signal slightly prefers symbols whose neighborhoods contain related terms (e.g., a `CacheManager` surrounded by `evict`, `ttl`, `invalidate` gets a small boost over an unrelated `Cache` variable in a logging module).
 
 ## Related: Channel Capacity Weights
 

@@ -114,7 +114,7 @@ graphiq demo
 
 ## MCP Server
 
-`graphiq-mcp` speaks JSON-RPC 2.0 over stdio. 12 tools:
+`graphiq-mcp` speaks JSON-RPC 2.0 over stdio. 13 tools:
 
 | Tool | What it does |
 |---|---|

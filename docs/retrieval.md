@@ -102,7 +102,7 @@ At query time, the Kullback-Leibler divergence D_KL(query || symbol_predicted) m
 surprise = Σ_q p(q) × log(p(q) / p_cond(q))
 ```
 
-High surprise means the query's terms are unexpected in this symbol's neighborhood — suggesting a novel, potentially relevant match. Applied as a mild multiplicative boost (0.08 weight) after normalization.
+High KL means the query terms are unlikely under this symbol's model. After normalization across the candidate pool, this becomes a mild discriminative boost (0.08 weight) — symbols whose neighborhoods align with the query terms get a slight edge over loosely-related candidates.
 
 **What it helps**: `symbol-partial` queries on esbuild (+0.029 NDCG). Short common words like "embedding" or "cache" are ambiguous to BM25 but have very different neighborhood distributions — the surprise signal disambiguates them.
 

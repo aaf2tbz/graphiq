@@ -8,7 +8,7 @@ Sources:
 
 BM25 and coverage scoring operate on exact or substring token matches. "RateLimiter" matches "rate" and "limiter" because they're the decomposed tokens. But "throttle" doesn't match "RateLimiter" even though they're conceptually related — different tokens, different character sequences.
 
-Holographic encoding solves this by representing each name as a high-dimensional vector where semantically related names end up closer together, even without shared tokens.
+Holographic encoding addresses this by representing each name as a high-dimensional vector. Names that share decomposed terms end up with similar vectors (high cosine similarity). Names that share no terms are near-orthogonal (similarity ~0). This provides a graded similarity signal where exact token matching gives a binary match/no-match — "RateLimiter" vs "throttle" gets a low score rather than zero, and partial overlaps like "rate" shared between "rate limit" and "RateLimiter" get proportional credit.
 
 ## How It Works
 
