@@ -577,6 +577,20 @@ fn tools_list() -> Value {
                         }
                     }
                 }
+            },
+            {
+                "name": "briefing",
+                "description": "Generate a structured codebase briefing — architecture overview, subsystems, public API, cross-cutting concerns, hub symbols. Designed for agents to quickly understand a codebase without individual queries.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "compact": {
+                            "type": "boolean",
+                            "description": "Return compact briefing (top subsystems and API only)",
+                            "default": false
+                        }
+                    }
+                }
             }
         ]
     })
@@ -693,6 +707,13 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
                 Err(e) => return tool_error(&format!("lock error: {e}")),
             };
             tool_constants(&s.db, arguments)
+        }
+        "briefing" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_briefing(&s.db, arguments)
         }
         _ => tool_error(&format!("unknown tool: {tool_name}")),
     }
@@ -1851,4 +1872,19 @@ fn tool_constants(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     }
 
     tool_ok(lines.join("\n"))
+}
+
+fn tool_briefing(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
+    let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let result = if compact {
+        graphiq_core::briefing::generate_briefing_compact(db)
+    } else {
+        graphiq_core::briefing::generate_briefing(db)
+    };
+
+    match result {
+        Ok(text) => tool_ok(text),
+        Err(e) => tool_error(&format!("briefing failed: {e}")),
+    }
 }

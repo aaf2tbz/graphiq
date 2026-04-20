@@ -5,7 +5,7 @@ use crate::cache::HotCache;
 use crate::cruncher::{self, CruncherIndex, HoloIndex};
 use crate::db::GraphDb;
 use crate::edge::{BlastDirection, BlastRadius};
-use crate::fts::FtsSearch;
+use crate::fts::{FtsConfig, FtsSearch};
 use crate::graph::StructuralExpander;
 use crate::rerank::{Reranker, ScoredSymbol};
 use crate::spectral::{ChannelFingerprint, PredictiveModel, SpectralIndex};
@@ -159,6 +159,18 @@ impl<'a> SearchEngine<'a> {
     pub fn with_self_model(mut self, model: &'a RepoSelfModel) -> Self {
         self.self_model = Some(model);
         self
+    }
+
+    fn make_fts(&self, family: QueryFamily) -> FtsSearch<'a> {
+        match family {
+            QueryFamily::NaturalAbstract
+            | QueryFamily::NaturalDescriptive
+            | QueryFamily::ErrorDebug
+            | QueryFamily::CrossCuttingSet => {
+                FtsSearch::with_config(self.db, FtsConfig::for_natural_language())
+            }
+            _ => FtsSearch::new(self.db),
+        }
     }
 
     pub fn active_mode(&self) -> SearchMode {
@@ -336,7 +348,7 @@ impl<'a> SearchEngine<'a> {
             _ => None,
         };
 
-        let fts = FtsSearch::new(self.db);
+        let fts = self.make_fts(family);
         let fts_results = fts.search(&query.query, Some(200));
         let total_fts = fts_results.len();
 
@@ -433,7 +445,7 @@ impl<'a> SearchEngine<'a> {
             _ => None,
         };
 
-        let fts = FtsSearch::new(self.db);
+        let fts = self.make_fts(family);
         let fts_results = fts.search(&query.query, Some(200));
         let total_fts = fts_results.len();
 
@@ -678,7 +690,7 @@ impl<'a> SearchEngine<'a> {
         let hi = self.holo_index.unwrap();
         let spec = self.spectral_index.unwrap();
 
-        let fts = FtsSearch::new(self.db);
+        let fts = self.make_fts(family);
         let fts_results = fts.search(&query.query, Some(200));
         let total_fts = fts_results.len();
 
@@ -894,7 +906,7 @@ impl<'a> SearchEngine<'a> {
         query_hash: u64,
         family: QueryFamily,
     ) -> SearchResult {
-        let fts = FtsSearch::new(self.db);
+        let fts = self.make_fts(family);
         let fts_results = fts.search(&query.query, Some(200));
         let total_fts = fts_results.len();
 
@@ -966,7 +978,7 @@ impl<'a> SearchEngine<'a> {
         let mut total_fts: usize;
         let mut total_expanded: usize;
 
-        let fts = FtsSearch::new(self.db);
+        let fts = self.make_fts(family);
         let fts_results = fts.search(&query.query, Some(200));
         total_fts = fts_results.len();
 

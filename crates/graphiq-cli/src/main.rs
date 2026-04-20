@@ -104,6 +104,12 @@ enum Commands {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
+    Briefing {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+        #[arg(long)]
+        compact: bool,
+    },
     #[cfg(feature = "embed")]
     EmbedTest {
         text: Option<String>,
@@ -150,6 +156,7 @@ fn main() {
         Commands::UpgradeIndex { db } => cmd_upgrade_index(&db),
         Commands::Constants { db, query, top } => cmd_constants(&db, query.as_deref(), top),
         Commands::DeepGraph { db } => cmd_deep_graph(&db),
+        Commands::Briefing { db, compact } => cmd_briefing(&db, compact),
         #[cfg(feature = "embed")]
         Commands::EmbedTest { text } => cmd_embed_test(text.as_deref().unwrap_or("hello world")),
     }
@@ -986,6 +993,19 @@ fn cmd_deep_graph(db_path: &std::path::Path) {
         "source graph: {} string-literal, {} comment-ref edges",
         src_stats.string_literal_edges, src_stats.comment_ref_edges
     );
+}
+
+fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
+    let db = graphiq_core::db::GraphDb::open(db_path).expect("open db");
+    let result = if compact {
+        graphiq_core::briefing::generate_briefing_compact(&db)
+    } else {
+        graphiq_core::briefing::generate_briefing(&db)
+    };
+    match result {
+        Ok(text) => println!("{}", text),
+        Err(e) => eprintln!("error: {e}"),
+    }
 }
 
 fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {

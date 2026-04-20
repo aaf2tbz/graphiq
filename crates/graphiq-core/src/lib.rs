@@ -1,5 +1,6 @@
 pub mod behavioral;
 pub mod blast;
+pub mod briefing;
 pub mod cache;
 pub mod calls;
 pub mod chunker;

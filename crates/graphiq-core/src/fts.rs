@@ -35,6 +35,26 @@ impl Default for FtsConfig {
     }
 }
 
+impl FtsConfig {
+    pub fn for_natural_language() -> Self {
+        Self {
+            max_candidates: 300,
+            column_weights: [
+                3.0,  // name — lowered, NL terms rarely match names
+                4.0,  // name_decomposed — slightly higher, partial word matches
+                2.0,  // qualified_name
+                5.0,  // signature — function signatures contain verb phrases
+                8.0,  // source — primary signal for NL queries
+                6.0,  // doc_comment — descriptive text
+                4.0,  // file_path — path segments carry meaning
+                0.5,  // kind
+                0.5,  // language
+                10.0, // search_hints — behavioral role tags are semantic bridges
+            ],
+        }
+    }
+}
+
 pub struct FtsSearch<'a> {
     db: &'a GraphDb,
     config: FtsConfig,
