@@ -4,7 +4,9 @@ use std::path::Path;
 use rusqlite::params;
 
 use crate::db::GraphDb;
+#[cfg(test)]
 use crate::edge::EdgeKind;
+#[cfg(test)]
 use crate::symbol::{SymbolBuilder, SymbolKind};
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -307,7 +309,7 @@ pub fn detect_subsystems(db: &GraphDb) -> Result<SubsystemIndex, String> {
         }
     }
 
-    let unique_labels: HashSet<usize> = labels.values().copied().collect();
+    let _unique_labels: HashSet<usize> = labels.values().copied().collect();
 
     let mut label_representative_path: HashMap<usize, String> = HashMap::new();
     for (&label, members) in &label_members {
@@ -686,7 +688,7 @@ pub fn materialize_structural_roles(
             .flatten()
             .collect();
 
-        for (src, tgt, kind, metadata) in &rows {
+        for (src, tgt, _kind, metadata) in &rows {
             outgoing.entry(*src).or_default().push(*tgt);
             incoming.entry(*tgt).or_default().push(*src);
             if let Ok(meta) = serde_json::from_str::<serde_json::Value>(metadata) {
@@ -956,6 +958,7 @@ struct SubsystemDegreeStats {
     external_callees: HashMap<i64, usize>,
 }
 
+#[cfg(test)]
 fn setup_test_db() -> GraphDb {
     let db = GraphDb::open_in_memory().unwrap();
 

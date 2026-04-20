@@ -1,15 +1,15 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::cruncher::{
-    CruncherIndex, HoloIndex, QueryIntent, QueryTerm,
-    MAX_SEEDS, Edge,
+    CruncherIndex, HoloIndex, QueryIntent,
+    MAX_SEEDS,
     build_query_terms, classify_query,
     term_match_score, name_coverage, compute_sec_channels,
     negentropy, channel_coherence, holo_query_name_cosine,
     per_term_match,
 };
 use crate::spectral::{SpectralIndex, PredictiveModel, ChannelFingerprint};
-use crate::scoring::{Candidate, ScoreConfig, score_candidates, apply_bm25_lock, apply_file_diversity};
+use crate::scoring::{Candidate, ScoreConfig, score_candidates, apply_bm25_lock};
 
 pub struct PipelineConfig<'a> {
     pub top_k: usize,
@@ -39,10 +39,10 @@ pub fn unified_search(
 
     let intent = classify_query(&query_terms, idx, bm25_seeds);
     let n_qt = query_terms.len();
-    let idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
+    let _idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
     let bm25_max = bm25_seeds.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
 
-    let query_specificity = if n_qt > 0 {
+    let _query_specificity = if n_qt > 0 {
         query_terms.iter().filter(|qt| qt.idf > 1.0).count() as f64 / n_qt as f64
     } else {
         0.0

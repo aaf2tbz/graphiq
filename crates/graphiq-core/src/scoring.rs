@@ -36,7 +36,7 @@ pub struct ScoreConfig {
 }
 
 impl ScoreConfig {
-    pub fn for_goober_v5(intent: QueryIntent, bm25_w: f64, cov_w: f64, name_w: f64, ng_w: f64, coh_w: f64) -> Self {
+    pub fn for_goober_v5(_intent: QueryIntent, bm25_w: f64, cov_w: f64, name_w: f64, ng_w: f64, coh_w: f64) -> Self {
         Self {
             bm25_w, cov_w, name_w, ng_w, coh_w,
             walk_weight: 1.0,

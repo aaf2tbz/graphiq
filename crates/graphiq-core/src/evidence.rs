@@ -631,7 +631,7 @@ pub fn evidence_search(query: &str, idx: &EvidenceIndex, top_k: usize) -> Vec<(i
     let mut scored: Vec<(usize, f64)> = (0..n)
         .map(|i| {
             let name_lower = idx.symbol_names[i].to_lowercase();
-            let decomp_lower = name_lower.replace('_', " ");
+            let _decomp_lower = name_lower.replace('_', " ");
 
             let direct_name_hits = term_seeds
                 .iter()
@@ -652,7 +652,7 @@ pub fn evidence_search(query: &str, idx: &EvidenceIndex, top_k: usize) -> Vec<(i
                 })
                 .sum();
 
-            let term_hit_ratio = direct_name_hits / n_terms;
+            let _term_hit_ratio = direct_name_hits / n_terms;
 
             let intersection_bonus = if direct_name_hits >= 2.0 {
                 let quality_avg = direct_name_score / direct_name_hits;

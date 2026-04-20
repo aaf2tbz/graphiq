@@ -19,7 +19,7 @@ pub struct LsaIndex {
     pub anisotropy_weights: Vec<f64>,
 }
 
-struct SparseMat {
+pub struct SparseMat {
     rows: usize,
     cols: usize,
     col_data: Vec<Vec<(usize, f64)>>,
@@ -197,7 +197,6 @@ fn is_lsa_stop(t: &str) -> bool {
             | "true"
             | "false"
             | "none"
-            | "some"
             | "ok"
             | "err"
             | "null"
@@ -366,11 +365,11 @@ pub fn randomized_svd(matrix: &SparseMat, k: usize) -> (Vec<Vec<f64>>, Vec<f64>,
     let cols = matrix.cols;
 
     let mut rng = SimpleRng::new(42);
-    let mut omega: Vec<Vec<f64>> = (0..cols)
+    let omega: Vec<Vec<f64>> = (0..cols)
         .map(|_| (0..target).map(|_| rng.next()).collect())
         .collect();
 
-    let mut y = matrix.right_multiply(&omega);
+    let y = matrix.right_multiply(&omega);
 
     let q = gram_schmidt(&y);
 
@@ -789,6 +788,7 @@ pub fn spherical_cap_search(
         .collect()
 }
 
+#[allow(non_snake_case)]
 pub fn blade_search(
     query: &str,
     term_index: &HashMap<String, usize>,
@@ -1020,7 +1020,7 @@ fn dense_svd(mat: &[Vec<f64>], k: usize) -> (Vec<Vec<f64>>, Vec<f64>, Vec<Vec<f6
 
     let (eigvals, eigvecs) = power_eigen(&bbt, k_eff);
 
-    let mut sigma: Vec<f64> = eigvals.iter().map(|&v| v.max(0.0).sqrt()).collect();
+    let sigma: Vec<f64> = eigvals.iter().map(|&v| v.max(0.0).sqrt()).collect();
 
     let mut sorted_indices: Vec<usize> = (0..eigvals.len()).collect();
     sorted_indices.sort_by(|&a, &b| eigvals[b].partial_cmp(&eigvals[a]).unwrap());

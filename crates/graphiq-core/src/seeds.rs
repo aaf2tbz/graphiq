@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::db::GraphDb;
 use crate::fts::{FtsConfig, FtsSearch};
-use crate::query_family::{QueryFamily, RetrievalPolicy};
+use crate::query_family::QueryFamily;
 use crate::self_model::RepoSelfModel;
 
 pub fn bm25_seeds<'a>(db: &'a GraphDb, query: &str, family: QueryFamily) -> (Vec<(i64, f64)>, FtsSearch<'a>) {
@@ -27,7 +27,7 @@ pub fn per_term_fts_expansion(
     fts: &FtsSearch<'_>,
     query: &str,
     existing_seeds: &[(i64, f64)],
-    family: QueryFamily,
+    _family: QueryFamily,
 ) -> Vec<(i64, f64)> {
     let terms: Vec<String> = query
         .split_whitespace()

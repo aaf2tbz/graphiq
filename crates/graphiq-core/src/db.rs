@@ -569,7 +569,7 @@ impl GraphDb {
             .collect::<SqlResult<Vec<_>>>()
             .map_err(DbError::from)?;
 
-        let max_ci = rows.iter().map(|r| r.1).max().unwrap_or(0).max(1) as f64;
+        let _max_ci = rows.iter().map(|r| r.1).max().unwrap_or(0).max(1) as f64;
         let max_co = rows.iter().map(|r| r.2).max().unwrap_or(0).max(1) as f64;
         let max_ct = rows.iter().map(|r| r.3).max().unwrap_or(0).max(1) as f64;
         let max_im = rows.iter().map(|r| r.4).max().unwrap_or(0).max(1) as f64;

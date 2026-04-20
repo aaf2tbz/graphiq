@@ -150,7 +150,7 @@ fn main() {
     );
 
     print!("Computing Evidence Index ... ");
-    let evidence_index = match graphiq_core::evidence::build_evidence_index(&db) {
+    let _evidence_index = match graphiq_core::evidence::build_evidence_index(&db) {
         Ok(idx) => {
             println!("done ({} symbols)", idx.symbol_ids.len());
             Some(idx)

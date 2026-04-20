@@ -718,7 +718,7 @@ fn cmd_subsystems(db_path: &std::path::Path, compute_roles: bool) {
 }
 
 fn cmd_roles(db_path: &std::path::Path, subsystem_filter: Option<usize>, top: usize) {
-    use graphiq_core::subsystems::StructuralRole;
+    
 
     if !db_path.exists() {
         eprintln!("database not found: {}", db_path.display());

@@ -18,7 +18,7 @@ pub struct SpectralIndex {
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
-struct SparseSym {
+pub struct SparseSym {
     n: usize,
     entries: HashMap<(usize, usize), f64>,
 }
@@ -256,6 +256,7 @@ pub fn build_adjacency(db: &GraphDb) -> (SparseSym, Vec<i64>, HashMap<i64, usize
     (adj, symbol_ids, sym_id_to_idx, struct_edges)
 }
 
+#[allow(non_snake_case)]
 pub fn compute_spectral(db: &GraphDb) -> Result<SpectralIndex, String> {
     let (adj, symbol_ids, sym_id_to_idx, struct_edges) = build_adjacency(db);
     let n = adj.n;
@@ -313,7 +314,7 @@ pub fn compute_spectral(db: &GraphDb) -> Result<SpectralIndex, String> {
         w[i] -= a0 * v[i];
     }
 
-    for j in 1..lanczos_m {
+    for _j in 1..lanczos_m {
         for prev in &Q {
             let dot: f64 = w.iter().zip(prev.iter()).map(|(a, b)| a * b).sum();
             for i in 0..n {
@@ -415,6 +416,7 @@ fn eig_vec_entry(data: &[Vec<f64>], _m: usize, i: usize, j: usize) -> f64 {
         .unwrap_or(0.0)
 }
 
+#[allow(non_snake_case)]
 fn tridiag_eig(alpha: &[f64], beta: &[f64], m: usize) -> (Vec<f64>, Vec<Vec<f64>>) {
     let mut d = alpha.to_vec();
     let mut e = vec![0.0; m];
@@ -1150,13 +1152,11 @@ pub fn compute_predictive_model(db: &GraphDb) -> Result<PredictiveModel, String>
 
     let vocab_size = 5000usize;
     let mut bg_tf: HashMap<String, f64> = HashMap::new();
-    let mut bg_total = 0.0f64;
 
     for i in 0..n {
         let terms = sym_terms_map.get(&symbol_ids[i]).cloned().unwrap_or_default();
         for t in &terms {
             *bg_tf.entry(t.clone()).or_default() += 1.0;
-            bg_total += 1.0;
         }
     }
 
@@ -1204,7 +1204,7 @@ pub fn compute_predictive_model(db: &GraphDb) -> Result<PredictiveModel, String>
 
             let residual = 1.0 - model.values().sum::<f64>();
             if residual > 0.0 {
-                if let Some(bg_default) = background_terms.values().next() {
+                if let Some(_bg_default) = background_terms.values().next() {
                     for v in model.values_mut() {
                         *v += residual / vocab_n;
                     }
@@ -1340,14 +1340,14 @@ pub fn mdl_explanation_set(
     }
 
     let n_terms = query_terms.len();
-    let term_set: HashSet<String> = query_terms.iter().map(|t| t.to_lowercase()).collect();
+    let _term_set: HashSet<String> = query_terms.iter().map(|t| t.to_lowercase()).collect();
     let mut covered: HashSet<String> = HashSet::new();
 
     let mut explanation_cost = 0.0f64;
     let mut info_gain = 0.0f64;
     let mut prev_gain = 0.0f64;
 
-    for (rank, &(sym_id, score)) in results.iter().enumerate() {
+    for (rank, &(sym_id, _score)) in results.iter().enumerate() {
         if covered.len() >= n_terms {
             break;
         }

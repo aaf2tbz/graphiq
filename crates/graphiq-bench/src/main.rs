@@ -6,7 +6,6 @@ use graphiq_core::fts::FtsSearch;
 use graphiq_core::spectral::{ChannelFingerprint, PredictiveModel, SpectralIndex};
 use graphiq_core::search::{SearchEngine, SearchQuery};
 use graphiq_core::cache::HotCache;
-use graphiq_core::self_model::RepoSelfModel;
 use graphiq_core::query_family::classify_query_family;
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -372,19 +371,17 @@ const ALL_METHODS: &[&str] = &[
     "Geometric", "Curved", "Deformed",
 ];
 
-struct FullEngine<'a> {
-    db: &'a GraphDb,
-    fts: &'a FtsSearch<'a>,
-    ci: &'a cruncher::CruncherIndex,
-    hi: &'a cruncher::HoloIndex,
-    spectral: &'a Option<SpectralIndex>,
-    predictive: &'a Option<PredictiveModel>,
-    fingerprints: &'a [ChannelFingerprint],
-    fp_id_to_idx: &'a std::collections::HashMap<i64, usize>,
-    cache: &'a HotCache,
-    self_model: &'a Option<RepoSelfModel>,
-    engine: SearchEngine<'a>,
-}
+ struct FullEngine<'a> {
+     db: &'a GraphDb,
+     fts: &'a FtsSearch<'a>,
+     ci: &'a cruncher::CruncherIndex,
+     hi: &'a cruncher::HoloIndex,
+     spectral: &'a Option<SpectralIndex>,
+     predictive: &'a Option<PredictiveModel>,
+     fingerprints: &'a [ChannelFingerprint],
+     fp_id_to_idx: &'a std::collections::HashMap<i64, usize>,
+     engine: SearchEngine<'a>,
+ }
 
 impl<'a> FullEngine<'a> {
     fn run_method(&self, method_idx: usize, query: &str, top_k: usize) -> Vec<(i64, f64)> {
@@ -589,7 +586,7 @@ fn run_speed_bench(fe: &FullEngine, queries: &[BenchQuery]) {
 
     let g_med = percentile(&all_g, 50.0);
     let g_p95 = percentile(&all_g, 95.0);
-    let g_p99 = percentile(&all_g, 99.0);
+    let _g_p99 = percentile(&all_g, 99.0);
     let r_med = percentile(&all_r, 50.0);
     let r_p95 = percentile(&all_r, 95.0);
     let _r_p99 = percentile(&all_r, 99.0);
@@ -663,11 +660,11 @@ fn main() {
         if let Some(ref sm) = self_model { engine = engine.with_self_model(sm); }
 
         let fe = FullEngine {
-            db: &db, fts: &fts, ci: &ci, hi: &hi,
-            spectral: &spectral, predictive: &predictive,
-            fingerprints: &fp_vec, fp_id_to_idx: &fp_id_map,
-            cache: &cache, self_model: &self_model, engine,
-        };
+             db: &db, fts: &fts, ci: &ci, hi: &hi,
+             spectral: &spectral, predictive: &predictive,
+             fingerprints: &fp_vec, fp_id_to_idx: &fp_id_map,
+             engine,
+         };
 
         let content = std::fs::read_to_string(&args[3]).unwrap_or_else(|e| {
             eprintln!("error reading query file: {e}"); std::process::exit(1);
@@ -741,7 +738,7 @@ fn main() {
         db: &db, fts: &fts, ci: &ci, hi: &hi,
         spectral: &spectral, predictive: &predictive,
         fingerprints: &fp_vec, fp_id_to_idx: &fp_id_map,
-        cache: &cache, self_model: &self_model, engine,
+        engine,
     };
 
     if let Some(file) = ndcg_file {

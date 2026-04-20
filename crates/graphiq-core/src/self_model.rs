@@ -313,7 +313,7 @@ fn build_concern_concepts(
 fn build_error_surface_concepts(db: &GraphDb) -> Vec<ConceptNode> {
     let conn = db.conn();
     let mut concepts = Vec::new();
-    let mut next_id = 2000i64;
+    let next_id = 2000i64;
 
     let error_symbols: Vec<(i64, String)> = {
         let mut stmt = conn.prepare(
@@ -332,8 +332,8 @@ fn build_error_surface_concepts(db: &GraphDb) -> Vec<ConceptNode> {
     let mut error_vocab: HashMap<String, usize> = HashMap::new();
     let mut error_file_set: HashSet<String> = HashSet::new();
 
-    for &(sid, ref name) in &error_symbols {
-        for t in symbol_vocabulary(db, sid) {
+    for (sid, _name) in &error_symbols {
+        for t in symbol_vocabulary(db, *sid) {
             *error_vocab.entry(t).or_default() += 1;
         }
         let fp = db.conn().query_row(
@@ -373,7 +373,7 @@ fn build_error_surface_concepts(db: &GraphDb) -> Vec<ConceptNode> {
 fn build_test_surface_concepts(db: &GraphDb) -> Vec<ConceptNode> {
     let conn = db.conn();
     let mut concepts = Vec::new();
-    let mut next_id = 3000i64;
+    let next_id = 3000i64;
 
     let test_symbols: Vec<(i64, String)> = {
         let mut stmt = conn.prepare(

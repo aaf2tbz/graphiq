@@ -1,5 +1,5 @@
 use crate::db::GraphDb;
-use crate::fts::{FtsResult, FtsSearch};
+use crate::fts::FtsSearch;
 pub struct HrrIndex;
 use crate::rerank::{Reranker, ScoredSymbol};
 use std::collections::HashMap;

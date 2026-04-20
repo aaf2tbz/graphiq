@@ -777,7 +777,7 @@ impl<'a> Indexer<'a> {
 
         let mut total_updated = 0usize;
 
-        for (id, name, name_decomposed, existing_hints) in &symbols {
+        for (id, _name, name_decomposed, existing_hints) in &symbols {
             let mut neighbor_terms: HashMap<String, usize> = HashMap::new();
             let own_terms: std::collections::HashSet<String> = name_decomposed
                 .split_whitespace()

@@ -140,10 +140,6 @@ const PATH_EXTENSIONS: &[&str] = &[
     ".rb", ".yaml", ".yml", ".toml", ".json", ".xml", ".html", ".css", ".scss", ".md",
 ];
 
-const CROSS_CUTTING_SIGNALS: &[&str] = &[
-    "all ", "every ", "each ", "any ", "all of", "list all", "show all",
-];
-
 const CROSS_CUTTING_PLURAL_NOUNS: &[&str] = &[
     "implementations", "handlers", "providers", "routes", "guards", "migrations",
     "middlewares", "controllers", "services", "models", "types", "interfaces",
@@ -165,13 +161,6 @@ const ERROR_SIGNALS: &[&str] = &[
     "exception", "abort", "refused", "overflow", "underflow", "segfault",
     "nil pointer", "null pointer", "stack overflow", "out of memory",
     "connection refused", "access denied", "permission denied",
-];
-
-const RELATIONSHIP_SIGNALS: &[&str] = &[
-    "what calls ", "who calls ", "what invokes ", "who invokes ",
-    "callers of ", "callees of ", "what connects ", "what links ",
-    "relationship between ", "how does ", " connect to ", " relate to ",
-    "dependents of ", "dependencies of ",
 ];
 
 pub fn classify_query_family(query: &str) -> QueryFamily {
@@ -248,7 +237,7 @@ fn is_code_token(t: &str) -> bool {
         || (t.len() <= 2 && t.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
-fn is_symbol(original: &str, tokens: &[&str], original_tokens: &[&str]) -> bool {
+fn is_symbol(_original: &str, tokens: &[&str], original_tokens: &[&str]) -> bool {
     if tokens.len() == 1 {
         return is_code_token(original_tokens[0]);
     }

@@ -715,13 +715,13 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
                 Ok(s) => s,
                 Err(e) => return tool_error(&format!("lock error: {e}")),
             };
-            let needs_spectral = s.spectral_index.is_some();
-            let needs_predictive = s.predictive_model.is_some();
-            let needs_fingerprints = !s.fingerprints.is_empty();
-            let ci_ptr = s.cruncher_index.as_ref().map(|ci| ci as *const _);
-            let hi_ptr = s.holo_index.as_ref().map(|hi| hi as *const _);
-            let spec_ptr = s.spectral_index.as_ref().map(|si| si as *const _);
-            let pm_ptr = s.predictive_model.as_ref().map(|pm| pm as *const _);
+            let _needs_spectral = s.spectral_index.is_some();
+            let _needs_predictive = s.predictive_model.is_some();
+            let _needs_fingerprints = !s.fingerprints.is_empty();
+            let _ci_ptr = s.cruncher_index.as_ref().map(|ci| ci as *const _);
+            let _hi_ptr = s.holo_index.as_ref().map(|hi| hi as *const _);
+            let _spec_ptr = s.spectral_index.as_ref().map(|si| si as *const _);
+            let _pm_ptr = s.predictive_model.as_ref().map(|pm| pm as *const _);
             tool_why(&s.db, &s.cache, s.cruncher_index.as_ref(), s.holo_index.as_ref(), s.spectral_index.as_ref(), s.predictive_model.as_ref(), if s.fingerprints.is_empty() { None } else { Some(&s.fingerprints) }, if s.fp_id_to_idx.is_empty() { None } else { Some(&s.fp_id_to_idx) }, arguments)
         }
         "interrogate" => {
@@ -1079,41 +1079,37 @@ fn tool_status(state: &ServerState) -> Value {
             artifacts.push(format!("predictive: {}", if state.predictive_model.is_some() { "ready" } else { "missing" }));
             artifacts.push(format!("fingerprints: {}", if !state.fingerprints.is_empty() { "ready" } else { "missing" }));
 
-            let mut manifest_section = String::new();
             let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
-            match graphiq_core::manifest::read_manifest(db_dir) {
+            let manifest_section = match graphiq_core::manifest::read_manifest(db_dir) {
                 Ok(Some(manifest)) => {
                     let fresh = graphiq_core::manifest::check_artifact_freshness(&state.db, &manifest);
                     let manifest_mode = graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
-                    manifest_section = format!(
+                    let mut s = format!(
                         "\n  Manifest (v{}, indexed {}):",
                         manifest.schema_version, manifest.indexed_at
                     );
-                    manifest_section.push_str(&format!(
+                    s.push_str(&format!(
                         "\n    fts: {}  cruncher: {}  holo: {}  spectral: {}  predictive: {}  fingerprints: {}",
                         fresh.fts, fresh.cruncher, fresh.holo, fresh.spectral, fresh.predictive, fresh.fingerprints,
                     ));
-                    manifest_section.push_str(&format!(
+                    s.push_str(&format!(
                         "\n    manifest mode: {}  live mode: {}",
                         manifest_mode, mode,
                     ));
                     if manifest_mode != graphiq_core::search::SearchMode::Deformed {
                         let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
                         if !reasons.is_empty() {
-                            manifest_section.push_str("\n    downgrade reasons:");
+                            s.push_str("\n    downgrade reasons:");
                             for r in &reasons {
-                                manifest_section.push_str(&format!("\n      - {}", r));
+                                s.push_str(&format!("\n      - {}", r));
                             }
                         }
                     }
+                    s
                 }
-                Ok(None) => {
-                    manifest_section = "\n  Manifest: not found (run upgrade-index to create)".into();
-                }
-                Err(e) => {
-                    manifest_section = format!("\n  Manifest: read error: {e}");
-                }
-            }
+                Ok(None) => "\n  Manifest: not found (run upgrade-index to create)".into(),
+                Err(e) => format!("\n  Manifest: read error: {e}"),
+            };
 
             let text = format!(
                 "GraphIQ v{}\n  Project:  {}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB: {}\n  Search mode: {}\n  Artifacts: {}{}",
@@ -1495,7 +1491,7 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     }
 
     ss.sort_by(|a, b| b.symbol_ids.len().cmp(&a.symbol_ids.len()));
-    let top = ss.iter().take(15).collect::<Vec<_>>();
+    let _top = ss.iter().take(15).collect::<Vec<_>>();
 
     let lower = question.to_lowercase();
     let mut lines: Vec<String> = Vec::new();
@@ -1540,7 +1536,7 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
                 .unwrap_or_default();
 
             lines.push(format!("\nEntry points ({} found, by external caller count):", rows.len()));
-            for (name, roles, sub_id, ext_callers, int_deg) in &rows {
+            for (name, _roles, sub_id, ext_callers, int_deg) in &rows {
                 let sub_name = subsystems.subsystems.iter()
                     .find(|s| s.id == *sub_id as usize)
                     .map(|s| s.name.as_str())

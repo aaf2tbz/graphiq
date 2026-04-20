@@ -381,7 +381,6 @@ pub fn build_sec_index(db: &GraphDb) -> Result<SecIndex, String> {
 
 #[derive(Debug, Clone)]
 struct QueryTerm {
-    text: String,
     variants: Vec<String>,
     idf: f64,
 }
@@ -422,7 +421,6 @@ fn build_query_terms(query: &str, index: &SecIndex) -> Vec<QueryTerm> {
             let variants = expand_query_variants(&t);
             let idf = index.global_idf.get(&t).copied().unwrap_or(1.0);
             QueryTerm {
-                text: t,
                 variants,
                 idf,
             }
@@ -449,22 +447,6 @@ fn channel_overlap(query_terms: &[QueryTerm], channel: &HashMap<String, f64>) ->
         score += best_match * qt.idf;
     }
     score
-}
-
-fn channel_has_hit(query_terms: &[QueryTerm], channel: &HashMap<String, f64>) -> bool {
-    for qt in query_terms {
-        for variant in &qt.variants {
-            if channel.contains_key(variant) {
-                return true;
-            }
-            for term in channel.keys() {
-                if term.contains(variant) || variant.contains(term.as_str()) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
 }
 
 const W_SELF: f64 = 3.0;

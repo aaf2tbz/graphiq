@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::db::GraphDb;
 use crate::lsa::extract_terms;
-use crate::spectral::{ChannelFingerprint, MdlExplanation, PredictiveModel, SpectralIndex};
+use crate::spectral::{ChannelFingerprint, PredictiveModel, SpectralIndex};
 use crate::tokenize::decompose_identifier;
 
 const TOP_K_TERMS: usize = 30;
@@ -481,10 +481,8 @@ struct Candidate {
     coverage_score: f64,
     coverage_count: usize,
     name_score: f64,
-    name_count: usize,
     structural_score: f64,
     structural_paths: usize,
-    bridging_score: f64,
     is_seed: bool,
 }
 
@@ -513,7 +511,7 @@ pub fn cruncher_search(
     for &(id, score) in bm25_seeds.iter().take(MAX_SEEDS) {
         if let Some(&i) = idx.id_to_idx.get(&id) {
             let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
-            let (name_s, name_c) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+            let (name_s, _name_c) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
             candidates.insert(
                 i,
                 Candidate {
@@ -522,10 +520,8 @@ pub fn cruncher_search(
                     coverage_score: cov_score,
                     coverage_count: cov_count,
                     name_score: name_s,
-                    name_count: name_c,
                     structural_score: 0.0,
                     structural_paths: 0,
-                    bridging_score: 0.0,
                     is_seed: true,
                 },
             );
@@ -571,10 +567,8 @@ pub fn cruncher_search(
                         coverage_score: cov_score,
                         coverage_count: cov_count,
                         name_score: 0.0,
-                        name_count: 0,
                         structural_score: 0.0,
                         structural_paths: 0,
-                        bridging_score: 0.0,
                         is_seed: false,
                     }
                 });
@@ -766,7 +760,6 @@ struct V2Candidate {
     bm25_score: f64,
     energy: Vec<f64>,
     name_score: f64,
-    name_count: usize,
     is_seed: bool,
     seed_paths: HashSet<usize>,
 }
@@ -868,7 +861,7 @@ pub fn cruncher_v2_search(
     for &(id, score) in bm25_seeds.iter().take(MAX_SEEDS) {
         if let Some(&i) = idx.id_to_idx.get(&id) {
             let energy = per_term_energy(&query_terms, &idx.term_sets[i]);
-            let (name_s, name_c) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+            let (name_s, _name_c) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
             let mut sp = HashSet::new();
             sp.insert(i);
             candidates.insert(
@@ -878,7 +871,6 @@ pub fn cruncher_v2_search(
                     bm25_score: score / bm25_max,
                     energy,
                     name_score: name_s,
-                    name_count: name_c,
                     is_seed: true,
                     seed_paths: sp,
                 },
@@ -935,7 +927,6 @@ pub fn cruncher_v2_search(
                         bm25_score: 0.0,
                         energy: vec![0.0; n_qt],
                         name_score: 0.0,
-                        name_count: 0,
                         is_seed: false,
                         seed_paths: HashSet::new(),
                     });
@@ -2270,17 +2261,6 @@ fn holo_from_freq(re: &[f64], im: &[f64]) -> Vec<f64> {
     r
 }
 
-fn holo_complex_mul(a: &(Vec<f64>, Vec<f64>), b: &(Vec<f64>, Vec<f64>)) -> (Vec<f64>, Vec<f64>) {
-    let n = a.0.len();
-    let mut re = vec![0.0; n];
-    let mut im = vec![0.0; n];
-    for i in 0..n {
-        re[i] = a.0[i] * b.0[i] - a.1[i] * b.1[i];
-        im[i] = a.0[i] * b.1[i] + a.1[i] * b.0[i];
-    }
-    (re, im)
-}
-
 fn holo_normalize(v: &mut [f64]) {
     let norm: f64 = v.iter().map(|x| x * x).sum::<f64>().sqrt().max(1e-10);
     for x in v.iter_mut() { *x /= norm; }
@@ -2397,7 +2377,7 @@ pub fn goober_v5_search(
     let intent = classify_query(&query_terms, idx, bm25_seeds);
 
     let n_qt = query_terms.len();
-    let idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
+    let _idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
 
     let bm25_max = bm25_seeds
         .iter()
@@ -2405,7 +2385,7 @@ pub fn goober_v5_search(
         .fold(0.0f64, f64::max)
         .max(1e-10);
 
-    let query_specificity = if n_qt > 0 {
+    let _query_specificity = if n_qt > 0 {
         let high_idf_count = query_terms.iter().filter(|qt| qt.idf > 1.0).count();
         high_idf_count as f64 / n_qt as f64
     } else {
@@ -2448,8 +2428,8 @@ pub fn goober_v5_search(
         }
     }
 
-    let bm25_ids: HashSet<i64> = bm25_seeds.iter().take(MAX_SEEDS).map(|(id, _)| *id).collect();
-    let structural_max_deg = idx.structural_degree.iter().cloned().fold(0.0f64, f64::max).max(1e-10);
+    let _bm25_ids: HashSet<i64> = bm25_seeds.iter().take(MAX_SEEDS).map(|(id, _)| *id).collect();
+    let _structural_max_deg = idx.structural_degree.iter().cloned().fold(0.0f64, f64::max).max(1e-10);
 
     for qt in &query_terms {
         let ql = qt.text.to_lowercase();
@@ -2635,13 +2615,13 @@ pub fn goober_v5_search(
         }
     }
 
-    let max_ng = candidates
+    let _max_ng = candidates
         .values()
         .map(|c| c.ng_score)
         .fold(0.0f64, f64::max)
         .max(1e-10);
 
-    let max_coherence = candidates
+    let _max_coherence = candidates
         .values()
         .map(|c| c.coherence_score)
         .fold(0.0f64, f64::max)
@@ -2704,10 +2684,10 @@ pub fn geometric_search(
 
     let intent = classify_query(&query_terms, idx, bm25_seeds);
     let n_qt = query_terms.len();
-    let idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
+    let _idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
     let bm25_max = bm25_seeds.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
 
-    let query_specificity = if n_qt > 0 {
+    let _query_specificity = if n_qt > 0 {
         query_terms.iter().filter(|qt| qt.idf > 1.0).count() as f64 / n_qt as f64
     } else {
         0.0
@@ -2981,8 +2961,8 @@ pub fn geometric_search(
         }
     }
 
-    let max_ng = candidates.values().map(|c| c.ng_score).fold(0.0f64, f64::max).max(1e-10);
-    let max_coherence = candidates.values().map(|c| c.coherence_score).fold(0.0f64, f64::max).max(1e-10);
+    let _max_ng = candidates.values().map(|c| c.ng_score).fold(0.0f64, f64::max).max(1e-10);
+    let _max_coherence = candidates.values().map(|c| c.coherence_score).fold(0.0f64, f64::max).max(1e-10);
 
     let score_config = crate::scoring::ScoreConfig::for_geometric(bm25_w, cov_w, name_w, ng_w, coh_w, walk_weight, 1.0);
 

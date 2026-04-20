@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 
 pub struct BehavioralDescriptor {
     pub phrases: Vec<String>,
@@ -6,7 +5,7 @@ pub struct BehavioralDescriptor {
 
 pub fn generate_behavioral_descriptors(
     name: &str,
-    kind: &str,
+    _kind: &str,
     signature: Option<&str>,
     source: Option<&str>,
     callee_names: &[String],
@@ -51,7 +50,7 @@ fn infer_behavioral_verb(
     name_dec: &[&str],
     name_lower: &str,
     callees: &[String],
-    sig: Option<&str>,
+    _sig: Option<&str>,
 ) -> String {
     let name_verbs: &[(&str, &str)] = &[
         ("get", "gets retrieves fetches"),
@@ -259,7 +258,7 @@ fn infer_behavioral_verb(
 
 fn infer_object(
     name_dec: &[&str],
-    name_lower: &str,
+    _name_lower: &str,
     callees: &[String],
     sig: Option<&str>,
     source: Option<&str>,

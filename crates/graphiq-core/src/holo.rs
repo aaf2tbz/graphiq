@@ -10,7 +10,6 @@ pub struct HoloIndex {
     pub symbol_names: Vec<String>,
     pub holograms: Vec<Vec<f64>>,
     term_vectors: HashMap<String, Vec<f64>>,
-    term_idf: HashMap<String, f64>,
     pub dim: usize,
 }
 
@@ -277,10 +276,10 @@ pub fn compute_holo(db: &GraphDb) -> Result<HoloIndex, String> {
 
         let mut boundary: Vec<(usize, String, f64)> = Vec::new();
 
-        for (ni, kind, w, nid) in &outgoing[i] {
+        for (ni, kind, w, _nid) in &outgoing[i] {
             boundary.push((*ni, kind.clone(), *w));
         }
-        for (ni, kind, w, nid) in &incoming[i] {
+        for (ni, kind, w, _nid) in &incoming[i] {
             let inv_key = format!("{}_inv", kind);
             boundary.push((*ni, inv_key, *w));
         }
@@ -308,7 +307,7 @@ pub fn compute_holo(db: &GraphDb) -> Result<HoloIndex, String> {
             }
 
             for k in 1..boundary.len() {
-                let (ni, ref kind, w) = boundary[k];
+                let (ni, ref kind, _w) = boundary[k];
                 let (nr, ni_im) = &freq_identities[ni];
 
                 if let Some((rr, ri)) = freq_relations.get(kind.as_str()) {
@@ -363,20 +362,11 @@ pub fn compute_holo(db: &GraphDb) -> Result<HoloIndex, String> {
         / n as f64;
     eprintln!("  [holo] hologram norms: avg={:.3}", avg_norm);
 
-    let term_idf: HashMap<String, f64> = all_terms
-        .iter()
-        .map(|t| {
-            let df = *term_doc_count.get(t).unwrap_or(&1) as f64;
-            (t.clone(), (1.0 + (n as f64 / df).ln()).max(0.1))
-        })
-        .collect();
-
     Ok(HoloIndex {
         symbol_ids,
         symbol_names,
         holograms,
         term_vectors,
-        term_idf,
         dim,
     })
 }

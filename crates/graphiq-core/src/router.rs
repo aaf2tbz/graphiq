@@ -146,7 +146,6 @@ fn has_action_verb(first: Option<&str>) -> bool {
                     | "set"
                     | "convert"
                     | "substitute"
-                    | "generate"
             )
         })
         .unwrap_or(false)
@@ -214,7 +213,6 @@ fn is_tech_token(t: &str) -> bool {
             | "hrr"
             | "ndcg"
             | "rrf"
-            | "bm25"
     )
 }
 
