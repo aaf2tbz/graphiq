@@ -1,0 +1,27 @@
+{
+  "codebase": "signetai",
+  "date": "2026-04-20",
+  "phase": "v6-unified-pipeline",
+  "symbols": 20870,
+  "edges": 46892,
+  "queries": 20,
+  "overall": {
+    "ndcg_at_10": 0.398,
+    "ndcg_at_5": 0.366,
+    "ndcg_at_3": 0.366
+  },
+  "grep": {
+    "ndcg_at_10": 0.273,
+    "ndcg_at_5": 0.247,
+    "ndcg_at_3": 0.241
+  },
+  "by_category": {
+    "cross-cutting": { "graphiq": 0.157, "grep": 0.000 },
+    "error-debug": { "graphiq": 0.472, "grep": 0.295 },
+    "file-path": { "graphiq": 0.000, "grep": 0.052 },
+    "nl-abstract": { "graphiq": 0.265, "grep": 0.000 },
+    "nl-descriptive": { "graphiq": 0.190, "grep": 0.000 },
+    "symbol-exact": { "graphiq": 0.803, "grep": 0.803 },
+    "symbol-partial": { "graphiq": 0.816, "grep": 0.670 }
+  }
+}

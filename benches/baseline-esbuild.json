@@ -1,0 +1,23 @@
+{
+  "codebase": "esbuild",
+  "date": "2026-04-20",
+  "phase": "pre-unification-baseline",
+  "symbols": 12040,
+  "edges": 39838,
+  "notes": "First-run effect: run 1 = 0.428, runs 2-5 = 0.403. Using stable value 0.403.",
+  "overall": {
+    "ndcg_at_10": 0.403
+  },
+  "grep": {
+    "ndcg_at_10": 0.300
+  },
+  "by_category": {
+    "cross-cutting": { "graphiq": 0.000 },
+    "error-debug": { "graphiq": 0.333 },
+    "file-path": { "graphiq": 0.000 },
+    "nl-abstract": { "graphiq": 0.167 },
+    "nl-descriptive": { "graphiq": 0.284 },
+    "symbol-exact": { "graphiq": 1.000 },
+    "symbol-partial": { "graphiq": 0.901 }
+  }
+}

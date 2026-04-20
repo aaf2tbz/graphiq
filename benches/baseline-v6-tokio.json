@@ -1,0 +1,27 @@
+{
+  "codebase": "tokio",
+  "date": "2026-04-20",
+  "phase": "v6-unified-pipeline",
+  "symbols": 17867,
+  "edges": 39086,
+  "queries": 20,
+  "overall": {
+    "ndcg_at_10": 0.291,
+    "ndcg_at_5": 0.298,
+    "ndcg_at_3": 0.310
+  },
+  "grep": {
+    "ndcg_at_10": 0.284,
+    "ndcg_at_5": 0.279,
+    "ndcg_at_3": 0.286
+  },
+  "by_category": {
+    "cross-cutting": { "graphiq": 0.255, "grep": 0.000 },
+    "error-debug": { "graphiq": 0.000, "grep": 0.074 },
+    "file-path": { "graphiq": 0.145, "grep": 0.135 },
+    "nl-abstract": { "graphiq": 0.102, "grep": 0.049 },
+    "nl-descriptive": { "graphiq": 0.225, "grep": 0.191 },
+    "symbol-exact": { "graphiq": 0.895, "grep": 0.857 },
+    "symbol-partial": { "graphiq": 0.406, "grep": 0.588 }
+  }
+}

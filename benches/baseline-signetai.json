@@ -1,0 +1,23 @@
+{
+  "codebase": "signetai",
+  "date": "2026-04-20",
+  "phase": "pre-unification-baseline",
+  "symbols": 20870,
+  "edges": 45943,
+  "notes": "Stable across runs. Median of 5 runs: 0.374",
+  "overall": {
+    "ndcg_at_10": 0.374
+  },
+  "grep": {
+    "ndcg_at_10": 0.276
+  },
+  "by_category": {
+    "cross-cutting": { "graphiq": 0.054 },
+    "error-debug": { "graphiq": 0.472 },
+    "file-path": { "graphiq": 0.000 },
+    "nl-abstract": { "graphiq": 0.265 },
+    "nl-descriptive": { "graphiq": 0.190 },
+    "symbol-exact": { "graphiq": 0.803 },
+    "symbol-partial": { "graphiq": 0.726 }
+  }
+}

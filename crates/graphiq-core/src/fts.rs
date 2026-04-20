@@ -297,7 +297,7 @@ fn expand_query(tokens: &[String]) -> Vec<String> {
     expanded
 }
 
-fn get_synonyms(word: &str) -> Option<&'static [&'static str]> {
+pub fn get_synonyms(word: &str) -> Option<&'static [&'static str]> {
     let entries = SYNONYM_ENTRIES.get_or_init(synonym_entries);
     let lower = word.to_lowercase();
     entries

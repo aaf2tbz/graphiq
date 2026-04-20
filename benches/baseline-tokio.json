@@ -1,0 +1,23 @@
+{
+  "codebase": "tokio",
+  "date": "2026-04-20",
+  "phase": "pre-unification-baseline",
+  "symbols": 17867,
+  "edges": 39095,
+  "notes": "Slight variation ±0.002 across runs. Median: 0.295",
+  "overall": {
+    "ndcg_at_10": 0.295
+  },
+  "grep": {
+    "ndcg_at_10": 0.278
+  },
+  "by_category": {
+    "cross-cutting": { "graphiq": 0.279 },
+    "error-debug": { "graphiq": 0.000 },
+    "file-path": { "graphiq": 0.128 },
+    "nl-abstract": { "graphiq": 0.087 },
+    "nl-descriptive": { "graphiq": 0.196 },
+    "symbol-exact": { "graphiq": 0.857 },
+    "symbol-partial": { "graphiq": 0.508 }
+  }
+}

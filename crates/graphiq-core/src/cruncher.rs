@@ -6,7 +6,7 @@ use crate::spectral::{ChannelFingerprint, MdlExplanation, PredictiveModel, Spect
 use crate::tokenize::decompose_identifier;
 
 const TOP_K_TERMS: usize = 30;
-const MAX_SEEDS: usize = 30;
+pub const MAX_SEEDS: usize = 30;
 const EXPANSION_BREADTH: usize = 50;
 const WALK_DEPTH: usize = 3;
 
@@ -34,10 +34,10 @@ const EDGE_WEIGHT_IMPLEMENTS: f64 = 0.9;
 const EDGE_WEIGHT_TESTS: f64 = 0.3;
 
 #[derive(Clone)]
-struct Edge {
-    target: usize,
-    weight: f64,
-    kind_weight: f64,
+pub struct Edge {
+    pub target: usize,
+    pub weight: f64,
+    pub kind_weight: f64,
 }
 
 pub struct CruncherIndex {
@@ -48,28 +48,28 @@ pub struct CruncherIndex {
     pub symbol_file_ids: Vec<i64>,
     pub file_paths: HashMap<i64, String>,
 
-    outgoing: Vec<Vec<Edge>>,
-    incoming: Vec<Vec<Edge>>,
+    pub outgoing: Vec<Vec<Edge>>,
+    pub incoming: Vec<Vec<Edge>>,
 
-    term_sets: Vec<TermSet>,
-    global_idf: HashMap<String, f64>,
+    pub term_sets: Vec<TermSet>,
+    pub global_idf: HashMap<String, f64>,
 
-    bridging: Vec<f64>,
-    id_to_idx: HashMap<i64, usize>,
-    name_to_indices: HashMap<String, Vec<usize>>,
-    structural_degree: Vec<f64>,
+    pub bridging: Vec<f64>,
+    pub id_to_idx: HashMap<i64, usize>,
+    pub name_to_indices: HashMap<String, Vec<usize>>,
+    pub structural_degree: Vec<f64>,
 }
 
-struct TermSet {
-    terms: HashMap<String, f64>,
-    name_terms: HashSet<String>,
-    sig_terms: HashSet<String>,
+pub struct TermSet {
+    pub terms: HashMap<String, f64>,
+    pub name_terms: HashSet<String>,
+    pub sig_terms: HashSet<String>,
 }
 
-struct QueryTerm {
-    text: String,
-    variants: Vec<String>,
-    idf: f64,
+pub struct QueryTerm {
+    pub text: String,
+    pub variants: Vec<String>,
+    pub idf: f64,
 }
 
 fn cr_tokenize(text: &str) -> Vec<String> {
@@ -135,7 +135,7 @@ fn edge_kind_weight(kind: &str) -> f64 {
     }
 }
 
-fn kind_boost(kind: &str) -> f64 {
+pub fn kind_boost(kind: &str) -> f64 {
     match kind {
         "function" | "method" | "constructor" => 1.3,
         "class" | "struct" | "interface" | "trait" => 1.2,
@@ -146,7 +146,7 @@ fn kind_boost(kind: &str) -> f64 {
     }
 }
 
-fn test_penalty(file_paths: &HashMap<i64, String>, file_id: i64) -> f64 {
+pub fn test_penalty(file_paths: &HashMap<i64, String>, file_id: i64) -> f64 {
     let path_lower = file_paths
         .get(&file_id)
         .map(|p| p.to_lowercase())
@@ -403,7 +403,7 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
     })
 }
 
-fn build_query_terms(query: &str, idf: &HashMap<String, f64>) -> Vec<QueryTerm> {
+pub fn build_query_terms(query: &str, idf: &HashMap<String, f64>) -> Vec<QueryTerm> {
     let raw_terms = extract_terms(query);
     raw_terms
         .into_iter()
@@ -419,7 +419,7 @@ fn build_query_terms(query: &str, idf: &HashMap<String, f64>) -> Vec<QueryTerm> 
         .collect()
 }
 
-fn term_match_score(query_terms: &[QueryTerm], term_set: &TermSet) -> (f64, usize) {
+pub fn term_match_score(query_terms: &[QueryTerm], term_set: &TermSet) -> (f64, usize) {
     let mut score = 0.0f64;
     let mut matched = 0usize;
 
@@ -449,7 +449,7 @@ fn term_match_score(query_terms: &[QueryTerm], term_set: &TermSet) -> (f64, usiz
     (score, matched)
 }
 
-fn name_coverage(query_terms: &[QueryTerm], name_terms: &HashSet<String>) -> (f64, usize) {
+pub fn name_coverage(query_terms: &[QueryTerm], name_terms: &HashSet<String>) -> (f64, usize) {
     let mut score = 0.0f64;
     let mut matched = 0usize;
     for qt in query_terms {
@@ -813,7 +813,7 @@ fn interference_score(energy: &[f64]) -> f64 {
     sum / (norm * uniform_norm)
 }
 
-fn per_term_match(term_set: &TermSet, qt: &QueryTerm) -> f64 {
+pub fn per_term_match(term_set: &TermSet, qt: &QueryTerm) -> f64 {
     let mut best = 0.0f64;
     for variant in &qt.variants {
         if let Some(&w) = term_set.terms.get(variant) {
@@ -1404,17 +1404,17 @@ pub fn goober_search(
 }
 
 #[derive(Clone)]
-struct SecChannelVec {
-    ch_self: f64,
-    ch_name: f64,
-    ch_sig: f64,
-    ch_out_1hop: f64,
-    ch_in_1hop: f64,
-    ch_out_2hop: f64,
-    ch_in_2hop: f64,
+pub struct SecChannelVec {
+    pub ch_self: f64,
+    pub ch_name: f64,
+    pub ch_sig: f64,
+    pub ch_out_1hop: f64,
+    pub ch_in_1hop: f64,
+    pub ch_out_2hop: f64,
+    pub ch_in_2hop: f64,
 }
 
-fn compute_sec_channels(
+pub fn compute_sec_channels(
     query_terms: &[QueryTerm],
     idx: &CruncherIndex,
     sym_i: usize,
@@ -1475,7 +1475,7 @@ fn compute_sec_channels(
     }
 }
 
-fn negentropy(channels: &SecChannelVec) -> f64 {
+pub fn negentropy(channels: &SecChannelVec) -> f64 {
     let scores = [
         channels.ch_self,
         channels.ch_name,
@@ -1511,7 +1511,7 @@ fn negentropy(channels: &SecChannelVec) -> f64 {
     ng + kurtosis.max(0.0) * 0.3
 }
 
-fn channel_coherence(
+pub fn channel_coherence(
     query_terms: &[QueryTerm],
     idx: &CruncherIndex,
     sym_i: usize,
@@ -1842,12 +1842,13 @@ pub fn goober_v3_search(
     results
 }
 
-enum QueryIntent {
+#[derive(Clone, Copy)]
+pub enum QueryIntent {
     Navigational,
     Informational,
 }
 
-fn classify_query(
+pub fn classify_query(
     query_terms: &[QueryTerm],
     idx: &CruncherIndex,
     bm25_seeds: &[(i64, f64)],
@@ -2330,7 +2331,7 @@ pub fn build_holo_index(_db: &GraphDb, idx: &CruncherIndex) -> HoloIndex {
     HoloIndex { name_holos, term_freq }
 }
 
-fn holo_query_name_cosine(query: &str, hi: &HoloIndex, symbol_i: usize) -> f64 {
+pub fn holo_query_name_cosine(query: &str, hi: &HoloIndex, symbol_i: usize) -> f64 {
     let terms: Vec<String> = query.to_lowercase()
         .split_whitespace()
         .filter(|t| t.len() >= 2)
@@ -2645,110 +2646,32 @@ pub fn goober_v5_search(
         QueryIntent::Informational => (3.0, 1.5, 2.0, 0.25, 0.15),
     };
 
-    let holo_gate = 0.25f64;
-    let holo_max_w = 2.0;
+    let score_config = crate::scoring::ScoreConfig::for_goober_v5(intent, bm25_w, cov_w, name_w, ng_w, coh_w);
 
-    let mut scored: Vec<(usize, f64)> = candidates
-        .values()
-        .filter_map(|c| {
-            if !c.is_seed && c.seed_paths.len() < 2 {
-                return None;
-            }
-
-            let cov_norm = if idf_sum > 0.0 { c.coverage_score / idf_sum } else { 0.0 };
-            let name_norm = if idf_sum > 0.0 { c.name_score / idf_sum } else { 0.0 };
-            let walk_norm = if idf_sum > 0.0 { c.walk_evidence / idf_sum } else { 0.0 };
-
-            let base = if c.is_seed {
-                let cov_cap = if matches!(intent, QueryIntent::Navigational) {
-                    cov_norm.min(0.2)
-                } else {
-                    cov_norm.min(0.5)
-                };
-                let name_cap = if matches!(intent, QueryIntent::Navigational) {
-                    name_norm.min(0.3)
-                } else {
-                    name_norm.min(0.5)
-                };
-                bm25_w * c.bm25_score + cov_w * cov_cap + name_w * name_cap
-            } else {
-                1.5 * cov_norm + 2.0 * name_norm + walk_norm
-            };
-
-            let coverage_frac = if n_qt > 0 {
-                c.coverage_count as f64 / n_qt as f64
-            } else {
-                0.0
-            };
-
-            let ng_norm = c.ng_score / max_ng;
-            let coh_norm = c.coherence_score / max_coherence;
-            let ng_boost = 1.0 + ng_w * ng_norm + coh_w * coh_norm;
-
-            let holo_additive = if c.holo_name_sim > holo_gate {
-                let excess = (c.holo_name_sim - holo_gate) / (1.0 - holo_gate);
-                let w = holo_max_w * query_specificity * excess;
-                w
-            } else {
-                0.0
-            };
-
-            let seed_bonus = if c.is_seed { 1.15 } else { 1.0 };
-            let kb = kind_boost(&idx.symbol_kinds[c.idx]);
-            let tp = test_penalty(&idx.file_paths, idx.symbol_file_ids[c.idx]);
-
-            let structural_bonus = if c.structural_recall && c.name_score > 0.0 {
-                let deg_norm = idx.structural_degree[c.idx] / structural_max_deg;
-                2.0 + deg_norm * 3.0
-            } else {
-                0.0
-            };
-
-            let raw = (base + holo_additive + structural_bonus) * coverage_frac.powf(0.3) * ng_boost * seed_bonus * kb * tp;
-
-            if raw > 0.0 {
-                Some((c.idx, raw))
-            } else {
-                None
-            }
-        })
+    let scoring_candidates: std::collections::HashMap<usize, crate::scoring::Candidate> = candidates
+        .into_iter()
+        .map(|(idx, c)| (idx, crate::scoring::Candidate {
+            idx: c.idx,
+            bm25_score: c.bm25_score,
+            coverage_score: c.coverage_score,
+            coverage_count: c.coverage_count,
+            name_score: c.name_score,
+            is_seed: c.is_seed,
+            walk_evidence: c.walk_evidence,
+            seed_paths: c.seed_paths,
+            ng_score: c.ng_score,
+            coherence_score: c.coherence_score,
+            holo_name_sim: c.holo_name_sim,
+            structural_recall: c.structural_recall,
+            surprise_boost: c.surprise_boost,
+        }))
         .collect();
 
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let mut scored = crate::scoring::score_candidates(&scoring_candidates, &query_terms, intent, &score_config, idx);
 
-    let bm25_confident = bm25_seeds.len() >= 2
-        && bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10) > 1.2;
-    if bm25_confident {
-        if let Some(&lock_i) = bm25_seeds
-            .first()
-            .and_then(|(id, _)| idx.id_to_idx.get(id))
-        {
-            if let Some(pos) = scored.iter().position(|(i, _)| *i == lock_i) {
-                if pos > 0 {
-                    let (li, ls) = scored.remove(pos);
-                    scored.insert(0, (li, ls + 1e6));
-                }
-            }
-        }
-    }
+    crate::scoring::apply_bm25_lock(&mut scored, bm25_seeds, &query_terms, idx);
 
-    let mut results: Vec<(i64, f64)> = Vec::with_capacity(top_k);
-    let mut file_counts: HashMap<i64, usize> = HashMap::new();
-
-    for (i, score) in scored {
-        let fid = idx.symbol_file_ids[i];
-        let fc = file_counts.entry(fid).or_insert(0);
-        if *fc >= 3 {
-            continue;
-        }
-        *fc += 1;
-        results.push((idx.symbol_ids[i], score));
-        if results.len() >= top_k {
-            break;
-        }
-    }
-
-    results
+    crate::scoring::apply_file_diversity(scored, idx, top_k)
 }
 
 pub fn geometric_search(
@@ -3055,87 +2978,30 @@ pub fn geometric_search(
     let max_ng = candidates.values().map(|c| c.ng_score).fold(0.0f64, f64::max).max(1e-10);
     let max_coherence = candidates.values().map(|c| c.coherence_score).fold(0.0f64, f64::max).max(1e-10);
 
-    let holo_gate = 0.25f64;
-    let holo_max_w = 2.0;
-    let structural_max_deg = idx.structural_degree.iter().cloned().fold(0.0f64, f64::max).max(1e-10);
+    let score_config = crate::scoring::ScoreConfig::for_geometric(bm25_w, cov_w, name_w, ng_w, coh_w, walk_weight, 1.0);
 
-    let mut scored: Vec<(usize, f64)> = candidates
-        .values()
-        .filter_map(|c| {
-            if !c.is_seed && c.seed_paths.len() < 1 {
-                return None;
-            }
-
-            let cov_norm = if idf_sum > 0.0 { c.coverage_score / idf_sum } else { 0.0 };
-            let name_norm = if idf_sum > 0.0 { c.name_score / idf_sum } else { 0.0 };
-            let walk_norm = if idf_sum > 0.0 { c.walk_evidence / idf_sum } else { 0.0 };
-
-            let base = if c.is_seed {
-                let cov_cap = cov_norm.min(0.5);
-                let name_cap = name_norm.min(0.5);
-                bm25_w * c.bm25_score + cov_w * cov_cap + name_w * name_cap
-            } else {
-                1.5 * cov_norm + 2.0 * name_norm + walk_weight * walk_norm
-            };
-
-            let coverage_frac = if n_qt > 0 {
-                c.coverage_count as f64 / n_qt as f64
-            } else {
-                0.0
-            };
-
-            let ng_norm = c.ng_score / max_ng;
-            let coh_norm = c.coherence_score / max_coherence;
-            let ng_boost = 1.0 + ng_w * ng_norm + coh_w * coh_norm;
-
-            let holo_additive = if c.holo_name_sim > holo_gate {
-                let excess = (c.holo_name_sim - holo_gate) / (1.0 - holo_gate);
-                let w = holo_max_w * query_specificity * excess;
-                w
-            } else {
-                0.0
-            };
-
-            let seed_bonus = if c.is_seed { 1.15 } else { 1.0 };
-            let kb = kind_boost(&idx.symbol_kinds[c.idx]);
-            let tp = test_penalty(&idx.file_paths, idx.symbol_file_ids[c.idx]);
-
-            let structural_bonus = if c.structural_recall && c.name_score > 0.0 {
-                let deg_norm = idx.structural_degree[c.idx] / structural_max_deg;
-                2.0 + deg_norm * 3.0
-            } else {
-                0.0
-            };
-
-            let surprise_bonus = 1.0 + 0.08 * c.surprise_boost;
-
-            let raw = (base + holo_additive + structural_bonus) * coverage_frac.powf(0.3) * ng_boost * seed_bonus * kb * tp * surprise_bonus;
-
-            if raw > 0.0 {
-                Some((c.idx, raw))
-            } else {
-                None
-            }
-        })
+    let scoring_candidates: std::collections::HashMap<usize, crate::scoring::Candidate> = candidates
+        .into_iter()
+        .map(|(idx, c)| (idx, crate::scoring::Candidate {
+            idx: c.idx,
+            bm25_score: c.bm25_score,
+            coverage_score: c.coverage_score,
+            coverage_count: c.coverage_count,
+            name_score: c.name_score,
+            is_seed: c.is_seed,
+            walk_evidence: c.walk_evidence,
+            seed_paths: c.seed_paths,
+            ng_score: c.ng_score,
+            coherence_score: c.coherence_score,
+            holo_name_sim: c.holo_name_sim,
+            structural_recall: c.structural_recall,
+            surprise_boost: c.surprise_boost,
+        }))
         .collect();
 
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    let mut scored = crate::scoring::score_candidates(&scoring_candidates, &query_terms, intent, &score_config, idx);
 
-    let bm25_confident = bm25_seeds.len() >= 2
-        && bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10) > 1.2;
-    if bm25_confident {
-        if let Some(&lock_i) = bm25_seeds
-            .first()
-            .and_then(|(id, _)| idx.id_to_idx.get(id))
-        {
-            if let Some(pos) = scored.iter().position(|(i, _)| *i == lock_i) {
-                if pos > 0 {
-                    let (li, ls) = scored.remove(pos);
-                    scored.insert(0, (li, ls + 1e6));
-                }
-            }
-        }
-    }
+    crate::scoring::apply_bm25_lock(&mut scored, bm25_seeds, &query_terms, idx);
 
     let scored_for_mdl: Vec<(i64, f64)> = scored
         .iter()
@@ -3163,10 +3029,8 @@ pub fn geometric_search(
         None
     };
 
-    let use_mdl = mdl.as_ref().map_or(false, |m| m.covered_frac > 0.5);
-    let mdl_penalty = if use_mdl {
-        let m = mdl.as_ref().unwrap();
-        1.0 + 0.1 * m.marginal_gain
+    let mdl_penalty = if mdl.as_ref().map_or(false, |m| m.covered_frac > 0.5) {
+        1.0 + 0.1 * mdl.as_ref().unwrap().marginal_gain
     } else {
         1.0
     };

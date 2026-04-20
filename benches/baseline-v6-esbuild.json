@@ -1,0 +1,27 @@
+{
+  "codebase": "esbuild",
+  "date": "2026-04-20",
+  "phase": "v6-unified-pipeline",
+  "symbols": 12040,
+  "edges": 39422,
+  "queries": 20,
+  "overall": {
+    "ndcg_at_10": 0.447,
+    "ndcg_at_5": 0.432,
+    "ndcg_at_3": 0.432
+  },
+  "grep": {
+    "ndcg_at_10": 0.313,
+    "ndcg_at_5": 0.282,
+    "ndcg_at_3": 0.267
+  },
+  "by_category": {
+    "cross-cutting": { "graphiq": 0.000, "grep": 0.000 },
+    "error-debug": { "graphiq": 0.333, "grep": 0.105 },
+    "file-path": { "graphiq": 0.049, "grep": 0.101 },
+    "nl-abstract": { "graphiq": 0.413, "grep": 0.105 },
+    "nl-descriptive": { "graphiq": 0.284, "grep": 0.000 },
+    "symbol-exact": { "graphiq": 1.000, "grep": 1.000 },
+    "symbol-partial": { "graphiq": 0.901, "grep": 0.778 }
+  }
+}

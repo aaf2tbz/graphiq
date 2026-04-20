@@ -252,13 +252,11 @@ impl<'a> SearchEngine<'a> {
         let mode = self.route_mode(family);
 
         let mut result = match mode {
-            SearchMode::CARE => self.search_care(query, query_hash, &policy, family),
-            SearchMode::Deformed => self.search_deformed(query, query_hash, &policy, family),
-            SearchMode::Geometric => self.search_geometric(query, query_hash, &policy, family),
-            SearchMode::GooberV5 => {
-                self.search_goober_v5(query, self.cruncher_index.unwrap(), self.holo_index.unwrap(), query_hash, family)
+            SearchMode::Deformed | SearchMode::Geometric | SearchMode::GooberV5 => {
+                self.search_unified(query, query_hash, &policy, family)
             }
             SearchMode::Fts => self.search_fts_fallback(query, query_hash, family),
+            SearchMode::CARE => self.search_unified(query, query_hash, &policy, family),
         };
 
         if family == QueryFamily::SymbolExact {
@@ -268,64 +266,7 @@ impl<'a> SearchEngine<'a> {
         result
     }
 
-    fn fuse_care(
-        goov5_raw: &[(i64, f64)],
-        deformed_raw: &[(i64, f64)],
-        bm25_seeds: &[(i64, f64)],
-        family: QueryFamily,
-        top_k: usize,
-    ) -> Vec<(i64, f64)> {
-        let g_max = goov5_raw.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
-        let d_max = deformed_raw.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
-
-        let deformed_map: HashMap<i64, f64> = deformed_raw.iter().map(|(id, s)| (*id, *s)).collect();
-
-        let (w_lex, w_struct, conv_bonus) = match family {
-            QueryFamily::SymbolExact | QueryFamily::SymbolPartial => (0.85, 0.15, 0.05),
-            QueryFamily::NaturalAbstract | QueryFamily::CrossCuttingSet => (0.35, 0.65, 0.15),
-            QueryFamily::ErrorDebug => (0.45, 0.55, 0.12),
-            QueryFamily::NaturalDescriptive | QueryFamily::Relationship => (0.50, 0.50, 0.10),
-            _ => (0.55, 0.45, 0.10),
-        };
-
-        let mut scored: HashMap<i64, f64> = HashMap::new();
-
-        for &(id, g_score) in goov5_raw {
-            let g_norm = g_score / g_max;
-            if let Some(&d_score) = deformed_map.get(&id) {
-                let d_norm = d_score / d_max;
-                scored.insert(id, w_lex * g_norm + w_struct * d_norm + conv_bonus);
-            } else {
-                scored.insert(id, w_lex * g_norm);
-            }
-        }
-
-        for (rank, &(id, d_score)) in deformed_raw.iter().enumerate() {
-            if !scored.contains_key(&id) {
-                let d_norm = d_score / d_max;
-                let rank_bonus = if rank == 0 { 0.20 } else if rank < 3 { 0.10 } else { 0.0 };
-                scored.insert(id, w_struct * d_norm + rank_bonus);
-            }
-        }
-
-        let mut fused: Vec<(i64, f64)> = scored.into_iter().collect();
-        fused.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        if bm25_seeds.len() >= 2 && bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10) > 1.5 {
-            let anchor_id = bm25_seeds[0].0;
-            if let Some(pos) = fused.iter().position(|(id, _)| *id == anchor_id) {
-                if pos > 0 && pos < 5 {
-                    let entry = fused.remove(pos);
-                    fused.insert(0, entry);
-                }
-            }
-        }
-
-        fused.truncate(top_k);
-        fused
-    }
-
-    fn search_care(
+    fn search_unified(
         &self,
         query: &SearchQuery,
         query_hash: u64,
@@ -334,50 +275,37 @@ impl<'a> SearchEngine<'a> {
     ) -> SearchResult {
         let ci = self.cruncher_index.unwrap();
         let hi = self.holo_index.unwrap();
-        let spec = self.spectral_index.unwrap();
-        let pm = match (policy.allow_predictive, self.predictive_model) {
-            (true, Some(m)) => Some(m),
-            _ => None,
-        };
-        let fps = match (policy.allow_fingerprints, self.fingerprints) {
-            (true, Some(f)) => Some(f),
-            _ => None,
-        };
-        let fp_map = match (policy.allow_fingerprints, self.fp_id_to_idx) {
-            (true, Some(m)) => Some(m),
-            _ => None,
-        };
 
-        let fts = self.make_fts(family);
-        let fts_results = fts.search(&query.query, Some(200));
-        let total_fts = fts_results.len();
-
-        let bm25_seeds: Vec<(i64, f64)> = fts_results
-            .iter()
-            .map(|r| (r.symbol.id, r.bm25_score))
-            .collect();
-
-        let mut seeds = bm25_seeds.clone();
-        if let Some(model) = self.self_model {
-            let expanded = model.expand_query(&query.query);
-            let existing: HashSet<i64> = seeds.iter().map(|(id, _)| *id).collect();
-            for (sid, score) in expanded {
-                if !existing.contains(&sid) {
-                    seeds.push((sid, score * 5.0));
-                }
-            }
-        }
-
-        let goov5 = cruncher::goober_v5_search(&query.query, ci, hi, &seeds, query.top_k);
-
-        let deformed = cruncher::geometric_search(
-            &query.query, ci, hi, &seeds, spec, query.top_k,
-            policy.bm25_lock_strength, policy.spectral_expansion_seeds,
-            policy.spectral_heat_scale, 50, false,
-            pm, fps, fp_map, policy.evidence_weight,
+        let seed_config = crate::seeds::SeedConfig::for_family(family);
+        let (seeds, total_fts, bm25_original) = crate::seeds::generate_seeds(
+            self.db, &query.query, &seed_config, self.self_model,
         );
 
-        let raw_results = Self::fuse_care(&goov5, &deformed, &bm25_seeds, family, query.top_k);
+        let has_spectral = self.spectral_index.is_some()
+            && self.predictive_model.is_some()
+            && self.fingerprints.is_some();
+
+        let pipeline_config = crate::pipeline::PipelineConfig {
+            top_k: query.top_k,
+            use_heat_diffusion: self.spectral_index.is_some(),
+            heat_t: policy.spectral_heat_scale,
+            cheb_order: policy.spectral_expansion_seeds,
+            walk_weight: policy.evidence_weight,
+            heat_top_k: 50,
+            predictive: if policy.allow_predictive { self.predictive_model } else { None },
+            fingerprints: if policy.allow_fingerprints { self.fingerprints } else { None },
+            fp_id_to_idx: if policy.allow_fingerprints { self.fp_id_to_idx } else { None },
+            evidence_weight: policy.evidence_weight,
+        };
+
+        let raw_results = crate::pipeline::unified_search(
+            &query.query,
+            ci,
+            hi,
+            &seeds,
+            self.spectral_index,
+            &pipeline_config,
+        );
 
         let file_paths = self.load_file_paths();
         let mut results: Vec<ScoredSymbol> = raw_results
@@ -410,559 +338,19 @@ impl<'a> SearchEngine<'a> {
 
         self.cache.put_results(query_hash, results.clone());
 
-        SearchResult {
-            results,
-            blast_radius: blast_result,
-            total_fts_candidates: total_fts,
-            total_expanded: 0,
-            from_cache: false,
-            search_mode: SearchMode::CARE,
-            query_family: family,
-            traces: HashMap::new(),
-        }
-    }
-
-    fn search_deformed(
-        &self,
-        query: &SearchQuery,
-        query_hash: u64,
-        policy: &RetrievalPolicy,
-        family: QueryFamily,
-    ) -> SearchResult {
-        let ci = self.cruncher_index.unwrap();
-        let hi = self.holo_index.unwrap();
-        let spec = self.spectral_index.unwrap();
-        let pm = match (policy.allow_predictive, self.predictive_model) {
-            (true, Some(m)) => Some(m),
-            _ => None,
-        };
-        let fps = match (policy.allow_fingerprints, self.fingerprints) {
-            (true, Some(f)) => Some(f),
-            _ => None,
-        };
-        let fp_map = match (policy.allow_fingerprints, self.fp_id_to_idx) {
-            (true, Some(m)) => Some(m),
-            _ => None,
+        let mode = if has_spectral {
+            SearchMode::Deformed
+        } else {
+            SearchMode::GooberV5
         };
 
-        let fts = self.make_fts(family);
-        let fts_results = fts.search(&query.query, Some(200));
-        let total_fts = fts_results.len();
-
-        let bm25_seeds: Vec<(i64, f64)> = fts_results
-            .iter()
-            .map(|r| (r.symbol.id, r.bm25_score))
-            .collect();
-
-        let bm25_original = bm25_seeds.clone();
-        let mut seeds = bm25_seeds;
-
-        if matches!(family, QueryFamily::NaturalAbstract | QueryFamily::NaturalDescriptive | QueryFamily::ErrorDebug | QueryFamily::CrossCuttingSet) {
-            let term_seeds = self.per_term_seed_expansion(&query.query, &seeds);
-            for (id, score) in term_seeds {
-                if !seeds.iter().any(|(sid, _)| *sid == id) {
-                    seeds.push((id, score));
-                }
-            }
-            let bridge_seeds = self.numeric_bridge_seeds(&query.query, &seeds);
-            for (id, score) in bridge_seeds {
-                if !seeds.iter().any(|(sid, _)| *sid == id) {
-                    seeds.push((id, score));
-                }
-            }
-            let graph_seeds = self.graph_aware_seed_expansion(family, &seeds);
-            for (id, score) in graph_seeds {
-                if !seeds.iter().any(|(sid, _)| *sid == id) {
-                    seeds.push((id, score));
-                }
-            }
-        }
-
-        if matches!(family, QueryFamily::NaturalAbstract) {
-            if let Some(model) = self.self_model {
-                let expanded = model.expand_query(&query.query);
-                let existing: HashSet<i64> = seeds.iter().map(|(id, _)| *id).collect();
-                for (sid, score) in expanded {
-                    if !existing.contains(&sid) {
-                        seeds.push((sid, score * 5.0));
-                    }
-                }
-            }
-        }
-
-        let goober_results = cruncher::geometric_search(
-            &query.query,
-            ci,
-            hi,
-            &seeds,
-            spec,
-            query.top_k,
-            policy.bm25_lock_strength,
-            policy.spectral_expansion_seeds,
-            policy.spectral_heat_scale,
-            50,
-            false,
-            pm,
-            fps,
-            fp_map,
-            policy.evidence_weight,
-        );
-
-        let mut traces: HashMap<i64, RetrievalTrace> = HashMap::new();
-
-        if query.collect_trace {
-            let bm25_max = seeds.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
-            for &(id, score) in seeds.iter().take(20) {
-                let existing = traces.entry(id).or_insert_with(|| RetrievalTrace {
-                    query_family: family,
-                    search_mode: SearchMode::Deformed,
-                    seeds: Vec::new(),
-                    expansions: Vec::new(),
-                    evidence_edges: Vec::new(),
-                    score: TraceScoreBreakdown {
-                        bm25_raw: 0.0,
-                        coverage_score: 0.0,
-                        name_score: 0.0,
-                        walk_evidence: 0.0,
-                        holo_name_sim: 0.0,
-                        negentropy: 0.0,
-                        coherence: 0.0,
-                        surprise_boost: 0.0,
-                        structural_bonus: 0.0,
-                        is_seed: false,
-                        bm25_locked: false,
-                        final_score: 0.0,
-                    },
-                    confidence: ConfidenceReport {
-                        seed_strength: 0.0,
-                        evidence_channels: 0,
-                        coverage_fraction: 0.0,
-                        has_name_match: false,
-                        has_structural_path: false,
-                    },
-                });
-                existing.seeds.push(SeedHit {
-                    symbol_id: id,
-                    origin: SeedOrigin::Bm25,
-                    raw_score: score / bm25_max,
-                });
-                existing.score.bm25_raw = score / bm25_max;
-                existing.score.is_seed = true;
-            }
-
-            let query_lower = query.query.to_lowercase();
-            let query_terms: Vec<&str> = query_lower.split_whitespace().filter(|w| w.len() >= 2).collect();
-            let outgoing_cache: HashMap<i64, Vec<crate::edge::Edge>> = HashMap::new();
-            let incoming_cache: HashMap<i64, Vec<crate::edge::Edge>> = HashMap::new();
-
-            for &(id, final_score) in &goober_results {
-                let trace = traces.entry(id).or_insert_with(|| RetrievalTrace {
-                    query_family: family,
-                    search_mode: SearchMode::Deformed,
-                    seeds: Vec::new(),
-                    expansions: Vec::new(),
-                    evidence_edges: Vec::new(),
-                    score: TraceScoreBreakdown {
-                        bm25_raw: 0.0,
-                        coverage_score: 0.0,
-                        name_score: 0.0,
-                        walk_evidence: 0.0,
-                        holo_name_sim: 0.0,
-                        negentropy: 0.0,
-                        coherence: 0.0,
-                        surprise_boost: 0.0,
-                        structural_bonus: 0.0,
-                        is_seed: false,
-                        bm25_locked: false,
-                        final_score: 0.0,
-                    },
-                    confidence: ConfidenceReport {
-                        seed_strength: 0.0,
-                        evidence_channels: 0,
-                        coverage_fraction: 0.0,
-                        has_name_match: false,
-                        has_structural_path: false,
-                    },
-                });
-                trace.score.final_score = final_score;
-
-                if let Ok(Some(sym)) = self.db.get_symbol(id) {
-                    let sym_name_lower = sym.name.to_lowercase();
-                    trace.confidence.has_name_match = query_terms.iter().any(|t| sym_name_lower.contains(t));
-                }
-
-                let out_edges = self.db.edges_from(id).unwrap_or_default();
-                let in_edges = self.db.edges_to(id).unwrap_or_default();
-                let mut ev_count = 0usize;
-                for edge in out_edges.iter().chain(in_edges.iter()) {
-                    let ev_kind = edge.metadata.get("evidence")
-                        .and_then(|e| e.get("kind"))
-                        .and_then(|k| k.as_str())
-                        .unwrap_or("unknown");
-                    if ev_kind != "incidental" {
-                        ev_count += 1;
-                        let other_id = if edge.source_id == id { edge.target_id } else { edge.source_id };
-                        trace.evidence_edges.push(TraceEdge {
-                            from_symbol_id: edge.source_id,
-                            to_symbol_id: edge.target_id,
-                            edge_kind: edge.kind.as_str().to_string(),
-                            evidence_kind: ev_kind.to_string(),
-                            weight: 1.0,
-                        });
-                        if !trace.seeds.iter().any(|s| s.symbol_id == other_id) {
-                            trace.expansions.push(crate::trace::ExpansionStep {
-                                from_symbol_id: id,
-                                to_symbol_id: other_id,
-                                edge_kind: edge.kind.as_str().to_string(),
-                                evidence_kind: Some(ev_kind.to_string()),
-                                heat_contribution: 0.0,
-                            });
-                        }
-                    }
-                }
-                trace.confidence.evidence_channels = ev_count.min(5);
-                if !trace.expansions.is_empty() {
-                    trace.confidence.has_structural_path = true;
-                }
-            }
-
-            if !bm25_original.is_empty() && bm25_original.len() >= 2 {
-                let ratio = bm25_original[0].1 / bm25_original[1].1.max(1e-10);
-                if ratio > 1.2 {
-                    if let Some(trace) = traces.get_mut(&bm25_original[0].0) {
-                        trace.score.bm25_locked = true;
-                    }
-                }
-            }
-        }
-
-        let file_paths = self.load_file_paths();
-        let mut results: Vec<ScoredSymbol> = goober_results
-            .into_iter()
-            .filter_map(|(id, score)| {
-                let sym = self.db.get_symbol(id).ok()??;
-                let fp = file_paths.get(&sym.file_id).cloned();
-                if let Some(ref filter) = query.file_filter {
-                    if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
-                        return None;
-                    }
-                }
-                Some(ScoredSymbol {
-                    symbol: sym,
-                    score,
-                    breakdown: None,
-                    is_fts_hit: false,
-                    file_path: fp,
-                })
-            })
-            .collect();
-
-        Self::apply_diversity_boost(&mut results, policy.diversity_boost);
-
-        for r in &results {
-            self.cache.put_source(r.symbol.id, r.symbol.source.clone());
-        }
-
-        let blast_result = self.compute_blast(&results, query);
-
-        self.cache.put_results(query_hash, results.clone());
-
         SearchResult {
             results,
             blast_radius: blast_result,
             total_fts_candidates: total_fts,
             total_expanded: 0,
             from_cache: false,
-            search_mode: SearchMode::Deformed,
-            query_family: family,
-            traces,
-        }
-    }
-
-    fn search_geometric(
-        &self,
-        query: &SearchQuery,
-        query_hash: u64,
-        policy: &RetrievalPolicy,
-        family: QueryFamily,
-    ) -> SearchResult {
-        let ci = self.cruncher_index.unwrap();
-        let hi = self.holo_index.unwrap();
-        let spec = self.spectral_index.unwrap();
-
-        let fts = self.make_fts(family);
-        let fts_results = fts.search(&query.query, Some(200));
-        let total_fts = fts_results.len();
-
-        let bm25_seeds: Vec<(i64, f64)> = fts_results
-            .iter()
-            .map(|r| (r.symbol.id, r.bm25_score))
-            .collect();
-
-        let mut seeds = bm25_seeds;
-
-        if matches!(family, QueryFamily::NaturalAbstract | QueryFamily::NaturalDescriptive | QueryFamily::ErrorDebug | QueryFamily::CrossCuttingSet) {
-            let term_seeds = self.per_term_seed_expansion(&query.query, &seeds);
-            for (id, score) in term_seeds {
-                if !seeds.iter().any(|(sid, _)| *sid == id) {
-                    seeds.push((id, score));
-                }
-            }
-            let bridge_seeds = self.numeric_bridge_seeds(&query.query, &seeds);
-            for (id, score) in bridge_seeds {
-                if !seeds.iter().any(|(sid, _)| *sid == id) {
-                    seeds.push((id, score));
-                }
-            }
-            let graph_seeds = self.graph_aware_seed_expansion(family, &seeds);
-            for (id, score) in graph_seeds {
-                if !seeds.iter().any(|(sid, _)| *sid == id) {
-                    seeds.push((id, score));
-                }
-            }
-        }
-
-        if matches!(family, QueryFamily::NaturalAbstract) {
-            if let Some(model) = self.self_model {
-                let expanded = model.expand_query(&query.query);
-                let existing: HashSet<i64> = seeds.iter().map(|(id, _)| *id).collect();
-                for (sid, score) in expanded {
-                    if !existing.contains(&sid) {
-                        seeds.push((sid, score * 5.0));
-                    }
-                }
-            }
-        }
-
-        let goober_results = cruncher::geometric_search(
-            &query.query,
-            ci,
-            hi,
-            &seeds,
-            spec,
-            query.top_k,
-            policy.bm25_lock_strength,
-            policy.spectral_expansion_seeds,
-            policy.spectral_heat_scale,
-            50,
-            false,
-            None,
-            None,
-            None,
-            policy.evidence_weight,
-        );
-
-        let mut traces: HashMap<i64, RetrievalTrace> = HashMap::new();
-        if query.collect_trace {
-            let bm25_max = seeds.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
-            for &(id, score) in seeds.iter().take(20) {
-                let t = traces.entry(id).or_insert_with(|| RetrievalTrace {
-                    query_family: family,
-                    search_mode: SearchMode::Geometric,
-                    seeds: Vec::new(),
-                    expansions: Vec::new(),
-                    evidence_edges: Vec::new(),
-                    score: TraceScoreBreakdown {
-                        bm25_raw: score / bm25_max,
-                        coverage_score: 0.0,
-                        name_score: 0.0,
-                        walk_evidence: 0.0,
-                        holo_name_sim: 0.0,
-                        negentropy: 0.0,
-                        coherence: 0.0,
-                        surprise_boost: 0.0,
-                        structural_bonus: 0.0,
-                        is_seed: true,
-                        bm25_locked: false,
-                        final_score: 0.0,
-                    },
-                    confidence: ConfidenceReport {
-                        seed_strength: score / bm25_max,
-                        evidence_channels: 0,
-                        coverage_fraction: 0.0,
-                        has_name_match: false,
-                        has_structural_path: false,
-                    },
-                });
-                t.seeds.push(SeedHit { symbol_id: id, origin: SeedOrigin::Bm25, raw_score: score / bm25_max });
-            }
-            for &(id, final_score) in &goober_results {
-                let t = traces.entry(id).or_insert_with(|| RetrievalTrace {
-                    query_family: family,
-                    search_mode: SearchMode::Geometric,
-                    seeds: Vec::new(),
-                    expansions: Vec::new(),
-                    evidence_edges: Vec::new(),
-                    score: TraceScoreBreakdown {
-                        bm25_raw: 0.0, coverage_score: 0.0, name_score: 0.0,
-                        walk_evidence: 0.0, holo_name_sim: 0.0, negentropy: 0.0,
-                        coherence: 0.0, surprise_boost: 0.0, structural_bonus: 0.0,
-                        is_seed: false, bm25_locked: false, final_score: 0.0,
-                    },
-                    confidence: ConfidenceReport {
-                        seed_strength: 0.0, evidence_channels: 0, coverage_fraction: 0.0,
-                        has_name_match: false, has_structural_path: false,
-                    },
-                });
-                t.score.final_score = final_score;
-            }
-        }
-
-        let file_paths = self.load_file_paths();
-        let mut results: Vec<ScoredSymbol> = goober_results
-            .into_iter()
-            .filter_map(|(id, score)| {
-                let sym = self.db.get_symbol(id).ok()??;
-                let fp = file_paths.get(&sym.file_id).cloned();
-                if let Some(ref filter) = query.file_filter {
-                    if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
-                        return None;
-                    }
-                }
-                Some(ScoredSymbol {
-                    symbol: sym,
-                    score,
-                    breakdown: None,
-                    is_fts_hit: false,
-                    file_path: fp,
-                })
-            })
-            .collect();
-
-        Self::apply_diversity_boost(&mut results, policy.diversity_boost);
-
-        for r in &results {
-            self.cache.put_source(r.symbol.id, r.symbol.source.clone());
-        }
-
-        let blast_result = self.compute_blast(&results, query);
-
-        self.cache.put_results(query_hash, results.clone());
-
-        SearchResult {
-            results,
-            blast_radius: blast_result,
-            total_fts_candidates: total_fts,
-            total_expanded: 0,
-            from_cache: false,
-            search_mode: SearchMode::Geometric,
-            query_family: family,
-            traces,
-        }
-    }
-
-    fn search_file_path(
-        &self,
-        query: &SearchQuery,
-        query_hash: u64,
-        family: QueryFamily,
-    ) -> SearchResult {
-        let file_paths = self.load_file_paths();
-        let result = file_router::file_route_query(self.db, &query.query, query.top_k);
-
-        let results: Vec<ScoredSymbol> = result.ranked_symbols
-            .into_iter()
-            .filter_map(|(sym, score)| {
-                let fp = file_paths.get(&sym.file_id).cloned();
-                if let Some(ref filter) = query.file_filter {
-                    if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
-                        return None;
-                    }
-                }
-                Some(ScoredSymbol {
-                    symbol: sym,
-                    score,
-                    breakdown: None,
-                    is_fts_hit: false,
-                    file_path: fp,
-                })
-            })
-            .collect();
-
-        for r in &results {
-            self.cache.put_source(r.symbol.id, r.symbol.source.clone());
-        }
-
-        let blast_result = self.compute_blast(&results, query);
-        self.cache.put_results(query_hash, results.clone());
-
-        SearchResult {
-            results,
-            blast_radius: blast_result,
-            total_fts_candidates: result.file_matches.len(),
-            total_expanded: 0,
-            from_cache: false,
-            search_mode: SearchMode::Fts,
-            query_family: family,
-            traces: HashMap::new(),
-        }
-    }
-
-    fn search_goober_v5(
-        &self,
-        query: &SearchQuery,
-        ci: &CruncherIndex,
-        hi: &HoloIndex,
-        query_hash: u64,
-        family: QueryFamily,
-    ) -> SearchResult {
-        let fts = self.make_fts(family);
-        let fts_results = fts.search(&query.query, Some(200));
-        let total_fts = fts_results.len();
-
-        let bm25_seeds: Vec<(i64, f64)> = fts_results
-            .iter()
-            .map(|r| (r.symbol.id, r.bm25_score))
-            .collect();
-
-        let goober_results = cruncher::goober_v5_search(
-            &query.query,
-            ci,
-            hi,
-            &bm25_seeds,
-            query.top_k,
-        );
-
-        let file_paths = self.load_file_paths();
-
-        let mut results: Vec<ScoredSymbol> = goober_results
-            .into_iter()
-            .filter_map(|(id, score)| {
-                let sym = self.db.get_symbol(id).ok()??;
-                let fp = file_paths.get(&sym.file_id).cloned();
-                if let Some(ref filter) = query.file_filter {
-                    if fp.as_deref().map_or(true, |p| !p.contains(filter)) {
-                        return None;
-                    }
-                }
-                Some(ScoredSymbol {
-                    symbol: sym,
-                    score,
-                    breakdown: None,
-                    is_fts_hit: false,
-                    file_path: fp,
-                })
-            })
-            .collect();
-
-        let policy = RetrievalPolicy::for_family(family);
-        Self::apply_diversity_boost(&mut results, policy.diversity_boost);
-
-        for r in &results {
-            self.cache.put_source(r.symbol.id, r.symbol.source.clone());
-        }
-
-        let blast_result = self.compute_blast(&results, query);
-
-        self.cache.put_results(query_hash, results.clone());
-
-        SearchResult {
-            results,
-            blast_radius: blast_result,
-            total_fts_candidates: total_fts,
-            total_expanded: 0,
-            from_cache: false,
-            search_mode: SearchMode::GooberV5,
+            search_mode: mode,
             query_family: family,
             traces: HashMap::new(),
         }
@@ -1181,7 +569,7 @@ impl<'a> SearchEngine<'a> {
         results
     }
 
-    fn per_term_seed_expansion(&self, query: &str, existing_seeds: &[(i64, f64)]) -> Vec<(i64, f64)> {
+    fn per_term_seed_expansion(&self, query: &str, existing_seeds: &[(i64, f64)], family: QueryFamily) -> Vec<(i64, f64)> {
         let terms: Vec<String> = query
             .split_whitespace()
             .map(|t| t.to_lowercase())
@@ -1203,17 +591,31 @@ impl<'a> SearchEngine<'a> {
         let existing_ids: HashSet<i64> = existing_seeds.iter().map(|(id, _)| *id).collect();
         let mut candidates: HashMap<i64, f64> = HashMap::new();
 
-        let conn = self.db.conn();
+        let fts = self.make_fts(family);
+
         for term in &terms {
-            let pattern = format!("%{}%", term);
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT id FROM symbols WHERE LOWER(name_decomposed) LIKE ?1 LIMIT 50"
-            ) {
-                if let Ok(rows) = stmt.query_map([&pattern], |row| row.get::<_, i64>(0)) {
-                    for id in rows.filter_map(|r| r.ok()) {
-                        if !existing_ids.contains(&id) {
-                            *candidates.entry(id).or_insert(0.0) += 1.0;
-                        }
+            let mut search_variants: Vec<String> = vec![term.clone()];
+
+            let stemmed = crate::tokenize::stem_word(term);
+            if stemmed != *term {
+                search_variants.push(stemmed);
+            }
+
+            if let Some(syns) = crate::fts::get_synonyms(term) {
+                for syn in syns.iter().take(3) {
+                    search_variants.push(syn.to_string());
+                }
+            }
+
+            search_variants.sort_unstable();
+            search_variants.dedup();
+
+            for variant in &search_variants {
+                let fts_results = fts.search(variant, Some(50));
+                for r in &fts_results {
+                    if !existing_ids.contains(&r.symbol.id) {
+                        let score = r.bm25_score.max(0.1);
+                        *candidates.entry(r.symbol.id).or_insert(0.0) += score;
                     }
                 }
             }
@@ -1222,10 +624,11 @@ impl<'a> SearchEngine<'a> {
         let n_terms = terms.len() as f64;
         candidates
             .into_iter()
-            .map(|(id, hits)| {
-                let coverage = hits / n_terms;
-                (id, 2.0 * coverage)
+            .map(|(id, total_score)| {
+                let coverage = total_score / n_terms;
+                (id, coverage)
             })
+            .filter(|(_, score)| *score > 0.0)
             .collect()
     }
 

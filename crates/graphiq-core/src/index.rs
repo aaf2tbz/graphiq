@@ -310,6 +310,7 @@ impl<'a> Indexer<'a> {
         self.generate_search_hints()?;
         self.compute_numeric_bridges()?;
         self.compute_deep_graph()?;
+        self.build_neighbor_hints()?;
 
         Ok(stats)
     }
@@ -681,6 +682,191 @@ impl<'a> Indexer<'a> {
             let _ = self.db.update_search_hints(*id, &hint_text);
         }
 
+        Ok(())
+    }
+
+    fn build_neighbor_hints(&self) -> Result<(), Box<dyn std::error::Error>> {
+        let conn = self.db.conn();
+
+        let total_symbols: i64 = conn.query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))?;
+
+        let mut symbols: Vec<(i64, String, String, Option<String>)> = Vec::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT s.id, s.name, s.name_decomposed, s.search_hints FROM symbols s"
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?;
+            for row in rows {
+                symbols.push(row?);
+            }
+        }
+
+        let mut name_to_decomposed: HashMap<String, String> = HashMap::new();
+        for (_, name, decomposed, _) in &symbols {
+            name_to_decomposed.insert(name.clone(), decomposed.clone());
+        }
+
+        let mut name_to_id: HashMap<String, i64> = HashMap::new();
+        for (id, name, _, _) in &symbols {
+            name_to_id.insert(name.clone(), *id);
+        }
+
+        let mut out_by_id: HashMap<i64, Vec<(String, String)>> = HashMap::new();
+        for (source_id, kind, target_name) in self.db.outgoing_edges_grouped()? {
+            out_by_id.entry(source_id).or_default().push((kind, target_name));
+        }
+
+        let mut in_by_id: HashMap<i64, Vec<(String, String)>> = HashMap::new();
+        for (target_id, kind, source_name) in self.db.incoming_edges_grouped()? {
+            in_by_id.entry(target_id).or_default().push((kind, source_name));
+        }
+
+        let mut file_groups: HashMap<i64, Vec<(i64, String, String)>> = HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT s.id, s.name, s.name_decomposed, s.file_id FROM symbols s"
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
+            })?;
+            for row in rows {
+                let (id, name, decomp, file_id) = row?;
+                file_groups.entry(file_id).or_default().push((id, name, decomp));
+            }
+        }
+
+        let mut symbol_file_ids: HashMap<i64, i64> = HashMap::new();
+        {
+            let mut stmt = conn.prepare("SELECT id, file_id FROM symbols")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?;
+            for row in rows {
+                let (id, fid) = row?;
+                symbol_file_ids.insert(id, fid);
+            }
+        }
+
+        const GENERIC: &[&str] = &[
+            "get", "set", "push", "pop", "remove", "add", "delete", "update", "create",
+            "new", "init", "start", "stop", "run", "execute", "process", "handle",
+            "parse", "format", "to_string", "from", "into", "default", "clone", "eq",
+            "drop", "send", "sync", "copy", "main", "test", "iter", "next", "len",
+            "is_empty", "as_ref", "as_mut", "deref", "index", "call", "read", "write",
+            "open", "close", "check", "make", "build", "apply", "return", "result",
+            "value", "data", "self", "some", "none", "true", "false", "ok", "err",
+            "poll", "task", "spawn", "block", "async", "await", "future",
+        ];
+
+        let mut global_term_doc_freq: HashMap<String, usize> = HashMap::new();
+        for (_, _, decomposed, _) in &symbols {
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            for word in decomposed.split_whitespace() {
+                let wl = word.to_lowercase();
+                if wl.len() >= 3 && !GENERIC.contains(&wl.as_str()) {
+                    if seen.insert(wl.clone()) {
+                        *global_term_doc_freq.entry(wl).or_insert(0) += 1;
+                    }
+                }
+            }
+        }
+
+        let df_threshold = (total_symbols as f64 * 0.25) as usize;
+
+        let mut total_updated = 0usize;
+
+        for (id, name, name_decomposed, existing_hints) in &symbols {
+            let mut neighbor_terms: HashMap<String, usize> = HashMap::new();
+            let own_terms: std::collections::HashSet<String> = name_decomposed
+                .split_whitespace()
+                .map(|w| w.to_lowercase())
+                .collect();
+
+            if let Some(outgoing) = out_by_id.get(id) {
+                for (kind, target_name) in outgoing {
+                    if kind != "calls" && kind != "references" && kind != "tests" {
+                        continue;
+                    }
+                    if let Some(decomp) = name_to_decomposed.get(target_name) {
+                        for word in decomp.split_whitespace() {
+                            let wl = word.to_lowercase();
+                            if wl.len() >= 3 && !own_terms.contains(&wl) && !GENERIC.contains(&wl.as_str()) {
+                                *neighbor_terms.entry(wl).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(incoming) = in_by_id.get(id) {
+                for (kind, source_name) in incoming {
+                    if kind != "calls" && kind != "references" && kind != "tests" {
+                        continue;
+                    }
+                    if let Some(decomp) = name_to_decomposed.get(source_name) {
+                        for word in decomp.split_whitespace() {
+                            let wl = word.to_lowercase();
+                            if wl.len() >= 3 && !own_terms.contains(&wl) && !GENERIC.contains(&wl.as_str()) {
+                                *neighbor_terms.entry(wl).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let Some(&fid) = symbol_file_ids.get(id) {
+                if let Some(siblings) = file_groups.get(&fid) {
+                    for (sib_id, sib_name, sib_decomp) in siblings {
+                        if *sib_id == *id {
+                            continue;
+                        }
+                        if let Some(decomp) = name_to_decomposed.get(sib_name) {
+                            for word in decomp.split_whitespace() {
+                                let wl = word.to_lowercase();
+                                if wl.len() >= 3 && !own_terms.contains(&wl) && !GENERIC.contains(&wl.as_str()) {
+                                    *neighbor_terms.entry(wl).or_insert(0) += 1;
+                                }
+                            }
+                        }
+                        for word in sib_decomp.split_whitespace() {
+                            let wl = word.to_lowercase();
+                            if wl.len() >= 3 && !own_terms.contains(&wl) && !GENERIC.contains(&wl.as_str()) {
+                                *neighbor_terms.entry(wl).or_insert(0) += 1;
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut distinctive: Vec<(String, usize)> = neighbor_terms
+                .into_iter()
+                .filter(|(term, count)| {
+                    *count >= 2 && !own_terms.contains(term.as_str())
+                        && global_term_doc_freq.get(term).copied().unwrap_or(0) < df_threshold
+                })
+                .collect();
+
+            distinctive.sort_by(|a, b| b.1.cmp(&a.1));
+            distinctive.truncate(20);
+
+            if distinctive.is_empty() {
+                continue;
+            }
+
+            let neighbor_hint = format!("neighbor {}", distinctive.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>().join(" "));
+
+            let updated_hints = match existing_hints {
+                Some(h) if !h.is_empty() => format!("{}. {}", h, neighbor_hint),
+                _ => neighbor_hint,
+            };
+
+            self.db.update_search_hints(*id, &updated_hints)?;
+            total_updated += 1;
+        }
+
+        eprintln!("  neighbor hints: {} symbols enriched", total_updated);
         Ok(())
     }
 

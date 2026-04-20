@@ -12,6 +12,7 @@ use graphiq_core::query_family::classify_query_family;
 #[derive(Debug, Clone, serde::Deserialize)]
 struct BenchQuery {
     query: String,
+    #[serde(default)]
     category: String,
     #[serde(default)]
     expected_symbol: Option<String>,
@@ -310,8 +311,9 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
     println!("  MRR@10  ({} queries)", n);
     println!("{}", "=".repeat(84));
 
-    println!("\n{:<10} {:>8} {:>7} {:>7} {:>7} {:>9} {:>9}", "Method", "MRR", "P@10", "R@10", "H@10", "Acc@1", "Acc@10");
-    println!("{}", "-".repeat(70));
+    println!("\n{:<10} {:>8} {:>7} {:>7} {:>6} {:>6} {:>6} {:>7} {:>7} {:>7}", 
+        "Method", "MRR", "P@10", "R@10", "H@1", "H@3", "H@5", "Acc@1", "Acc@3", "Acc@10");
+    println!("{}", "-".repeat(82));
     for mi in 0..n_methods {
         let mrr: f64 = all[mi].iter().map(|r| r.rr).sum::<f64>() / n as f64;
         let p10: f64 = all[mi].iter().map(|r| r.hits_in_10 as f64 / 10.0).sum::<f64>() / n as f64;
@@ -319,11 +321,15 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
             .filter(|r| r.relevant_total > 0)
             .map(|r| (r.hits_in_10 as f64 / r.relevant_total as f64).min(1.0))
             .sum::<f64>() / n as f64;
+        let h1 = all[mi].iter().filter(|r| r.found_rank.map_or(false, |r| r < 1)).count();
+        let h3 = all[mi].iter().filter(|r| r.found_rank.map_or(false, |r| r < 3)).count();
+        let h5 = all[mi].iter().filter(|r| r.found_rank.map_or(false, |r| r < 5)).count();
         let h10 = all[mi].iter().filter(|r| r.found_rank.is_some()).count();
-        let acc1 = all[mi].iter().filter(|r| r.found_rank == Some(0)).count();
+        let acc1 = h1;
+        let acc3 = h3;
         let acc10 = h10;
-        println!("{:<10} {:>8.3} {:>7.3} {:>7.3} {:>5}/{}  {:>5}/{}  {:>5}/{}",
-            METHODS[mi], mrr, p10, r10, h10, n, acc1, n, acc10, n);
+        println!("{:<10} {:>8.3} {:>7.3} {:>7.3} {:>5}/{:<2} {:>5}/{:<2} {:>5}/{:<2} {:>5}/{:<2} {:>5}/{:<2} {:>5}/{}",
+            METHODS[mi], mrr, p10, r10, h1, n, h3, n, h5, n, acc1, n, acc3, n, acc10, n);
     }
 
     println!("\n--- By Category (MRR) ---\n");
@@ -740,12 +746,13 @@ fn main() {
 
     if let Some(file) = ndcg_file {
         let content = std::fs::read_to_string(file).unwrap_or_else(|e| {
-            eprintln!("error reading NDCG query file: {e}"); std::process::exit(1);
+            eprintln!("error reading query file: {e}"); std::process::exit(1);
         });
         let queries: Vec<BenchQuery> = serde_json::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("error parsing NDCG query file: {e}"); std::process::exit(1);
+            eprintln!("error parsing query file: {e}"); std::process::exit(1);
         });
         run_ndcg(&fe, &queries);
+        run_mrr(&fe, &queries);
         cmd_diagnose(&fe, &queries);
     }
 
@@ -756,6 +763,7 @@ fn main() {
         let queries: Vec<BenchQuery> = serde_json::from_str(&content).unwrap_or_else(|e| {
             eprintln!("error parsing MRR query file: {e}"); std::process::exit(1);
         });
+        run_ndcg(&fe, &queries);
         run_mrr(&fe, &queries);
         cmd_diagnose(&fe, &queries);
     }

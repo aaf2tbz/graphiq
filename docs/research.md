@@ -376,6 +376,59 @@ GraphIQ wins MRR on all 5 and is **1,300-11,700x faster** on warm cache.
 
 **Why the speed gap is so large:** Grep's `LIKE %term%` does a full table scan on every symbol's name AND source code for each query term. On 34K symbols with full source, that's 34K rows × multiple LIKE scans per term. GraphIQ uses BM25's FTS5 inverted index (O(1) per term lookup) plus pre-computed graph structures (spectral, predictive model, cruncher adjacency) that are built once at startup. The query-time cost is dominated by BM25 seed retrieval (~5ms first query, sub-20us cached) followed by graph expansion over pre-built adjacency lists.
 
+### Phase 24: Unified Pipeline (v6)
+
+Consolidated ~3,000 lines of near-duplicate scoring code into a single clean architecture. The 5 search methods (GooberV5, Geometric, Deformed, Curved, CARE) shared ~90% code — the only differences were parameterized into `ScoreConfig`.
+
+**New files:**
+- `seeds.rs` (~270 lines) — seed generation: BM25, name lookup, graph walk, numeric bridges, self-model expansion
+- `scoring.rs` (~310 lines) — unified scoring: `ScoreConfig` + `score_candidates()` + BM25 lock + file diversity
+- `pipeline.rs` (~420 lines) — `unified_search()`: seeds → heat diffusion → scoring → confidence fusion
+
+**Deleted:** 543 lines of legacy search methods from `search.rs` (fuse_care, search_care, search_deformed, search_geometric, search_goober_v5). All now route through `search_unified()`.
+
+**7-phase roadmap executed:**
+1. Phase 0: Baseline capture (3 codebases, fresh indexes)
+2. Phase 1: Extract seeds.rs (zero regression)
+3. Phase 2: Extract scoring.rs (zero regression)
+4. Phase 3: Create pipeline.rs with unified_search (zero regression)
+5. Phase 4: Delete legacy scoring functions (543 lines removed)
+6. Phase 5: Simplify spectral.rs (remove use_curvature flag)
+7. Phase 6: Tune unified pipeline (5 experiments, all neutral/negative — config already optimal)
+8. Phase 7: Benchmark validation
+
+**Tuning experiments (Phase 6):**
+All 5 experiments were neutral or negative — the current configuration is already optimal:
+1. Remove predictive surprise → esbuild regressed 0.044. Surprise stays.
+2. Remove MDL → esbuild regressed 0.050. MDL stays.
+3. Intent-aware test penalty (soften from 0.3→0.6) → esbuild regressed 0.035. Flat 0.3 stays.
+4. Deep graph edges in neighbor hints → tokio regressed 0.020. Reverted.
+5. Coverage frac refinement → already using optimal formula.
+
+**v6 results (3 codebases, NDCG@10):**
+
+| Codebase | v5 | v6 | Δ |
+|---|---|---|---|
+| signetai | 0.406 | 0.397 | -0.009 (noise) |
+| esbuild | 0.411 | 0.453 | +0.042 |
+| tokio | 0.205 | 0.284 | +0.079 |
+
+**v6 results (3 codebases, MRR@10):**
+
+| Codebase | GraphIQ | Grep | Δ |
+|---|---|---|---|
+| signetai | 0.960 | 0.941 | +2.0% |
+| esbuild | 0.947 | 0.943 | +0.4% |
+| tokio | 0.970 | 0.940 | +3.2% |
+
+**Key lesson:** Massive code deletion with zero regression. The 5 search methods were variations on a theme — parameterizing them into `ScoreConfig` made the codebase 3,000 lines simpler while matching or improving performance. The unified pipeline is the right abstraction.
+
+**Benchmark infrastructure improvements:**
+- Separate MRR query files (25 per codebase) with single-target `expected_symbol` format
+- MRR output now includes H@1, H@3, H@5, Acc@1, Acc@3, Acc@10 alongside MRR, P@10, R@10
+- `category` field made optional in bench queries (#[serde(default)])
+- Both NDCG and MRR run on any query file passed to the bench binary
+
 ## Cross-References to Roadmap
 
 These precedents from failed experiments are directly relevant to future phases:

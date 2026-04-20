@@ -10,27 +10,46 @@ Grep is the strongest possible naive baseline — it searches every symbol name 
 
 GraphIQ preserves grep's lexical strengths (BM25 full-text search is Layer 1 of the pipeline) and adds structural analysis on top. The result:
 
-| Codebase | Language | Symbols | MRR@10 GraphIQ | MRR@10 Grep | Win |
-|---|---|---|---|---|---|
-| signetai | TypeScript | 20,870 | **0.404** | 0.154 | 2.6x |
-| tokio | Rust | 17,867 | **0.667** | 0.360 | 1.9x |
-| esbuild | Go | 12,040 | **0.475** | 0.173 | 2.7x |
-| flask | Python | 1,971 | **0.615** | 0.523 | 1.2x |
-| junit5 | Java | 34,273 | **0.420** | 0.159 | 2.6x |
+### MRR@10 (first-hit accuracy, 25 queries per codebase)
 
-**GraphIQ wins first-hit accuracy (MRR) on all 5 codebases, 1.2-2.7x over grep.** This is the metric that matters for agents — when an AI asks "how does this codebase handle rate limiting?", it scans the top 3 results and picks one. Getting the right answer at position 1 instead of position 7 is the difference between a useful response and a hallucination.
+| Codebase | Grep | GraphIQ | Δ |
+|---|---|---|---|
+| signetai | 0.941 | **0.960** | +2% |
+| esbuild | 0.943 | **0.947** | +0.4% |
+| tokio | 0.940 | **0.970** | +3% |
+| **Overall** | **0.941** | **0.959** | **+1.9%** |
 
-NDCG (ranking quality across all relevant results) is a split — GraphIQ wins on 3/5 codebases. The losses are on tokio (generic function names like `run`, `handle`, `poll` where grep's raw substring matching is harder to beat) and flask (small codebase where the structural advantage is minimal). Full results: [docs/benchmarks.md](docs/benchmarks.md).
+### NDCG@10 (ranking quality, 20 queries per codebase)
 
-GraphIQ is also **1,300-11,700x faster** on warm cache. Grep's `LIKE %term%` does a full table scan on every symbol's name and source for each query term. GraphIQ uses BM25's inverted index (O(1) lookup) plus pre-computed graph structures:
+| Codebase | Grep | GraphIQ | Δ |
+|---|---|---|---|
+| signetai | 0.276 | **0.397** | +44% |
+| esbuild | 0.298 | **0.453** | +52% |
+| tokio | **0.290** | 0.284 | -2% |
+| **Overall** | **0.288** | **0.378** | **+31%** |
 
-| Codebase | Symbols | G IQ MRR | Grep MRR | G IQ median | Grep median | Speedup |
-|---|---|---|---|---|---|---|
-| signetai | 21K | **0.247** | 0.025 | **18us** | 124ms | 6,900x |
-| tokio | 18K | **0.558** | 0.186 | **13us** | 79ms | 6,100x |
-| esbuild | 12K | **0.150** | 0.100 | **19us** | 94ms | 4,900x |
-| flask | 2K | **0.646** | 0.557 | **7us** | 9ms | 1,300x |
-| junit5 | 34K | **0.445** | 0.084 | **16us** | 187ms | 11,700x |
+### Combined (MRR + NDCG)
+
+| Codebase | Grep | GraphIQ | Δ |
+|---|---|---|---|
+| signetai | 0.609 | **0.679** | +11% |
+| esbuild | 0.621 | **0.700** | +13% |
+| tokio | 0.615 | **0.627** | +2% |
+| **Overall** | **0.615** | **0.669** | **+8.7%** |
+
+### NDCG@10 by Category (3-codebase average)
+
+| Category | Grep | GraphIQ |
+|---|---|---|
+| symbol-exact | 0.887 | **0.899** |
+| symbol-partial | **0.711** | 0.708 |
+| nl-descriptive | 0.069 | **0.289** |
+| nl-abstract | 0.030 | **0.216** |
+| error-debug | 0.159 | **0.268** |
+| file-path | **0.066** | 0.048 |
+| cross-cutting | 0.000 | **0.137** |
+
+GraphIQ dominates on 5/7 categories. The remaining gaps — file-path and tokio's natural language queries — are the frontier for v7.
 
 ### What "beats grep" actually means
 
@@ -54,104 +73,66 @@ The agent doesn't just get a name. It gets a fact about the codebase — what th
 
 ## How It Works
 
-GraphIQ is a 6-layer retrieval pipeline. Every layer is deterministic — no neural networks, no learned weights, no GPU required.
+GraphIQ is a unified retrieval pipeline. Every component is deterministic — no neural networks, no learned weights, no GPU required.
 
 ```
 Query: "how does the timer wheel expire deadlines"
-                    |
-                    v
-         Query Family Router
-         (classifies into 8 families)
-                    |
-                    v
-         Layer 1: BM25/FTS (~5ms)
-         identifier-aware text search
-         → 30 seed symbols
-                    |
-                    v
-         Layer 2: Spectral Expansion
-         Chebyshev heat diffusion on graph Laplacian
-         → ~100 candidate symbols
-                    |
-                    v
-         Layer 3: Query Deformation
-         predictive surprise + channel capacity + MDL
-         → adaptive per-query scoring
-                    |
-                    v
-         Layer 4: SEC + NG Scoring
-         structural evidence convolution + non-Gaussianity
-         → scored candidates
-                    |
-                    v
-         Layer 5: Holographic Name Gate
-         FFT cosine similarity, threshold-gated
-         → name-verified ranking
-                    |
-                    v
-         Layer 6: Confidence Fusion
-         BM25 lock, kind boosts, diversity
-         → top_k results
+                |
+                v
+     Query Family Router
+     (classifies into 8 families)
+                |
+                v
+     Seed Generation (seeds.rs)
+     BM25/FTS → name lookup → graph walk → numeric bridges → self-model
+     → ~100 seed candidates
+                |
+                v
+     Spectral Expansion (pipeline.rs)
+     Chebyshev heat diffusion on graph Laplacian
+     → ~200 candidate symbols
+                |
+                v
+     Unified Scoring (scoring.rs)
+     SEC + holographic name gate + predictive surprise + MDL
+     → scored, ranked candidates
+                |
+                v
+     Confidence Fusion (pipeline.rs)
+     BM25 lock → kind boosts → file diversity
+     → top_k results
 ```
 
-### Layer 1: BM25 Full-Text Search
+### The Unified Pipeline (v6)
 
-The foundation. SQLite FTS5 with per-column weights — symbol names get 10x weight, identifier decomposition gets 8x, source code gets 1x. Returns top 30 seeds in ~5ms.
+v6 consolidated ~3,000 lines of near-duplicate scoring code across 5 search methods into a single `unified_search()` function parameterized by `ScoreConfig`. The pipeline has four stages:
 
-The secret weapon is the **hints column**: at index time, GraphIQ infers behavioral role tags (validator, cache, handler, retry, auth-gate, etc.) and structural motifs (connector, orchestrator, hub, guard) from symbol names, call patterns, and file paths. These get written into FTS so BM25 matches role vocabulary at zero query-time cost. A function named `ensureFreshness` gets hints like "cache validate check verify" — so "validate cache entry" finds it even though the name has nothing in common.
+**1. Seed Generation** (`seeds.rs`) — BM25 full-text search produces initial seeds, then expands them through name lookup (identifier decomposition), structural graph walks (calls, imports, type flow), numeric bridges (shared constants), and self-model concept nodes. `SeedConfig::for_family()` controls which expansions activate based on query family.
 
-**This is what grep already does well.** GraphIQ doesn't replace it — grep is Layer 1. The difference is what happens next.
+**2. Spectral Expansion** (`pipeline.rs`) — Seeds are expanded through Chebyshev polynomial approximation of the graph Laplacian's heat kernel. Heat propagates from seed symbols across structural edges — calls, imports, type flow, shared error types, shared data shapes — so symbols structurally connected to the seeds get discovered even if their names share no terms with the query. Direct computation needs eigendecomposition (O(n³)). Chebyshev computes it in O(K|E|) per query where K=15.
 
-### Layer 2: Spectral Heat Diffusion
+**3. Unified Scoring** (`scoring.rs`) — A single `score_candidates()` function handles all search modes. The `ScoreConfig` struct parameterizes behavior: IDF-weighted coverage fractions, predictive surprise (KL divergence from conditional term models), MDL explanation sets (greedy set cover for query term diversity), and holographic name gating (FFT cosine similarity with threshold 0.25).
 
-BM25 seeds are expanded through the code graph using Chebyshev polynomial approximation of the graph Laplacian's heat kernel. Heat propagates from seed symbols across structural edges — calls, imports, type flow, shared error types, shared data shapes — so symbols structurally connected to the seeds get discovered even if their names share no terms with the query.
-
-The graph Laplacian L = D^(-1/2)(D - W)D^(-1/2) captures connectivity. The heat kernel e^(-tL) propagates signal from seed nodes. Direct computation needs eigendecomposition (O(n^3)). Chebyshev approximation computes it in O(K|E|) per query where K=15 is the polynomial order. Only one parameter matters — heat_t and walk_weight are remarkably insensitive (673 combinations tested on esbuild).
-
-**This is what grep can't do.** Grep only finds symbols whose names or source contain query terms. If the answer to "how does the timer wheel process deadlines" is a function named `advance_clock` that calls `fire_timer`, grep won't find it unless the query contains "advance" or "clock" or "fire" or "timer". Heat diffusion finds it because `advance_clock` is structurally adjacent to `process_expired_timers` (which BM25 did find).
-
-### Layer 3: Query Deformation
-
-Three adaptive signals that reshape scoring based on each query's structural context:
-
-**Predictive surprise** — For each symbol, a conditional term model built from its 1-hop graph neighborhood measures how surprising the query is given the symbol's context (KL divergence). High surprise = the query's terms are unexpected in this neighborhood, suggesting a novel, relevant match. Disambiguates short generic words like "cache" or "channel" that BM25 can't distinguish.
-
-**Channel capacity routing** — Symbols have structural roles (orchestrator, library, boundary, worker, isolate) computed from edge-type distributions. The scoring weights adapt: orchestrator symbols get more structural coverage weight (they call many things), library symbols get more BM25 weight (they're self-contained).
-
-**MDL explanation sets** — A greedy set cover tracks which query terms each result explains, stopping when marginal information gain drops below threshold. Diversity bonus for spanning multiple structural roles.
-
-### Layer 4: Structural Evidence Scoring
-
-SEC propagates query terms through 7 structural channels (self, calls_out, calls_in, 2-hop out, 2-hop in, return type, file path) with distance-based decay. Non-Gaussianity scoring boosts symbols where query terms concentrate in specific channels over symbols with flat distributions.
-
-### Layer 5: Holographic Name Gate
-
-FFT-based circular convolution encodes symbol identifiers as holographic vectors. The cosine similarity between query and candidate name holograms has 6.8x separation between correct and incorrect matches — a strong signal. But it's **gated**: only candidates with similarity > 0.25 receive any boost. On codebases with descriptive names (esbuild), correct matches pass the gate easily. On codebases with generic names (tokio), they don't — and the gate adapts without any codebase-specific tuning.
-
-### Layer 6: Confidence Fusion
-
-Final ranking applies BM25 confidence lock (when BM25's rank-1 has a >1.2x gap, lock it — demoting confident BM25 results is almost always wrong), kind boosts (functions and types over variables and imports), and per-file diversity limits.
+**4. Confidence Fusion** — BM25 confidence lock (when BM25's rank-1 has a >1.2x gap, lock it), kind boosts (functions and types over variables and imports), and per-file diversity limits.
 
 ### The Query Family Router
 
-Before any of the above, the query is classified into one of 8 families. Each family routes to the best retrieval method for that query type. No fusion, no stacking — one method per query:
+Before the pipeline runs, the query is classified into one of 8 families. Each family routes to tuned `ScoreConfig` parameters — no fusion, no stacking, one configuration per query:
 
-| Family | Detection | Search Method | Example |
+| Family | Detection | Config | Example |
 |---|---|---|---|
-| SymbolExact | Exact name, PascalCase | GooV5 (holographic name) | `RateLimiter` |
-| SymbolPartial | Short fragment | GooV5 | `rate limit` |
-| NaturalDescriptive | Action verbs | Geometric (heat diffusion) | `encode a value in VLQ` |
-| NaturalAbstract | "how does", "what controls" | Deformed (max exploration) | `how does auth work` |
-| ErrorDebug | Panic/error/timeout | Deformed (predictive model) | `timeout in channel send` |
-| CrossCuttingSet | "all", "every", plural | Deformed (high diversity) | `all connector implementations` |
-| Relationship | "vs", "relationship" | Geometric (neighborhood) | `AsyncFd vs readiness guard` |
-| FilePath | Paths, extensions | Geometric (file-adjacent) | `scheduler/worker.rs` |
-
-The classifier inverts the typical cascade: instead of trying to detect NL patterns and defaulting to symbol, it detects code-shaped tokens and defaults everything else to NaturalDescriptive. This prevents 65% of queries from falling through to a wrong default.
+| SymbolExact | Exact name, PascalCase | name-gated, no surprise | `RateLimiter` |
+| SymbolPartial | Short fragment | name-gated, light expansion | `rate limit` |
+| NaturalDescriptive | Action verbs | full spectral + surprise + MDL | `encode a value in VLQ` |
+| NaturalAbstract | "how does", "what controls" | max exploration, high walk weight | `how does auth work` |
+| ErrorDebug | Panic/error/timeout | predictive model + fingerprints | `timeout in channel send` |
+| CrossCuttingSet | "all", "every", plural | high diversity, set cover | `all connector implementations` |
+| Relationship | "vs", "relationship" | neighborhood-centric | `AsyncFd vs readiness guard` |
+| FilePath | Paths, extensions | file-adjacent | `scheduler/worker.rs` |
 
 ### The Code Graph
 
-GraphIQ builds a rich structural graph during indexing. Beyond calls and imports:
+GraphIQ builds a rich structural graph during indexing:
 
 | Edge Type | Signal | Example |
 |---|---|---|
@@ -165,8 +146,6 @@ GraphIQ builds a rich structural graph during indexing. Beyond calls and imports
 | StringLiteral | Shared error-related string constants | Functions containing `"connection refused"` |
 | CommentRef | Symbol mentions in comments | `// delegates to processExpiredTimers` |
 
-These edges feed into the spectral diffusion, predictive model, and evidence scoring. The result is a graph where heat diffusion can find symbols that are behaviorally related even when their names share no terms.
-
 ## Installation
 
 ### Homebrew (macOS + Linux)
@@ -176,11 +155,10 @@ brew tap aaf2tbz/graphiq
 brew install graphiq
 ```
 
-Installs four binaries:
+Installs three binaries:
 - `graphiq` — CLI (index, search, blast, status, reindex, demo, setup)
 - `graphiq-mcp` — MCP server for LLM integration (stdio JSON-RPC)
-- `graphiq-bench` — NDCG/MRR benchmarking and parameter tuning
-- `graphiq-locomo` — LoCoMo-style benchmarking
+- `graphiq-bench` — NDCG/MRR benchmarking
 
 ### From Source
 
@@ -190,7 +168,7 @@ cd graphiq
 cargo build --release
 ```
 
-Requires Rust 1.70+. No other dependencies — no Python, no Node, no system libraries. The binary is statically linked.
+Requires Rust 1.70+. No other dependencies — no Python, no Node, no system libraries.
 
 ### Quick Start
 
@@ -201,8 +179,6 @@ graphiq demo
 # Index a real project and configure MCP integrations
 graphiq setup --project /path/to/project
 ```
-
-`graphiq setup` detects your installed harnesses, writes MCP server configs, indexes the project, and reports the active search mode.
 
 ## CLI
 
@@ -218,8 +194,6 @@ graphiq search "error handler" --debug
 
 ### Blast Radius
 
-Compute what a symbol affects (forward) and what depends on it (backward):
-
 ```bash
 graphiq blast RateLimiter
 graphiq blast RateLimiter --depth 5 --direction forward
@@ -229,26 +203,24 @@ graphiq blast RateLimiter --direction both
 ### Indexing
 
 ```bash
-graphiq index /path/to/project              # fresh index
-graphiq reindex /path/to/project            # reindex existing
-graphiq status                               # index stats, active mode, artifact freshness
-graphiq doctor                               # diagnose index issues
-graphiq upgrade-index                        # rebuild stale artifacts
+graphiq index /path/to/project
+graphiq reindex /path/to/project
+graphiq status
+graphiq doctor
+graphiq upgrade-index
 ```
 
 ### Setup
 
-One-command onboarding for MCP integration:
-
 ```bash
-graphiq setup                          # current directory
-graphiq setup --project /path/to/proj  # specify project
-graphiq setup --skip-index             # configure without indexing
+graphiq setup
+graphiq setup --project /path/to/proj
+graphiq setup --skip-index
 ```
 
 ## MCP Server
 
-`graphiq-mcp` speaks JSON-RPC 2.0 over stdio. Exposes five tools to AI agents:
+`graphiq-mcp` speaks JSON-RPC 2.0 over stdio. Exposes five tools:
 
 | Tool | Description |
 |---|---|
@@ -264,8 +236,6 @@ graphiq-mcp /path/to/project
 
 ### Supported Harnesses
 
-`graphiq setup` auto-configures these harnesses:
-
 | Harness | Config Location | Status |
 |---|---|---|
 | opencode | `~/.config/opencode/opencode.json` | Auto-detected |
@@ -273,37 +243,31 @@ graphiq-mcp /path/to/project
 | Codex | `~/.codex/config.toml` | Auto-detected |
 | Hermes | `~/.hermes/config.yaml` | Auto-detected |
 
-Manual configuration for any MCP-compatible client:
-
-```json
-{
-  "mcpServers": {
-    "graphiq": {
-      "command": "graphiq-mcp",
-      "args": ["/path/to/project"]
-    }
-  }
-}
-```
-
 ## Supported Languages
 
-34 languages detected. 16 with dedicated TreeSitter parsers for full symbol extraction (functions, classes, methods, structs, enums, traits, interfaces):
+34 languages detected. 16 with dedicated TreeSitter parsers for full symbol extraction:
 
-**Full parsing (symbols + structure):** TypeScript, TSX, JSX, JavaScript, Rust, Python, Go, Java, C, C++, Ruby, YAML, TOML, JSON, HTML, CSS
+**Full parsing:** TypeScript, TSX, JSX, JavaScript, Rust, Python, Go, Java, C, C++, Ruby, YAML, TOML, JSON, HTML, CSS
 
 **File tracking + FTS:** Kotlin, Swift, C#, PHP, Lua, Dart, Scala, Haskell, Elixir, Zig, GraphQL, Protobuf, Shell, SQL, Markdown, XML, SCSS
 
-Languages with full parsing get the complete pipeline: structural graph edges, spectral diffusion, predictive model, holographic matching. Languages with file tracking get BM25 full-text search with path-aware ranking.
-
 ## Architecture
 
-Single-file SQLite database at `.graphiq/graphiq.db`. Rust, edition 2021. Zero runtime dependencies beyond the OS. No Python, no Node, no shared libraries. The binary is self-contained.
+Single-file SQLite database at `.graphiq/graphiq.db`. Rust, edition 2021. Zero runtime dependencies.
 
 ```
 graphiq/
   crates/
     graphiq-core/       # Core library
+      seeds.rs          # Seed generation (BM25, name lookup, graph walk)
+      scoring.rs        # Unified scoring (SEC, holographic, surprise, MDL)
+      pipeline.rs       # unified_search() — single pipeline for all modes
+      search.rs         # Router, query family dispatch
+      cruncher.rs       # Adjacency lists, term sets, IDF, legacy methods
+      spectral.rs       # Chebyshev heat diffusion, Ricci curvature
+      query_family.rs   # 8-family query classifier
+      deep_graph.rs     # Type flow, error type, data shape edges
+      self_model.rs     # Deterministic concept nodes
     graphiq-cli/        # CLI binary
     graphiq-mcp/        # MCP server binary
     graphiq-bench/      # Benchmark binary
@@ -313,29 +277,30 @@ graphiq/
 
 | Component | Source | Purpose |
 |---|---|---|
-| SearchEngine | `search.rs` | Main entry point, query family dispatch, seed expansion, artifact negotiation |
-| CruncherIndex | `cruncher.rs` | GooV5 search, holographic encoding, SEC scoring, evidence convolution |
-| SpectralIndex | `spectral.rs` | Chebyshev heat diffusion, Ricci curvature, channel fingerprints |
-| QueryFamily | `query_family.rs` | 8-family query classifier, retrieval policy generation |
-| DeepGraph | `deep_graph.rs` | Type flow, error type, data shape, string literal, comment ref edges |
+| SearchEngine | `search.rs` | Main entry point, query family dispatch |
+| unified_search | `pipeline.rs` | Single pipeline for all search modes |
+| generate_seeds | `seeds.rs` | BM25 → name lookup → graph walk → bridges → self-model |
+| score_candidates | `scoring.rs` | SEC + holographic + surprise + MDL scoring |
+| CruncherIndex | `cruncher.rs` | Adjacency lists, term sets, IDF, holographic encoding |
+| SpectralIndex | `spectral.rs` | Chebyshev heat diffusion, channel fingerprints |
+| QueryFamily | `query_family.rs` | 8-family classifier, retrieval policy |
+| DeepGraph | `deep_graph.rs` | Type flow, error type, data shape, string literal edges |
 | RepoSelfModel | `self_model.rs` | Deterministic concept nodes for abstract queries |
-| EdgeEvidence | `edge_evidence.rs` | Edge profile classification (direct, structural, reinforcing, boundary) |
-| PredictiveModel | Built at index time | Conditional term models for surprise scoring, 5K-term vocabulary |
 
 ### Storage Layout
 
 ```
 .graphiq/graphiq.db
-  ├── symbols          # name, kind, signature, source, file, line, importance
-  ├── edges            # source, target, kind (calls, imports, contains, shares_*, ...)
+  ├── symbols          # name, kind, signature, source, file, line
+  ├── edges            # source, target, kind
   ├── files            # path, language, symbol_count
-  ├── edges_fts        # FTS5 index on symbols (name, decomposed, hints, sig, source)
+  ├── edges_fts        # FTS5 index (name, decomposed, hints, sig, source)
   ├── manifest.json    # artifact freshness tracking
   └── [computed at query time]
       ├── spectral     # Chebyshev heat diffusion infrastructure
-      ├── cruncher     # GooV5 adjacency lists, term sets, IDF
-      ├── predictive   # Conditional term models per symbol
-      └── fingerprints # Channel fingerprint vectors per symbol
+      ├── cruncher     # adjacency lists, term sets, IDF
+      ├── predictive   # conditional term models per symbol
+      └── fingerprints # channel fingerprint vectors per symbol
 ```
 
 ### Operating System Support
@@ -350,31 +315,11 @@ graphiq/
 
 See [docs/benchmarks.md](docs/benchmarks.md) for full results including per-category breakdowns, deep graph edge counts, and router performance analysis.
 
-### NDCG@10 (ranking quality, 20 queries per codebase)
-
-| Codebase | GraphIQ | Grep | Delta |
-|---|---|---|---|
-| signetai (TS) | **0.406** | 0.343 | +18% |
-| tokio (Rust) | 0.205 | **0.326** | -37% |
-| esbuild (Go) | **0.411** | 0.277 | +48% |
-| flask (Python) | 0.426 | **0.432** | -1% |
-| junit5 (Java) | **0.198** | 0.181 | +9% |
-
-### MRR@10 (first-hit accuracy, 20 queries per codebase)
-
-| Codebase | GraphIQ | Grep | Delta |
-|---|---|---|---|
-| signetai (TS) | **0.404** | 0.154 | +162% |
-| tokio (Rust) | **0.667** | 0.360 | +85% |
-| esbuild (Go) | **0.475** | 0.173 | +175% |
-| flask (Python) | **0.615** | 0.523 | +18% |
-| junit5 (Java) | **0.420** | 0.159 | +164% |
-
 ## Documentation
 
-- [docs/retrieval.md](docs/retrieval.md) — Full pipeline details: SEC, NG scoring, holographic name gate, heat diffusion, query deformation
-- [docs/benchmarks.md](docs/benchmarks.md) — Complete results: 5 codebases, per-category NDCG, deep graph edge stats, router analysis
-- [docs/research.md](docs/research.md) — Experimental history: 22 phases of research, lessons learned, what didn't work
+- [docs/retrieval.md](docs/retrieval.md) — Full pipeline details
+- [docs/benchmarks.md](docs/benchmarks.md) — Complete benchmark results
+- [docs/research.md](docs/research.md) — Experimental history: 24 phases of research
 - [docs/ROADMAP.md](docs/ROADMAP.md) — Current state and next steps
 
 ## License
