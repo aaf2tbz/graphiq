@@ -259,9 +259,10 @@ fn main() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    let db = match graphiq_core::db::GraphDb::open(&db_path) {
-        Ok(d) => d,
-        Err(e) => {
+    let state = Arc::new(Mutex::new(ServerState {
+        project_root: project_root.clone(),
+        db_path: db_path.clone(),
+        db: graphiq_core::db::GraphDb::open(&db_path).unwrap_or_else(|e| {
             let err_str = e.to_string();
             if err_str.contains("malformed") || err_str.contains("database disk image") {
                 log_err(&format!("corrupted database detected at startup, deleting and recreating: {}", db_path.display()));
@@ -273,69 +274,30 @@ fn main() {
                 if let Some(parent) = db_path.parent() {
                     let _ = std::fs::create_dir_all(parent);
                 }
-                match graphiq_core::db::GraphDb::open(&db_path) {
-                    Ok(d) => d,
-                    Err(e2) => {
-                        let msg = format!("failed to recreate database {}: {e2}", db_path.display());
-                        log_err(&msg);
-                        send_error(-1, -32603, &msg);
-                        std::process::exit(1);
-                    }
-                }
+                graphiq_core::db::GraphDb::open(&db_path).unwrap_or_else(|e2| {
+                    let msg = format!("failed to recreate database {}: {e2}", db_path.display());
+                    log_err(&msg);
+                    std::process::exit(1);
+                })
             } else {
                 let msg = format!("failed to open database {}: {e}", db_path.display());
                 log_err(&msg);
-                send_error(-1, -32603, &msg);
                 std::process::exit(1);
             }
-        }
-    };
-
-    let cache = graphiq_core::cache::HotCache::with_defaults();
-
-    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
-    let ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &db);
-
-    let (cruncher_index, holo_index) = if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
-        let hi = ac.load_holo().unwrap_or_else(|| graphiq_core::cruncher::build_holo_index(&db, &ci));
-        log_err("goober v5 index loaded from cache");
-        (Some(ci), Some(hi))
-    } else {
-        match graphiq_core::cruncher::build_cruncher_index(&db) {
-            Ok(ci) => {
-                let hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
-                log_err("goober v5 index built");
-                (Some(ci), Some(hi))
-            }
-            Err(e) => {
-                log_err(&format!("cruncher build failed (falling back to FTS): {e}"));
-                (None, None)
-            }
-        }
-    };
-
-    let mut state = ServerState {
-        project_root: project_root.clone(),
-        db_path: db_path.clone(),
-        db,
-        cache,
-        cruncher_index,
-        holo_index,
+        }),
+        cache: graphiq_core::cache::HotCache::with_defaults(),
+        cruncher_index: None,
+        holo_index: None,
         spectral_index: None,
         predictive_model: None,
         fingerprints: Vec::new(),
         fp_id_to_idx: std::collections::HashMap::new(),
         self_model: None,
-    };
+    }));
 
-    if let Err(e) = ensure_indexed(&mut state) {
-        log_err(&format!("auto-index failed: {e}"));
-    }
+    let running = Arc::new(AtomicBool::new(true));
 
     log_err("ready");
-
-    let state = Arc::new(Mutex::new(state));
-    let running = Arc::new(AtomicBool::new(true));
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -362,7 +324,7 @@ fn main() {
         let msg: Value = match serde_json::from_str(line) {
             Ok(m) => m,
             Err(e) => {
-                send_error(-1, -32700, &format!("parse error: {e}"));
+                send_error(-1, -32700, &format!("parse error: {e}"), &mut stdout);
                 continue;
             }
         };
@@ -386,6 +348,7 @@ fn handle_message(
             id,
             -32600,
             "invalid request: missing method, result, or error",
+            out,
         );
         return Ok(());
     }
@@ -399,7 +362,10 @@ fn handle_message(
 
     match method {
         "initialize" => {
-            let s = state.lock().map_err(|e| e.to_string())?;
+            let (pr, dp) = {
+                let s = state.lock().map_err(|e| e.to_string())?;
+                (s.project_root.display().to_string(), s.db_path.display().to_string())
+            };
             let result = json!({
                 "protocolVersion": PROTOCOL_VERSION,
                 "capabilities": {
@@ -410,11 +376,40 @@ fn handle_message(
                     "version": SERVER_VERSION
                 },
                 "_meta": {
-                    "projectRoot": s.project_root.display().to_string(),
-                    "dbPath": s.db_path.display().to_string()
+                    "projectRoot": pr,
+                    "dbPath": dp
                 }
             });
             send_response(id, &result, out)?;
+            let state_c = Arc::clone(state);
+            std::thread::spawn(move || {
+                let mut s = match state_c.lock() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log_err(&format!("lazy index: lock failed: {e}"));
+                        return;
+                    }
+                };
+                let db_dir = s.db_path.parent().unwrap_or(std::path::Path::new("."));
+                let ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &s.db);
+                if s.cruncher_index.is_none() {
+                    if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
+                        let hi = ac.load_holo().unwrap_or_else(|| graphiq_core::cruncher::build_holo_index(&s.db, &ci));
+                        s.cruncher_index = Some(ci);
+                        s.holo_index = Some(hi);
+                        log_err("lazy: goober v5 index loaded from cache");
+                    } else if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&s.db) {
+                        let hi = graphiq_core::cruncher::build_holo_index(&s.db, &ci);
+                        s.cruncher_index = Some(ci);
+                        s.holo_index = Some(hi);
+                        log_err("lazy: goober v5 index built");
+                    }
+                }
+                if let Err(e) = ensure_indexed(&mut s) {
+                    log_err(&format!("lazy auto-index failed: {e}"));
+                }
+                log_err("lazy indexing complete");
+            });
         }
         "initialized" => {}
         "ping" => {
@@ -443,7 +438,7 @@ fn handle_message(
         }
         _ => {
             if !is_notification {
-                send_error(id, -32601, &format!("method not found: {method}"));
+                send_error(id, -32601, &format!("method not found: {method}"), out);
             }
         }
     }
@@ -464,15 +459,13 @@ fn send_response(id: i64, result: &Value, out: &mut impl Write) -> Result<(), St
     Ok(())
 }
 
-fn send_error(id: i64, code: i64, message: &str) {
+fn send_error(id: i64, code: i64, message: &str, out: &mut impl Write) {
     let resp = json!({
         "jsonrpc": "2.0",
         "id": id,
         "error": { "code": code, "message": message }
     });
     if let Ok(s) = serde_json::to_string(&resp) {
-        let stderr = std::io::stderr();
-        let mut out = stderr.lock();
         let _ = writeln!(out, "{}", s);
         let _ = out.flush();
     }
