@@ -15,7 +15,7 @@ struct ServerState {
     db: graphiq_core::db::GraphDb,
     cache: graphiq_core::cache::HotCache,
     cruncher_index: Option<graphiq_core::cruncher::CruncherIndex>,
-    holo_index: Option<graphiq_core::cruncher::HoloIndex>,
+    holo_index: Option<graphiq_core::holo_name::HoloIndex>,
     spectral_index: Option<graphiq_core::spectral::SpectralIndex>,
     predictive_model: Option<graphiq_core::spectral::PredictiveModel>,
     fingerprints: Vec<graphiq_core::spectral::ChannelFingerprint>,
@@ -189,7 +189,7 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
     ac.invalidate();
 
     if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
-        let hi = graphiq_core::cruncher::build_holo_index(&state.db, &ci);
+        let hi = graphiq_core::holo_name::build_holo_index(&state.db, &ci);
         ac.save("cruncher", &ci);
         ac.save_holo(&hi);
         state.cruncher_index = Some(ci);
@@ -469,12 +469,12 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
 
     if s.cruncher_index.is_none() {
         if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
-            let hi = ac.load_holo().unwrap_or_else(|| graphiq_core::cruncher::build_holo_index(&s.db, &ci));
+            let hi = ac.load_holo().unwrap_or_else(|| graphiq_core::holo_name::build_holo_index(&s.db, &ci));
             s.cruncher_index = Some(ci);
             s.holo_index = Some(hi);
             log_err("warm: cruncher+holo loaded from cache");
         } else if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&s.db) {
-            let hi = graphiq_core::cruncher::build_holo_index(&s.db, &ci);
+            let hi = graphiq_core::holo_name::build_holo_index(&s.db, &ci);
             s.cruncher_index = Some(ci);
             s.holo_index = Some(hi);
             log_err("warm: cruncher+holo built");
@@ -1567,7 +1567,7 @@ fn tool_why(
     db: &graphiq_core::db::GraphDb,
     cache: &graphiq_core::cache::HotCache,
     cruncher_index: Option<&graphiq_core::cruncher::CruncherIndex>,
-    holo_index: Option<&graphiq_core::cruncher::HoloIndex>,
+    holo_index: Option<&graphiq_core::holo_name::HoloIndex>,
     spectral_index: Option<&graphiq_core::spectral::SpectralIndex>,
     predictive_model: Option<&graphiq_core::spectral::PredictiveModel>,
     fingerprints: Option<&[graphiq_core::spectral::ChannelFingerprint]>,
@@ -2027,7 +2027,7 @@ fn tool_upgrade_index(state: &mut ServerState) -> Result<String, String> {
 
     if state.cruncher_index.is_none() {
         if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
-            let hi = graphiq_core::cruncher::build_holo_index(&state.db, &ci);
+            let hi = graphiq_core::holo_name::build_holo_index(&state.db, &ci);
             state.cruncher_index = Some(ci);
             state.holo_index = Some(hi);
             rebuilt.push("cruncher + holo");

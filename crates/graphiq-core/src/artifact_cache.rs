@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::cruncher::HoloIndex;
+use crate::holo_name::HoloIndex;
 use crate::spectral::PredictiveModel;
 
 const CACHE_DIR: &str = "cache";

@@ -294,7 +294,7 @@ fn cmd_search(
         let hi = if let Some(cached_hi) = ac.load_holo() {
             cached_hi
         } else {
-            let hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
+            let hi = graphiq_core::holo_name::build_holo_index(&db, &ci);
             ac.save_holo(&hi);
             hi
         };
@@ -302,7 +302,7 @@ fn cmd_search(
     } else {
         graphiq_core::cruncher::build_cruncher_index(&db).ok().map(|ci| {
             ac.save("cruncher", &ci);
-            let hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
+            let hi = graphiq_core::holo_name::build_holo_index(&db, &ci);
             ac.save_holo(&hi);
             (ci, hi)
         })
@@ -917,7 +917,7 @@ fn cmd_upgrade_index(db_path: &std::path::Path) {
     let mut rebuilt = Vec::new();
 
     if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&db) {
-        let _hi = graphiq_core::cruncher::build_holo_index(&db, &ci);
+        let _hi = graphiq_core::holo_name::build_holo_index(&db, &ci);
         rebuilt.push("cruncher + holo");
     } else {
         eprintln!("  warning: cruncher build failed");
@@ -2343,7 +2343,7 @@ end
     let fts = graphiq_core::fts::FtsSearch::new(&db);
 
     let cruncher_idx = graphiq_core::cruncher::build_cruncher_index(&db).unwrap();
-    let holo_idx = graphiq_core::cruncher::build_holo_index(&db, &cruncher_idx);
+    let holo_idx = graphiq_core::holo_name::build_holo_index(&db, &cruncher_idx);
     let engine = graphiq_core::search::SearchEngine::new(&db, &cache)
         .with_goober(&cruncher_idx, &holo_idx);
 

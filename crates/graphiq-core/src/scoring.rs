@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
-use crate::cruncher::{CruncherIndex, HoloIndex, QueryTerm, QueryIntent, MAX_SEEDS};
-use crate::cruncher::{term_match_score, name_coverage, compute_sec_channels, negentropy, channel_coherence, holo_query_name_cosine, kind_boost, test_penalty};
+use crate::cruncher::{CruncherIndex, QueryTerm};
+use crate::cruncher::{kind_boost, test_penalty};
 
 pub struct Candidate {
     pub idx: usize,
@@ -17,6 +17,7 @@ pub struct Candidate {
     pub holo_name_sim: f64,
     pub structural_recall: bool,
     pub surprise_boost: f64,
+    pub source_scan_hit: bool,
 }
 
 pub struct ScoreConfig {
@@ -36,7 +37,7 @@ pub struct ScoreConfig {
 }
 
 impl ScoreConfig {
-    pub fn for_goober_v5(_intent: QueryIntent, bm25_w: f64, cov_w: f64, name_w: f64, ng_w: f64, coh_w: f64) -> Self {
+    pub fn for_goober_v5(bm25_w: f64, cov_w: f64, name_w: f64, ng_w: f64, coh_w: f64) -> Self {
         Self {
             bm25_w, cov_w, name_w, ng_w, coh_w,
             walk_weight: 1.0,
@@ -65,98 +66,9 @@ impl ScoreConfig {
     }
 }
 
-pub fn build_seed_candidates(
-    query: &str,
-    query_terms: &[QueryTerm],
-    idx: &CruncherIndex,
-    hi: &HoloIndex,
-    bm25_seeds: &[(i64, f64)],
-    surprise_map: &std::collections::HashMap<usize, f64>,
-) -> (std::collections::HashMap<usize, Candidate>, f64, f64) {
-    let bm25_max = bm25_seeds.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
-    let mut candidates: std::collections::HashMap<usize, Candidate> = std::collections::HashMap::new();
-
-    for &(id, score) in bm25_seeds.iter().take(MAX_SEEDS) {
-        if let Some(&i) = idx.id_to_idx.get(&id) {
-            let (cov_score, cov_count) = term_match_score(query_terms, &idx.term_sets[i]);
-            let (name_s, _) = name_coverage(query_terms, &idx.term_sets[i].name_terms);
-            let channels = compute_sec_channels(query_terms, idx, i);
-            let ng = negentropy(&channels);
-            let coherence = channel_coherence(query_terms, idx, i);
-            let holo_name = holo_query_name_cosine(query, hi, i);
-            let surprise_boost = surprise_map.get(&i).copied().unwrap_or(0.0);
-
-            let mut sp = HashSet::new();
-            sp.insert(i);
-
-            candidates.insert(i, Candidate {
-                idx: i,
-                bm25_score: score / bm25_max,
-                coverage_score: cov_score,
-                coverage_count: cov_count,
-                name_score: name_s,
-                is_seed: true,
-                walk_evidence: 0.0,
-                seed_paths: sp,
-                ng_score: ng,
-                coherence_score: coherence,
-                holo_name_sim: holo_name,
-                structural_recall: false,
-                surprise_boost,
-            });
-        }
-    }
-
-    let mut idf_sorted: Vec<f64> = query_terms.iter().map(|qt| qt.idf).collect();
-    idf_sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let idf_threshold = idf_sorted.get(idf_sorted.len() / 2).copied().unwrap_or(0.0);
-
-    for qt in query_terms {
-        let ql = qt.text.to_lowercase();
-        if let Some(indices) = idx.name_to_indices.get(&ql) {
-            for &i in indices.iter().take(5) {
-                if candidates.contains_key(&i) {
-                    continue;
-                }
-                let (cov_score, cov_count) = term_match_score(query_terms, &idx.term_sets[i]);
-                let (name_s, _) = name_coverage(query_terms, &idx.term_sets[i].name_terms);
-                let channels = compute_sec_channels(query_terms, idx, i);
-                let ng = negentropy(&channels);
-                let coherence = channel_coherence(query_terms, idx, i);
-                let holo_name = holo_query_name_cosine(query, hi, i);
-
-                let surprise_boost = surprise_map.get(&i).copied().unwrap_or(0.0);
-
-                candidates.insert(i, Candidate {
-                    idx: i,
-                    bm25_score: 0.0,
-                    coverage_score: cov_score,
-                    coverage_count: cov_count,
-                    name_score: name_s,
-                    is_seed: true,
-                    walk_evidence: 0.0,
-                    seed_paths: {
-                        let mut sp = HashSet::new();
-                        sp.insert(i);
-                        sp
-                    },
-                    ng_score: ng,
-                    coherence_score: coherence,
-                    holo_name_sim: holo_name,
-                    structural_recall: true,
-                    surprise_boost,
-                });
-            }
-        }
-    }
-
-    (candidates, bm25_max, idf_threshold)
-}
-
 pub fn score_candidates(
     candidates: &std::collections::HashMap<usize, Candidate>,
     query_terms: &[QueryTerm],
-    intent: QueryIntent,
     config: &ScoreConfig,
     idx: &CruncherIndex,
 ) -> Vec<(usize, f64)> {
@@ -186,10 +98,7 @@ pub fn score_candidates(
                 let (cov_cap, name_cap) = if config.use_idf_coverage_frac {
                     (cov_norm.min(0.5), name_norm.min(0.5))
                 } else {
-                    match intent {
-                        QueryIntent::Navigational => (cov_norm.min(0.2), name_norm.min(0.3)),
-                        QueryIntent::Informational => (cov_norm.min(0.5), name_norm.min(0.5)),
-                    }
+                    (cov_norm.min(0.3), name_norm.min(0.4))
                 };
                 config.bm25_w * c.bm25_score + config.cov_w * cov_cap + config.name_w * name_cap
             } else {
@@ -236,14 +145,33 @@ pub fn score_candidates(
                 1.0
             };
 
-            let raw = (base + holo_additive + structural_bonus)
+            let source_scan_mult = if c.source_scan_hit && c.coverage_count >= 1 {
+                3.0
+            } else {
+                1.0
+            };
+
+            let source_scan_floor = if c.source_scan_hit {
+                12.0 * (c.coverage_count.max(1) as f64) / n_qt.max(1) as f64
+            } else {
+                0.0
+            };
+
+            let source_scan_mult = if c.source_scan_hit {
+                3.0
+            } else {
+                1.0
+            };
+
+            let raw = (base + holo_additive + structural_bonus + source_scan_floor)
                 * coverage_frac.powf(0.3)
                 * ng_boost
                 * seed_bonus
                 * kb
                 * tp
                 * surprise_bonus
-                * config.mdl_penalty;
+                * config.mdl_penalty
+                * source_scan_mult;
 
             if raw > 0.0 { Some((c.idx, raw)) } else { None }
         })
@@ -278,28 +206,4 @@ pub fn apply_bm25_lock(
             }
         }
     }
-}
-
-pub fn apply_file_diversity(
-    scored: Vec<(usize, f64)>,
-    idx: &CruncherIndex,
-    top_k: usize,
-) -> Vec<(i64, f64)> {
-    let mut results: Vec<(i64, f64)> = Vec::with_capacity(top_k);
-    let mut file_counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
-
-    for (i, score) in scored {
-        let fid = idx.symbol_file_ids[i];
-        let fc = file_counts.entry(fid).or_insert(0);
-        if *fc >= 3 {
-            continue;
-        }
-        *fc += 1;
-        results.push((idx.symbol_ids[i], score));
-        if results.len() >= top_k {
-            break;
-        }
-    }
-
-    results
 }

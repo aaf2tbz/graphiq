@@ -1,12 +1,10 @@
 use std::path::Path;
 
 use graphiq_core::cruncher;
+use graphiq_core::holo_name;
 use graphiq_core::db::GraphDb;
-use graphiq_core::fts::FtsSearch;
-use graphiq_core::spectral::{ChannelFingerprint, PredictiveModel, SpectralIndex};
 use graphiq_core::search::{SearchEngine, SearchQuery};
 use graphiq_core::cache::HotCache;
-use graphiq_core::query_family::classify_query_family;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct BenchQuery {
@@ -366,55 +364,12 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
     }
 }
 
-const ALL_METHODS: &[&str] = &[
-    "BM25", "CRv1", "CRv2", "Goober", "GooV3", "GooV4", "GooV5",
-    "Geometric", "Curved", "Deformed",
-];
-
  struct FullEngine<'a> {
      db: &'a GraphDb,
-     fts: &'a FtsSearch<'a>,
-     ci: &'a cruncher::CruncherIndex,
-     hi: &'a cruncher::HoloIndex,
-     spectral: &'a Option<SpectralIndex>,
-     predictive: &'a Option<PredictiveModel>,
-     fingerprints: &'a [ChannelFingerprint],
-     fp_id_to_idx: &'a std::collections::HashMap<i64, usize>,
      engine: SearchEngine<'a>,
  }
 
 impl<'a> FullEngine<'a> {
-    fn run_method(&self, method_idx: usize, query: &str, top_k: usize) -> Vec<(i64, f64)> {
-        let bm25: Vec<(i64, f64)> = self.fts.search(query, Some(200))
-            .into_iter()
-            .map(|r| (r.symbol.id, r.bm25_score))
-            .collect();
-
-        match method_idx {
-            0 => bm25.iter().take(top_k).cloned().collect(),
-            1 => cruncher::cruncher_search(query, self.ci, &bm25, top_k),
-            2 => cruncher::cruncher_v2_search(query, self.ci, &bm25, top_k),
-            3 => cruncher::goober_search(query, self.ci, &bm25, top_k),
-            4 => cruncher::goober_v3_search(query, self.ci, &bm25, top_k),
-            5 => cruncher::goober_v4_search(query, self.ci, &bm25, top_k),
-            6 => cruncher::goober_v5_search(query, self.ci, self.hi, &bm25, top_k),
-            7 => self.spectral.as_ref().map_or(Vec::new(), |spec| {
-                cruncher::geometric_search(query, self.ci, self.hi, &bm25, spec, top_k,
-                    1.0, 15, 5.0, 50, false, None, None, None, 1.0)
-            }),
-            8 => self.spectral.as_ref().map_or(Vec::new(), |spec| {
-                cruncher::geometric_search(query, self.ci, self.hi, &bm25, spec, top_k,
-                    1.0, 15, 5.0, 50, true, None, None, None, 1.0)
-            }),
-            9 => self.spectral.as_ref().map_or(Vec::new(), |spec| {
-                cruncher::geometric_search(query, self.ci, self.hi, &bm25, spec, top_k,
-                    1.0, 15, 5.0, 50, false,
-                    self.predictive.as_ref(), Some(self.fingerprints), Some(self.fp_id_to_idx), 1.0)
-            }),
-            _ => Vec::new(),
-        }
-    }
-
     fn run_router(&self, query: &str, top_k: usize) -> Vec<(i64, f64)> {
         let q = SearchQuery::new(query).top_k(top_k);
         self.engine.search(&q)
@@ -422,106 +377,6 @@ impl<'a> FullEngine<'a> {
             .map(|r| (r.symbol.id, r.score))
             .collect()
     }
-}
-
-fn cmd_diagnose(fe: &FullEngine, queries: &[BenchQuery]) {
-    let n_methods = ALL_METHODS.len();
-    println!("\n{}", "=".repeat(100));
-    println!("  DIAGNOSTIC: Router vs All Methods  ({} queries)", queries.len());
-    println!("{}", "=".repeat(100));
-
-    let mut router_wins = 0usize;
-    let mut router_ties = 0usize;
-    let mut router_loses = 0usize;
-
-    for q in queries {
-        let family = classify_query_family(&q.query);
-        let expected = q.expected_symbol.as_deref().unwrap_or("");
-
-        let router_result = fe.run_router(&q.query, 10);
-        let router_rank = if !q.relevance.is_empty() {
-            router_result.iter().position(|(id, _)| {
-                q.relevance_of(&sym_name(fe.db, *id)) >= 2
-            })
-        } else {
-            router_result.iter().position(|(id, _)| {
-                let name = sym_name(fe.db, *id);
-                name == expected || expected.contains(&name) || name.contains(expected)
-            })
-        };
-
-        let mut method_ranks: Vec<Option<usize>> = Vec::with_capacity(n_methods);
-        for mi in 0..n_methods {
-            let result = fe.run_method(mi, &q.query, 10);
-            let rank = if !q.relevance.is_empty() {
-                result.iter().position(|(id, _)| {
-                    q.relevance_of(&sym_name(fe.db, *id)) >= 2
-                })
-            } else {
-                result.iter().position(|(id, _)| {
-                    let name = sym_name(fe.db, *id);
-                    name == expected || expected.contains(&name) || name.contains(expected)
-                })
-            };
-            method_ranks.push(rank);
-        }
-
-        let best_rank = method_ranks.iter()
-            .filter_map(|r| *r)
-            .min()
-            .unwrap_or(usize::MAX);
-
-        let router_r = router_rank.unwrap_or(usize::MAX);
-        let winner_idx = method_ranks.iter()
-            .enumerate()
-            .filter(|(_, r)| r.map_or(false, |v| v == best_rank))
-            .map(|(i, _)| i)
-            .next()
-            .unwrap_or(0);
-
-        let verdict = if router_r < best_rank {
-            router_wins += 1;
-            "ROUTER_WINS"
-        } else if router_r == best_rank {
-            router_ties += 1;
-            "TIE"
-        } else {
-            router_loses += 1;
-            "ROUTER_LOSES"
-        };
-
-        println!("\n  [{}] {}", verdict, truncate(&q.query, 60));
-        println!("    family={:?}  router_rank={}  best_possible={} (via {})",
-            family,
-            router_rank.map(|r| r + 1).map(|v| format!("{}", v)).unwrap_or_else(|| "MISS".into()),
-            if best_rank == usize::MAX { "MISS".into() } else { format!("{}", best_rank + 1) },
-            ALL_METHODS[winner_idx],
-        );
-
-        print!("    ranks: ");
-        for (mi, rank) in method_ranks.iter().enumerate() {
-            let r_str = rank.map(|r| format!("{}", r + 1)).unwrap_or_else(|| "MISS".into());
-            let marker = if *rank == Some(best_rank) && best_rank != usize::MAX { "*" } else { " " };
-            print!("{}{}={} ", marker, ALL_METHODS[mi], r_str);
-        }
-        println!();
-
-        if router_r > best_rank && best_rank != usize::MAX {
-            let best_result = fe.run_method(winner_idx, &q.query, 10);
-            let router_top3: Vec<String> = router_result.iter().take(3)
-                .map(|(id, _)| sym_name(fe.db, *id))
-                .collect();
-            let best_top3: Vec<String> = best_result.iter().take(3)
-                .map(|(id, _)| sym_name(fe.db, *id))
-                .collect();
-            println!("    router_top3: {:?}", router_top3);
-            println!("    {}_top3:   {:?}", ALL_METHODS[winner_idx], best_top3);
-        }
-    }
-
-    println!("\n{}", "=".repeat(60));
-    println!("  Router: {} wins, {} ties, {} loses (of {})", router_wins, router_ties, router_loses, queries.len());
-    println!("{}", "=".repeat(60));
 }
 
 fn run_speed_bench(fe: &FullEngine, queries: &[BenchQuery]) {
@@ -633,12 +488,11 @@ fn main() {
         println!("GraphIQ Speed Benchmark");
         println!("{} files, {} symbols, {} edges\n", stats.files, stats.symbols, stats.edges);
 
-        let fts = FtsSearch::new(&db);
         let ci = match cruncher::build_cruncher_index(&db) {
             Ok(idx) => idx,
             Err(e) => { eprintln!("cruncher build failed: {e}"); std::process::exit(1); }
         };
-        let hi = cruncher::build_holo_index(&db, &ci);
+        let hi = holo_name::build_holo_index(&db, &ci);
         eprintln!("Computing spectral index...");
         let spectral = match graphiq_core::spectral::compute_spectral(&db) {
             Ok(mut idx) => {
@@ -660,9 +514,7 @@ fn main() {
         if let Some(ref sm) = self_model { engine = engine.with_self_model(sm); }
 
         let fe = FullEngine {
-             db: &db, fts: &fts, ci: &ci, hi: &hi,
-             spectral: &spectral, predictive: &predictive,
-             fingerprints: &fp_vec, fp_id_to_idx: &fp_id_map,
+             db: &db,
              engine,
          };
 
@@ -688,14 +540,12 @@ fn main() {
     println!("GraphIQ Benchmark");
     println!("{} files, {} symbols, {} edges\n", stats.files, stats.symbols, stats.edges);
 
-    let fts = FtsSearch::new(&db);
-
     let ci = match cruncher::build_cruncher_index(&db) {
         Ok(idx) => idx,
         Err(e) => { eprintln!("cruncher build failed: {e}"); std::process::exit(1); }
     };
 
-    let hi = cruncher::build_holo_index(&db, &ci);
+    let hi = holo_name::build_holo_index(&db, &ci);
 
     eprintln!("Computing spectral index...");
     let spectral = match graphiq_core::spectral::compute_spectral(&db) {
@@ -735,9 +585,7 @@ fn main() {
     let mrr_file = args.get(3).filter(|s| !s.is_empty()).map(|s| s.as_str());
 
     let fe = FullEngine {
-        db: &db, fts: &fts, ci: &ci, hi: &hi,
-        spectral: &spectral, predictive: &predictive,
-        fingerprints: &fp_vec, fp_id_to_idx: &fp_id_map,
+        db: &db,
         engine,
     };
 
@@ -750,7 +598,6 @@ fn main() {
         });
         run_ndcg(&fe, &queries);
         run_mrr(&fe, &queries);
-        cmd_diagnose(&fe, &queries);
     }
 
     if let Some(file) = mrr_file {
@@ -762,7 +609,6 @@ fn main() {
         });
         run_ndcg(&fe, &queries);
         run_mrr(&fe, &queries);
-        cmd_diagnose(&fe, &queries);
     }
 
     if ndcg_file.is_none() && mrr_file.is_none() {

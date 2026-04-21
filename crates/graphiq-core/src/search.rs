@@ -2,7 +2,8 @@ use std::collections::{HashMap, HashSet};
 
 use crate::blast;
 use crate::cache::HotCache;
-use crate::cruncher::{CruncherIndex, HoloIndex};
+use crate::cruncher::CruncherIndex;
+use crate::holo_name::HoloIndex;
 use crate::db::GraphDb;
 use crate::edge::{BlastDirection, BlastRadius};
 use crate::fts::{FtsConfig, FtsSearch};
@@ -276,7 +277,7 @@ impl<'a> SearchEngine<'a> {
         let hi = self.holo_index.unwrap();
 
         let seed_config = crate::seeds::SeedConfig::for_family(family);
-        let (seeds, total_fts, _bm25_original) = crate::seeds::generate_seeds(
+        let (seeds, total_fts, _bm25_original, source_scan_start) = crate::seeds::generate_seeds(
             self.db, &query.query, &seed_config, self.self_model,
         );
 
@@ -304,6 +305,7 @@ impl<'a> SearchEngine<'a> {
             &seeds,
             self.spectral_index,
             &pipeline_config,
+            source_scan_start,
         );
 
         let file_paths = self.load_file_paths();
