@@ -650,31 +650,60 @@ fn tools_list() -> Value {
     json!({
         "tools": [
             {
+                "name": "briefing",
+                "description": "Get oriented in a codebase. Returns architecture overview, subsystems, languages, public API, and hub symbols. Call this FIRST when you start working in a new or unfamiliar project, or when you need a high-level map before diving into specifics.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "compact": {
+                            "type": "boolean",
+                            "description": "Return compact briefing (top subsystems and API only)",
+                            "default": false
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
                 "name": "search",
-                "description": "Search the indexed codebase for symbols matching a query. Returns ranked results with file paths, line numbers, symbol kinds, signatures, and source previews.",
+                "description": "Find symbols by name, description, error message, or file path. Returns ranked results with scores, file locations, signatures, and source previews. This is your primary exploration tool — use it to find where things are, what functions exist, and how code is organized. Follow up with `context` to read full source, or `blast` to understand change impact.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search query — symbol name, natural language description, file path fragment, or error message"
+                            "description": "Search query — symbol name, natural language, file path, or error message"
                         },
                         "top_k": {
                             "type": "integer",
-                            "description": "Max results to return (default: 10, max: 50)",
+                            "description": "Max results (default 10, max 50)",
                             "default": 10
                         },
                         "file_filter": {
                             "type": "string",
-                            "description": "Optional file path substring to restrict search scope"
+                            "description": "Restrict to files matching this substring"
                         }
                     },
                     "required": ["query"]
                 }
             },
             {
+                "name": "context",
+                "description": "Read a symbol's full source code and structural neighborhood — callers, callees, contained members, parents, and tests. Use after `search` to go deeper on a specific result, or when you already know a symbol name and need its implementation and relationships.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "symbol": {
+                            "type": "string",
+                            "description": "Symbol name"
+                        }
+                    },
+                    "required": ["symbol"]
+                }
+            },
+            {
                 "name": "blast",
-                "description": "Compute blast radius for a symbol — what it affects (forward) and what depends on it (backward). Useful for understanding change impact before modifying code.",
+                "description": "Trace change impact for a symbol — what it affects (forward) and what depends on it (backward). Use BEFORE modifying code to understand blast radius. Essential for safe refactoring and change planning.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -684,7 +713,7 @@ fn tools_list() -> Value {
                         },
                         "depth": {
                             "type": "integer",
-                            "description": "Max traversal depth (default: 3, max: 10)",
+                            "description": "Traversal depth (default 3, max 10)",
                             "default": 3
                         },
                         "direction": {
@@ -698,44 +727,32 @@ fn tools_list() -> Value {
                 }
             },
             {
-                "name": "context",
-                "description": "Get full source context for a symbol — source code, signature, file location, and structural neighborhood (callers, callees, contained members, parents, tests).",
+                "name": "interrogate",
+                "description": "Ask a structural question about the codebase architecture — subsystems, entry points, error boundaries, coupling, cohesion, orchestrators. Not a symbol search. Use when you need to understand how things fit together rather than where a specific thing lives.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
-                        "symbol": {
+                        "question": {
                             "type": "string",
-                            "description": "Symbol name to get context for"
+                            "description": "Structural question, e.g. 'What are the main subsystems?', 'Where are the entry points?', 'What handles errors?'"
+                        },
+                        "subsystem": {
+                            "type": "string",
+                            "description": "Focus on a specific subsystem"
                         }
                     },
-                    "required": ["symbol"]
-                }
-            },
-            {
-                "name": "status",
-                "description": "Get indexing status — project root, file count, symbol count, edge count, and database size.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {}
-                }
-            },
-            {
-                "name": "index",
-                "description": "(Re)index the project. Call this after significant code changes to update the symbol database. Auto-called on first use if the database is empty.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {}
+                    "required": ["question"]
                 }
             },
             {
                 "name": "explain",
-                "description": "Explain a symbol's structural role — its evidence-bearing edges, subsystem membership, and how it fits into the graph. Reveals what the graph knows about this symbol.",
+                "description": "Understand a symbol's structural role — its evidence-bearing edges, subsystem membership, and how it fits into the graph. Use to understand what the graph knows about a symbol and why it's connected the way it is.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "symbol": {
                             "type": "string",
-                            "description": "Symbol name to explain"
+                            "description": "Symbol name"
                         }
                     },
                     "required": ["symbol"]
@@ -743,17 +760,17 @@ fn tools_list() -> Value {
             },
             {
                 "name": "topology",
-                "description": "Describe the structural topology around a region — motifs, boundary-defining symbols, and evidence clusters. Shows how the graph is wired.",
+                "description": "Map the structural wiring around a region — boundary-defining edges, evidence clusters, and hub symbols. Use to understand the shape of a neighborhood in the graph, especially around boundary or integration points.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "symbol": {
                             "type": "string",
-                            "description": "Symbol name or file path to center the topology on"
+                            "description": "Symbol or file path to center on"
                         },
                         "depth": {
                             "type": "integer",
-                            "description": "Max traversal depth (default: 2)",
+                            "description": "Traversal depth (default 2)",
                             "default": 2
                         }
                     },
@@ -762,7 +779,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "why",
-                "description": "Explain why a search result ranked where it did — the evidence chain, edge types, and structural signals that caused it to appear.",
+                "description": "Debug a search result — explain why a symbol ranked where it did for a given query. Shows the evidence chain, edge types, and structural signals. Use when a search result is surprising or you need to understand ranking behavior.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -772,76 +789,65 @@ fn tools_list() -> Value {
                         },
                         "symbol": {
                             "type": "string",
-                            "description": "The symbol name from the result to explain"
+                            "description": "The symbol name to explain"
                         }
                     },
                     "required": ["query", "symbol"]
                 }
             },
             {
-                "name": "interrogate",
-                "description": "Ask a structural question about the codebase. Answers questions about subsystems, boundaries, entry points, error flow, and architectural patterns. Not a symbol search — a structural interrogation.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        "question": {
-                            "type": "string",
-                            "description": "Structural question about the codebase, e.g. 'What are the main subsystems?', 'Where are the entry points?', 'What handles errors?'"
-                        },
-                        "subsystem": {
-                            "type": "string",
-                            "description": "Optional: focus on a specific subsystem name"
-                        }
-                    },
-                    "required": ["question"]
-                }
-            },
-            {
-                "name": "doctor",
-                "description": "Diagnose index health — check which artifacts are fresh, stale, or missing, and explain why the search mode may have been downgraded.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {}
-                }
-            },
-            {
-                "name": "upgrade_index",
-                "description": "Rebuild stale or missing index artifacts (cruncher, spectral, predictive model, fingerprints) and update the manifest. Call this after significant code changes.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {}
-                }
-            },
-            {
                 "name": "constants",
-                "description": "Find numeric literals and named constants that bridge symbols together. Shows which numbers connect code across files — error codes, port numbers, thresholds, limits. Useful for understanding structural glue and tracing shared constants.",
+                "description": "Find numeric literals and named constants shared across symbols — error codes, port numbers, thresholds. Use to trace how magic numbers connect code across files, or to find all symbols that share a specific constant value.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Optional: filter to constants matching this text (e.g. 'timeout', '404', 'port')"
+                            "description": "Filter to constants matching this text (e.g. 'timeout', '404', 'port')"
                         },
                         "top": {
                             "type": "integer",
-                            "description": "Max results to return (default: 20)",
+                            "description": "Max results (default 20)",
                             "default": 20
                         }
-                    }
+                    },
+                    "required": []
                 }
             },
             {
-                "name": "briefing",
-                "description": "Generate a structured codebase briefing — architecture overview, subsystems, public API, cross-cutting concerns, hub symbols. Designed for agents to quickly understand a codebase without individual queries.",
+                "name": "status",
+                "description": "Check indexing status — file count, symbol count, edge count, search mode, and artifact health. Use when search results seem wrong, after large code changes, or to verify the index is current.",
                 "inputSchema": {
                     "type": "object",
-                    "properties": {
-                        "compact": {
-                            "type": "boolean",
-                            "description": "Return compact briefing (top subsystems and API only)",
-                            "default": false
-                        }
-                    }
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "doctor",
+                "description": "Diagnose search quality issues — check which index artifacts are fresh, stale, or missing, and explain why search may be degraded. Use when results seem incomplete or wrong, then call `upgrade_index` to fix.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "upgrade_index",
+                "description": "Rebuild stale or missing index artifacts (cruncher, spectral, predictive, fingerprints). Call after `doctor` reports stale artifacts, or after significant code changes to restore full search quality.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "index",
+                "description": "Full reindex of the project. Expensive — only call when the database is empty, corrupted, or significantly out of date. Normal code changes do not require a full reindex.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
                 }
             }
         ]

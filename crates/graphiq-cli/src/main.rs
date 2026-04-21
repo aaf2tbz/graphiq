@@ -1329,11 +1329,14 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
 
     println!();
 
+    let graphiq_dir = project_path.join(".graphiq");
+    if !ephemeral {
+        let _ = std::fs::create_dir_all(&graphiq_dir);
+        write_agents_md(&graphiq_dir);
+    }
+
     if !skip_index && !ephemeral {
-        let db_path = project_path.join(".graphiq").join("graphiq.db");
-        if let Some(parent) = db_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+        let db_path = graphiq_dir.join("graphiq.db");
 
         if db_path.exists() {
             let _ = std::fs::remove_file(&db_path);
@@ -1392,6 +1395,16 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
     }
 
     println!();
+}
+
+fn write_agents_md(graphiq_dir: &std::path::Path) {
+    let content = include_str!("../AGENTS.md.template");
+    let agents_path = graphiq_dir.join("AGENTS.md");
+    if let Err(e) = std::fs::write(&agents_path, content) {
+        eprintln!("  warning: failed to write AGENTS.md: {e}");
+    } else {
+        println!("  wrote {}", agents_path.display());
+    }
 }
 
 fn which_graphiq() -> Option<PathBuf> {
