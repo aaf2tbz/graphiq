@@ -21,6 +21,7 @@ struct ServerState {
     fingerprints: Vec<graphiq_core::spectral::ChannelFingerprint>,
     fp_id_to_idx: std::collections::HashMap<i64, usize>,
     self_model: Option<graphiq_core::self_model::RepoSelfModel>,
+    indexing: bool,
 }
 
 fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
@@ -359,6 +360,7 @@ fn main() {
         fingerprints: Vec::new(),
         fp_id_to_idx: std::collections::HashMap::new(),
         self_model: None,
+        indexing: false,
     }));
 
     let running = Arc::new(AtomicBool::new(true));
@@ -427,6 +429,101 @@ fn main() {
     }
 }
 
+fn background_warm(state: &Arc<Mutex<ServerState>>) {
+    let needs_full_index = {
+        match state.lock() {
+            Ok(s) => db_is_empty(&s.db),
+            Err(_) => return,
+        }
+    };
+
+    if needs_full_index {
+        let mut s = match state.lock() {
+            Ok(s) => s,
+            Err(e) => {
+                log_err(&format!("warm: lock failed: {e}"));
+                return;
+            }
+        };
+        s.indexing = true;
+        log_err("warm: database empty, starting full index...");
+        if let Err(e) = do_index(&mut s) {
+            log_err(&format!("warm: full index failed: {e}"));
+        }
+        s.indexing = false;
+        log_err("warm: full index complete");
+        return;
+    }
+
+    let mut s = match state.lock() {
+        Ok(s) => s,
+        Err(e) => {
+            log_err(&format!("warm: lock failed: {e}"));
+            return;
+        }
+    };
+
+    s.cache.prewarm(&s.db, 200);
+    let db_dir = s.db_path.parent().unwrap_or(std::path::Path::new("."));
+    let ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &s.db);
+
+    if s.cruncher_index.is_none() {
+        if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
+            let hi = ac.load_holo().unwrap_or_else(|| graphiq_core::cruncher::build_holo_index(&s.db, &ci));
+            s.cruncher_index = Some(ci);
+            s.holo_index = Some(hi);
+            log_err("warm: cruncher+holo loaded from cache");
+        } else if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&s.db) {
+            let hi = graphiq_core::cruncher::build_holo_index(&s.db, &ci);
+            s.cruncher_index = Some(ci);
+            s.holo_index = Some(hi);
+            log_err("warm: cruncher+holo built");
+        }
+    }
+
+    if s.spectral_index.is_none() {
+        if let Some(si) = ac.load::<graphiq_core::spectral::SpectralIndex>("spectral") {
+            log_err("warm: spectral loaded from cache");
+            s.spectral_index = Some(si);
+        } else if let Ok(si) = graphiq_core::spectral::compute_spectral(&s.db) {
+            log_err("warm: spectral built");
+            s.spectral_index = Some(si);
+        }
+    }
+
+    if s.predictive_model.is_none() {
+        if let Some(pm) = ac.load_predictive() {
+            log_err("warm: predictive loaded from cache");
+            s.predictive_model = Some(pm);
+        } else if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&s.db) {
+            log_err("warm: predictive built");
+            s.predictive_model = Some(pm);
+        }
+    }
+
+    if s.fingerprints.is_empty() {
+        if let Some(cached) = ac.load::<(Vec<graphiq_core::spectral::ChannelFingerprint>, std::collections::HashMap<i64, usize>)>("fingerprints") {
+            log_err(&format!("warm: fingerprints loaded from cache ({} symbols)", cached.0.len()));
+            s.fingerprints = cached.0;
+            s.fp_id_to_idx = cached.1;
+        } else {
+            let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&s.db);
+            log_err(&format!("warm: fingerprints built ({} symbols)", fps.len()));
+            s.fingerprints = fps;
+            s.fp_id_to_idx = id_map;
+        }
+    }
+
+    if s.self_model.is_none() {
+        if let Ok(sm) = graphiq_core::self_model::build_self_model(&s.db) {
+            log_err(&format!("warm: self-model built ({} concepts)", sm.concepts.len()));
+            s.self_model = Some(sm);
+        }
+    }
+
+    log_err("warm: cache loading complete");
+}
+
 fn handle_message(
     msg: &Value,
     state: &Arc<Mutex<ServerState>>,
@@ -473,6 +570,10 @@ fn handle_message(
                 }
             });
             send_response(id, &result, out)?;
+            let state_c = Arc::clone(state);
+            std::thread::spawn(move || {
+                background_warm(&state_c);
+            });
         }
         "initialized" => {}
         "ping" => {
@@ -762,21 +863,27 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
     }
 
     if tool_name != "index" && tool_name != "status" && tool_name != "doctor" {
-        let needs_index = {
+        let (needs_index, currently_indexing) = {
             match state.lock() {
-                Ok(s) => db_is_empty(&s.db),
-                Err(_) => false,
+                Ok(s) => (db_is_empty(&s.db), s.indexing),
+                Err(_) => (false, false),
             }
         };
+        if currently_indexing {
+            return tool_ok("Indexing in progress — please retry in a few seconds.".into());
+        }
         if needs_index {
             let mut s = match state.lock() {
                 Ok(s) => s,
                 Err(e) => return tool_error(&format!("lock error: {e}")),
             };
+            s.indexing = true;
             log_err("auto-indexing (cold start)...");
             if let Err(e) = do_index(&mut s) {
+                s.indexing = false;
                 return tool_error(&format!("auto-index failed: {e}"));
             }
+            s.indexing = false;
         }
     }
 
