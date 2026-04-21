@@ -1,93 +1,32 @@
 # GraphIQ
 
-Local code intelligence. Index a codebase into a structural graph, then search it with ranked retrieval that understands calls, imports, type flow, and architectural roles — not just string matching.
+Structural code intelligence. GraphIQ indexes your codebase into a structural graph — calls, imports, type flow, error surfaces — and searches it with ranked retrieval that understands how your code is connected, not just what strings it contains.
 
-No embeddings. No LLM. No network. Everything runs in a single SQLite file.
+No embeddings. No LLM. No network requests. Everything lives in a single SQLite file.
 
-## How It Compares to Grep
+## Benchmarks
 
-Grep (BM25 `LIKE %term%` over all symbol names and source lines) is a strong baseline for exact lookups. GraphIQ wraps BM25 as layer 1, then adds graph structure on top. Benchmarked on 3 codebases (TypeScript, Rust, Go), **50 queries each for both MRR and NDCG** (300 total queries), fresh indexes, new query sets:
+Tested against grep (substring search over symbol names and source code) on 3 codebases, 50 queries each for NDCG and MRR (300 total):
 
-| Metric | Grep | GraphIQ | Delta |
-|---|---|---|---|
-| NDCG@10 | 0.181 | 0.296 | **+63%** |
-| MRR@10 | 0.243 | 0.428 | **+76%** |
-
-Per-codebase:
-
-| Codebase | Lang | NDCG GQ/Grep | MRR GQ/Grep |
-|---|---|---|---|
-| signetai | TypeScript | **0.339** / 0.137 (+147%) | **0.437** / 0.168 (+160%) |
-| esbuild | Go | **0.365** / 0.210 (+74%) | **0.498** / 0.256 (+95%) |
-| tokio | Rust | 0.183 / **0.196** (-7%) | **0.348** / 0.306 (+14%) |
-
-Per-category NDCG@10 (3-codebase average):
-
-| Category | Grep | GraphIQ |
+| | Grep | GraphIQ |
 |---|---|---|
-| symbol-exact | **0.733** | 0.721 |
-| relationship | 0.155 | **0.573** (3.7x) |
-| nl-descriptive | 0.112 | **0.327** (2.9x) |
-| error-debug | 0.181 | **0.311** (1.7x) |
-| nl-abstract | 0.047 | **0.049** |
-| cross-cutting | 0.038 | **0.061** |
-| file-path | **0.099** | 0.086 |
+| NDCG@10 | 0.181 | **0.296** (+63%) |
+| MRR@10 | 0.243 | **0.428** (+76%) |
 
-GraphIQ wins 5 of 7 categories. Grep retains a marginal edge on exact-name lookups. Relationship queries are the strongest structural signal — 3.7x over grep. See [docs/benchmarks.md](docs/benchmarks.md) for full methodology and per-codebase breakdowns.
+GraphIQ wins 5 of 7 query categories. The biggest gains are on relationship queries (3.7x), natural language descriptions (2.9x), and error debugging (1.7x). Grep retains a marginal edge on exact-name lookups.
 
-## Pipeline
+Full methodology and per-codebase breakdowns in [docs/benchmarks.md](docs/benchmarks.md).
 
-```
-Query -> Query Family Router (8 families)
-       -> Seed Generation: BM25 FTS5 -> per-term expansion -> graph walk -> numeric bridges
-       -> Scoring: IDF coverage + gated name overlap + neighbor fingerprints + specificity scaling
-       -> Per-Family Routing: 8 ScoreConfig presets control walk depth, expansion, signal weights
-       -> Confidence Fusion: BM25 lock -> kind boosts -> file diversity -> top_k results
-```
+## Install
 
-No spectral diffusion. No holographic matching. No predictive models. BM25 retrieves, graph walk expands, gated scoring ranks.
-
-### Query Families
-
-| Family | Detection | Example |
-|---|---|---|
-| SymbolExact | Exact name, PascalCase | `RateLimiter` |
-| SymbolPartial | Short fragment | `rate limit` |
-| NaturalDescriptive | Action verbs | `encode a value in VLQ` |
-| NaturalAbstract | "how does", "what controls" | `how does auth work` |
-| ErrorDebug | Panic/error/timeout | `timeout in channel send` |
-| CrossCuttingSet | "all", "every", plural | `all connector implementations` |
-| Relationship | "vs", "relationship" | `AsyncFd vs readiness guard` |
-| FilePath | Paths, extensions | `scheduler/worker.rs` |
-
-Each family routes to tuned seed expansion strategies. No stacking, no fusion — one path per query.
-
-### Code Graph Edge Types
-
-| Edge Type | Signal |
-|---|---|
-| Calls | Function calls |
-| Imports | Module imports |
-| Contains | Scope containment (struct contains method) |
-| SharesType | Shared type tokens in signatures |
-| SharesErrorType | Shared error parameters |
-| SharesDataShape | Shared field access patterns |
-| SharesConstant | Shared numeric/string literals |
-| StringLiteral | Shared error-related string constants |
-| CommentRef | Symbol mentions in comments |
-
-## Installation
-
-### Homebrew (macOS, Linux)
+**Homebrew (macOS, Linux)**
 
 ```bash
 brew tap aaf2tbz/graphiq
 brew install graphiq
 ```
 
-Installs three binaries: `graphiq` (CLI), `graphiq-mcp` (MCP server), `graphiq-bench` (benchmarking).
-
-### From Source
+**From source**
 
 ```bash
 git clone https://github.com/aaf2tbz/graphiq.git
@@ -95,69 +34,58 @@ cd graphiq
 cargo build --release
 ```
 
-Rust edition 2021. No system dependencies.
+Installs three binaries: `graphiq` (CLI), `graphiq-mcp` (MCP server), `graphiq-bench` (benchmarking).
 
-## CLI
+## Quick Start
 
 ```bash
-graphiq search "rate limit middleware"
-graphiq search "authenticateUser" --top 20 --file src/auth/
-graphiq search "error handler" --debug
+# Index a project
+graphiq index /path/to/project
 
+# Search
+graphiq search "rate limit middleware"
+graphiq search "authenticateUser"
+graphiq search "how does the auth flow work" --debug
+
+# Blast radius — what does this symbol touch?
 graphiq blast RateLimiter
 graphiq blast RateLimiter --depth 5 --direction forward
 
-graphiq index /path/to/project
-GRAPHIQ_DB=/tmp/graphiq.db graphiq index /path/to/project
-graphiq reindex /path/to/project
+# Diagnostics
 graphiq status
 graphiq doctor
-graphiq upgrade-index
-graphiq constants
-graphiq subsystems --roles
-graphiq roles --top 30
 
+# Set up MCP integration for your editor/agent
 graphiq setup --project /path/to/project
-graphiq demo
 ```
 
-`--debug` on search prints per-result score breakdowns, active search mode, and query family. `GRAPHIQ_DB` overrides the database path for all CLI commands.
+`--debug` prints per-result score breakdowns. `GRAPHIQ_DB` overrides the database path.
 
 ## MCP Server
 
-`graphiq-mcp` speaks JSON-RPC 2.0 over stdio. 13 tools:
+`graphiq-mcp` exposes 13 tools over JSON-RPC 2.0 (stdio) for editor and agent integration:
 
-| Tool | What it does |
+| Tool | Purpose |
 |---|---|
-| `search` | Ranked symbol search (file filter, top_k up to 50) |
-| `blast` | Blast radius (forward/backward/both, depth 1-10) |
-| `context` | Full source + structural neighborhood (callers, callees, members) |
-| `status` | Index stats, project root, database size, active search mode |
+| `briefing` | Project overview — start here |
+| `search` | Ranked symbol search with file filter and top_k |
+| `blast` | Change impact analysis (forward/backward/both, depth 1-10) |
+| `context` | Full source + structural neighborhood |
+| `why` | Explain why a result ranked where it did |
+| `interrogate` | Deep structural interrogation of a symbol |
+| `topology` | Code topology around a symbol |
+| `explain` | Natural language symbol explanation |
+| `status` | Index stats and health |
 | `index` | (Re)index the project |
-| `explain` | Symbol explanation |
-| `topology` | Code topology |
-| `why` | Relevance explanation for a result |
-| `interrogate` | Symbol interrogation |
 | `doctor` | Artifact health check |
 | `upgrade_index` | Rebuild stale artifacts |
-| `constants` | Numeric bridge lookup |
-| `briefing` | Project briefing |
+| `constants` | Numeric/string constant lookup |
 
 ```bash
 graphiq-mcp /path/to/project
-graphiq-mcp /path/to/project --db /custom/path/graphiq.db
-GRAPHIQ_DB=/custom/graphiq.db graphiq-mcp /path/to/project
 ```
 
-The MCP server lazily indexes — it starts immediately and only builds the CruncherIndex when you call `search` (or explicitly `index`). If the database is empty, all query tools return an error directing you to index first. The CruncherIndex builds in ~1 second from SQLite.
-
-On startup, the server resolves the database path in this order:
-1. `--db` flag (absolute or relative to cwd)
-2. `GRAPHIQ_DB` environment variable
-3. `.graphiq/graphiq.db` inside the project root
-4. Auto-discovery of nested indexes (e.g. monorepo with a single child index)
-
-The project root is stored in the DB at index time. If the server is given a different root than what was indexed, it uses the stored root automatically. Corrupted databases are detected and recreated on startup.
+The server lazily builds its index on first search (~1s from SQLite). Corrupted databases are detected and recreated automatically.
 
 ### Supported Harnesses
 
@@ -166,69 +94,67 @@ The project root is stored in the DB at index time. If the server is given a dif
 | opencode | `~/.config/opencode/opencode.json` | `graphiq setup` |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `graphiq setup` |
 | Codex | `~/.codex/config.toml` | `graphiq setup` |
-| Hermes | `~/.hermes/config.yaml` | `graphiq setup` |
 
-## Supported Languages
-
-36 languages recognized. 14 have dedicated TreeSitter parsers for full symbol extraction:
-
-**Full parsing (14 grammars, 16 language variants):** TypeScript, TSX, JavaScript, JSX, Rust, Python, Go, Java, C, C++, Ruby, YAML, TOML, JSON, HTML, CSS
-
-**File tracking + FTS only (20):** Kotlin, Swift, C#, PHP, Lua, Dart, Scala, Haskell, Elixir, Zig, GraphQL, Protobuf, Shell, SQL, Markdown, XML, SCSS, CMake, Qml, Dockerfile, Makefile, Meson
-
-## Storage Layout
+## How It Works
 
 ```
-.graphiq/
-  graphiq.db                SQLite (symbols, edges, FTS5 index, meta table)
-  manifest.json             artifact freshness tracking
-  cache/                    precomputed artifacts (zstd-compressed)
-    cruncher.bin.zst        adjacency lists, term sets, IDF
+Query
+  → Query Family Router (8 families)
+  → Seed Generation (BM25 FTS5 → per-term expansion → graph walk → numeric bridges)
+  → Scoring (IDF coverage + name overlap + neighbor fingerprints + specificity scaling)
+  → Ranked results
 ```
 
-Cache size for a ~20K symbol codebase: ~6.5MB. `graphiq reindex` and `graphiq upgrade-index` invalidate automatically.
+### Query Families
 
-## Search Speed
-
-| Mode | Time |
+| Family | Example |
 |---|---|
-| Cold CLI search (first run) | ~5-10s |
-| Warm CLI search (cached) | ~50ms |
-| In-process query (MCP/bench) | ~18us |
+| Symbol (exact/partial) | `RateLimiter`, `rate limit` |
+| Natural language | `encode a value in VLQ` |
+| Abstract questions | `how does auth work` |
+| Error/debug | `timeout in channel send` |
+| Cross-cutting sets | `all connector implementations` |
+| Relationships | `RateLimiter vs TokenBucket` |
+| File paths | `scheduler/worker.rs` |
 
-## Source Layout
+Each family gets its own scoring configuration — walk depth, expansion strategy, and signal weights are tuned per category.
 
-```
-graphiq/
-  crates/
-    graphiq-core/
-      seeds.rs          seed generation (BM25, name lookup, graph walk, bridges)
-      scoring.rs        scoring (IDF coverage + name match + walk evidence)
-      pipeline.rs       unified_search()
-      search.rs         search engine, query dispatch
-      query_family.rs   8-family query classifier
-      cruncher.rs       adjacency lists, term sets, IDF
-      deep_graph.rs     type flow, error type, data shape edges
-      blast.rs          blast radius computation
-      index.rs          indexing pipeline, TreeSitter parsing
-      tokenize.rs       identifier decomposition, term extraction
-      cache.rs          in-process LRU cache (neighborhoods, results, blast)
-      briefing.rs       project briefing generation
-      db.rs             SQLite schema and queries
-      languages/        14 TreeSitter grammars
-    graphiq-cli/        CLI binary
-    graphiq-mcp/        MCP server binary
-    graphiq-bench/      benchmark binary
-```
+### Graph Edge Types
+
+| Edge | What it captures |
+|---|---|
+| Calls | Direct function calls |
+| Imports | Module imports |
+| Contains | Scope containment (struct → method) |
+| SharesType | Matching type tokens in signatures |
+| SharesErrorType | Shared error parameters |
+| SharesDataShape | Shared field access patterns |
+| SharesConstant | Shared numeric/string literals |
+| CommentRef | Symbol names mentioned in comments |
+
+## Languages
+
+**Full parsing (16 variants):** TypeScript, TSX, JavaScript, JSX, Rust, Python, Go, Java, C, C++, Ruby, YAML, TOML, JSON, HTML, CSS
+
+**File tracking (20+):** Kotlin, Swift, C#, PHP, Lua, Dart, Scala, Haskell, Elixir, Zig, GraphQL, Protobuf, Shell, SQL, Markdown, XML, SCSS, CMake, Dockerfile, Makefile, Meson
+
+## Performance
+
+| Mode | Latency |
+|---|---|
+| Cold CLI (first run) | ~5-10s |
+| Warm CLI (cached) | ~50ms |
+| In-process (MCP) | ~18μs |
+
+Index size for a ~20K symbol codebase: ~6.5MB.
 
 ## Documentation
 
-- [docs/how-seed-generation-works.md](docs/how-seed-generation-works.md)
-- [docs/how-scoring-works.md](docs/how-scoring-works.md)
-- [docs/benchmarks.md](docs/benchmarks.md) — full results and methodology
-- [docs/retrieval.md](docs/retrieval.md) — pipeline details
-- [docs/research.md](docs/research.md) — experimental log
-- [docs/ROADMAP-V2.md](docs/ROADMAP-V2.md) — v2 simplification roadmap
+- [How seed generation works](docs/how-seed-generation-works.md)
+- [How scoring works](docs/how-scoring-works.md)
+- [Benchmarks](docs/benchmarks.md) — full methodology and results
+- [Retrieval pipeline](docs/retrieval.md) — pipeline details
+- [Research notes](docs/research.md) — experimental history
 
 ## License
 
