@@ -6,7 +6,7 @@ Everything runs locally. No embeddings, no LLM, no network requests. A single SQ
 
 ### What GraphIQ is not
 
-Not a semantic search engine. It doesn't understand meaning — it understands structure. A query like "how does the scheduling system work" will mostly fail because the answer requires reasoning, not graph traversal. It also doesn't do fuzzy matching or typo correction. The retrieval is built on exact term overlap and graph adjacency, weighted by information-theoretic signals (IDF, coverage fraction, specificity). This is a strength — it's deterministic and fast — but it means queries need to share vocabulary with the code.
+Not neural search. No learned weights, no embedding model, no GPU. The retrieval is built on exact term overlap and graph adjacency, weighted by information-theoretic signals (IDF, coverage fraction, specificity). It doesn't do fuzzy matching or typo correction — queries need to share vocabulary with the code. The tradeoff: it's deterministic, auditable (every score has a traceable explanation), and runs in microseconds on a laptop.
 
 ### Where it wins
 
