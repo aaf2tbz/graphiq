@@ -28,6 +28,7 @@ pub mod roles;
 pub mod cruncher;
 pub mod search;
 pub mod subsystems;
+pub mod structural_alias;
 pub mod symbol;
 pub mod tokenize;
 pub mod trace;

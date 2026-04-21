@@ -15,6 +15,7 @@ pub struct Candidate {
     pub seed_paths: HashSet<usize>,
     pub name_overlap: f64,
     pub neighbor_score: f64,
+    pub alias_score: f64,
 }
 
 pub struct ScoreConfig {
@@ -212,11 +213,22 @@ pub fn score_candidates(
                 0.0
             };
 
+            let alias_boost = if c.alias_score > 0.0 {
+                let alias_norm = c.alias_score / idf_sum.max(1e-10);
+                if alias_norm > 0.15 {
+                    1.0 * alias_norm
+                } else {
+                    0.0
+                }
+            } else {
+                0.0
+            };
+
             let seed_bonus = if c.is_seed { 1.15 } else { 1.0 };
             let kb = kind_boost(&idx.symbol_kinds[c.idx]);
             let tp = test_penalty(&idx.file_paths, idx.symbol_file_ids[c.idx]);
 
-            let raw = (base + name_overlap_additive + neighbor_boost)
+            let raw = (base + name_overlap_additive + neighbor_boost + alias_boost)
                 * coverage_frac.powf(0.3)
                 * seed_bonus
                 * kb

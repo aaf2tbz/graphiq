@@ -315,6 +315,7 @@ impl<'a> Indexer<'a> {
 
         self.compute_edge_evidence()?;
         self.generate_search_hints()?;
+        self.compute_structural_aliases()?;
         self.compute_numeric_bridges()?;
         self.compute_deep_graph()?;
         self.build_neighbor_hints()?;
@@ -355,6 +356,17 @@ impl<'a> Indexer<'a> {
         let evidence = infer_edge_evidence(self.db).map_err(|e| e)?;
         let updated = write_edge_evidence(self.db, &evidence).map_err(|e| e)?;
         eprintln!("  inferred evidence for {} edges", updated);
+        Ok(())
+    }
+
+    fn compute_structural_aliases(&self) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::structural_alias::compute_structural_aliases;
+
+        let stats = compute_structural_aliases(self.db)?;
+        eprintln!(
+            "  structural aliases: {} collision sets, {} symbols aliased",
+            stats.collision_sets, stats.symbols_aliased
+        );
         Ok(())
     }
 

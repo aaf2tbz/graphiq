@@ -52,6 +52,9 @@ pub struct CruncherIndex {
     pub name_to_indices: HashMap<String, Vec<usize>>,
     pub structural_degree: Vec<f64>,
     pub neighbor_terms: Vec<HashSet<String>>,
+
+    pub alias_terms: Vec<HashSet<String>>,
+    pub collision_names: HashSet<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -398,6 +401,27 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         })
         .collect();
 
+    eprintln!("  Cruncher: extracting structural alias terms...");
+    let alias_terms: Vec<HashSet<String>> = (0..n)
+        .map(|i| {
+            let hint_text = &symbol_hints[i];
+            if let Some(alias_start) = hint_text.find("alias:") {
+                let alias_part = &hint_text[alias_start + 6..];
+                let alias_end = alias_part.find(". ").unwrap_or(alias_part.len());
+                let alias_str = &alias_part[..alias_end];
+                cr_tokenize(alias_str).into_iter().collect()
+            } else {
+                HashSet::new()
+            }
+        })
+        .collect();
+
+    let collision_names: HashSet<String> = name_to_indices
+        .iter()
+        .filter(|(_, indices)| indices.len() >= 3)
+        .map(|(name, _)| name.clone())
+        .collect();
+
     Ok(CruncherIndex {
         n,
         symbol_ids,
@@ -414,6 +438,8 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         name_to_indices,
         structural_degree,
         neighbor_terms,
+        alias_terms,
+        collision_names,
     })
 }
 
@@ -524,6 +550,40 @@ pub fn neighbor_match_score(
                 break;
             }
         }
+    }
+    score
+}
+
+pub fn alias_match_score(
+    query_terms: &[QueryTerm],
+    alias_terms: &HashSet<String>,
+    is_collision: bool,
+) -> f64 {
+    if alias_terms.is_empty() || !is_collision {
+        return 0.0;
+    }
+    let mut score = 0.0f64;
+    let mut matched = 0usize;
+    for qt in query_terms {
+        for variant in &qt.variants {
+            if alias_terms.contains(variant) {
+                score += qt.idf * 2.0;
+                matched += 1;
+                break;
+            }
+            for at in alias_terms {
+                if at.contains(variant) || variant.contains(at.as_str()) {
+                    let ratio = variant.len().min(at.len()) as f64
+                        / variant.len().max(at.len()) as f64;
+                    score += qt.idf * ratio;
+                    matched += 1;
+                    break;
+                }
+            }
+        }
+    }
+    if matched >= 2 {
+        score *= 1.5;
     }
     score
 }
