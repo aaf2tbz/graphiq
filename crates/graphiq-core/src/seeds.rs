@@ -198,6 +198,7 @@ pub struct SeedConfig {
     pub allow_per_term: bool,
     pub allow_graph: bool,
     pub allow_numeric: bool,
+    pub allow_source_scan: bool,
 }
 
 impl SeedConfig {
@@ -213,8 +214,94 @@ impl SeedConfig {
             allow_per_term: is_nl,
             allow_graph: is_nl,
             allow_numeric: is_nl,
+            allow_source_scan: family == QueryFamily::ErrorDebug,
         }
     }
+}
+
+pub fn source_scan_seeds(
+    db: &GraphDb,
+    query: &str,
+    existing_seeds: &[(i64, f64)],
+) -> Vec<(i64, f64)> {
+    let lower = query.to_lowercase();
+    let words: Vec<&str> = query.split_whitespace().collect();
+
+    let error_signals: &[&str] = &[
+        "error", "panic", "failed", "failure", "deadlock", "timeout", "crash",
+        "exception", "abort", "refused", "overflow", "underflow",
+        "detected", "leaked", "mismatch", "conflict", "invalid",
+    ];
+
+    let generic: HashSet<&str> = [
+        "the", "a", "an", "is", "are", "was", "to", "when", "after",
+        "during", "with", "without", "inside", "via", "in", "for",
+        "from", "of", "and", "or", "not", "async", "task", "context",
+    ].iter().copied().collect();
+
+    let mut phrases: Vec<String> = Vec::new();
+
+    for cap in regex::Regex::new(r#""([^"]{3,})""#).unwrap().captures_iter(query) {
+        phrases.push(cap[1].to_string());
+    }
+    for cap in regex::Regex::new(r"'([^']{3,})'").unwrap().captures_iter(query) {
+        phrases.push(cap[1].to_string());
+    }
+
+    for sig in error_signals {
+        if !lower.contains(sig) {
+            continue;
+        }
+        for (i, w) in words.iter().enumerate() {
+            if !w.to_lowercase().contains(sig) {
+                continue;
+            }
+            let start = i.saturating_sub(2);
+            let end = (i + 3).min(words.len());
+            let window = &words[start..end];
+            let has_specific = window.iter().any(|w| {
+                let wl = w.to_lowercase();
+                !generic.contains(wl.as_str())
+                    && !error_signals.iter().any(|s| wl.contains(s))
+            });
+            if has_specific {
+                let phrase = window.join(" ");
+                if phrase.len() >= 6 {
+                    phrases.push(phrase);
+                }
+            }
+        }
+    }
+
+    phrases.sort_unstable();
+    phrases.dedup();
+    if phrases.is_empty() {
+        return Vec::new();
+    }
+
+    let existing_ids: HashSet<i64> = existing_seeds.iter().map(|(id, _)| *id).collect();
+    let conn = db.conn();
+    let mut candidates: HashMap<i64, f64> = HashMap::new();
+
+    for phrase in &phrases {
+        let escaped = phrase.replace('%', "\\%").replace('_', "\\_");
+        let pat = format!("%{}%", escaped);
+        if let Ok(mut stmt) = conn.prepare(
+            "SELECT id FROM symbols WHERE source LIKE ?1 ESCAPE '\\' LIMIT 50"
+        ) {
+            if let Ok(rows) = stmt.query_map([&pat], |row| row.get::<_, i64>(0)) {
+                for id in rows.filter_map(|r| r.ok()) {
+                    if !existing_ids.contains(&id) {
+                        *candidates.entry(id).or_insert(0.0) += 1.0;
+                    }
+                }
+            }
+        }
+    }
+
+    let mut results: Vec<(i64, f64)> = candidates.into_iter().collect();
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    results
 }
 
 pub fn generate_seeds(
@@ -229,6 +316,15 @@ pub fn generate_seeds(
     if config.allow_per_term {
         let term_seeds = per_term_fts_expansion(&fts, query, &seeds, config.family);
         for (id, score) in term_seeds {
+            if !seeds.iter().any(|(sid, _)| *sid == id) {
+                seeds.push((id, score));
+            }
+        }
+    }
+
+    if config.allow_source_scan {
+        let scan_seeds = source_scan_seeds(db, query, &seeds);
+        for (id, score) in scan_seeds {
             if !seeds.iter().any(|(sid, _)| *sid == id) {
                 seeds.push((id, score));
             }
