@@ -482,3 +482,57 @@ These precedents from failed experiments are directly relevant to future phases:
 | Channel capacity replacement | Additive adjustments work; full replacement causes regressions |
 | CARE hard tier ordering | Fusion must respect confidence continuum, not binary tiers |
 | Self-model on cross-cutting | Concept nodes help abstract queries but hurt set queries — different answer shapes need different substrates |
+
+### Phase 26: SNP Structural Fallback + Source Scan Seeds
+
+The tokio problem: generic function names (`run`, `handle`, `poll`) give BM25 nothing distinctive. A search for "how does blocking work" matches hundreds of functions equally. The spectral expansion then diffuses from undifferentiated seeds — garbage in, garbage out.
+
+**Structural Neighborhood Profiling (SNP):** Instead of relying on BM25's term overlap to find initial seeds, SNP uses the graph topology directly. For each BM25 seed, compute a structural profile (edge-type distribution of its 1-hop neighborhood: calls, imports, contains, etc.). Compare query term co-occurrence against these profiles. Candidates whose neighborhood "looks like" what the query describes get boosted even when their name doesn't match any query term.
+
+**Source scan seeds (ErrorDebug only):** When a query mentions error messages, panic text, or debug strings, scan source code for those exact strings. Any symbol whose source contains the error string becomes a seed candidate, bypassing BM25 entirely. Gated to ErrorDebug queries because enabling for other query types pollutes results with false positives.
+
+**Holographic name extraction:** Extracted the holographic name encoding into a standalone `holo_name.rs` module. Names are encoded as deterministic FFT vectors — `holo_hash_seed` produces a reproducible unit vector per term, and `holo_name` stacks term vectors into a fixed-width representation. This is query-independent infrastructure used by both scoring and SNP.
+
+**Code changes (~2,780 lines removed):**
+- `structural_fallback.rs` — SNP implementation
+- `holo_name.rs` — extracted holographic name encoding
+- `seeds.rs` — source scan seed generator (ErrorDebug only)
+- `pipeline.rs` — SNP fallback block, source scan candidate pass
+- `scoring.rs` — `source_scan_hit`, `source_scan_floor`, `source_scan_mult` in scoring
+
+**Results (v7, 3 codebases):**
+
+| Codebase | v6 NDCG | v7 NDCG | Δ |
+|---|---|---|---|
+| signetai | 0.397 | 0.323 | -0.074* |
+| esbuild | 0.453 | 0.403 | -0.050 |
+| tokio | 0.284 | 0.291 | +0.007 |
+
+*Signetai grew from 20,870 to 23,215 symbols (+11%) between benchmarks, confounding comparison. Tokio improved (target codebase for SNP). Esbuild regressed on some NL queries — its descriptive names already had sufficient BM25 signal, and the SNP fallback occasionally overrides good BM25 seeds with structural noise.
+
+**Key lessons:**
+- **SNP helps codebases with generic names** (tokio), is neutral-to-negative on codebases with descriptive names (esbuild). This confirms Phase 8's lesson: codebase characteristics matter more than query characteristics.
+- **Source scan must be gated** — enabling for all query types causes severe false positives. ErrorDebug-only gating is the right restriction.
+- **Predictive surprise and MDL must be kept** — removing them regressed esbuild by 0.044 and 0.050 respectively. These signals are load-bearing for descriptive-name codebases.
+
+### Phase 27: MCP Server Hardening
+
+Seven production-readiness improvements to the MCP server (`graphiq-mcp`) for agent usability:
+
+**#1 Cold-start readiness:** Added `warming` field to `ServerState`. `initialize` returns `_meta.ready: false` when artifacts aren't loaded. `background_warm` runs in a thread and sets `warming=true` during load, `false` after. Tool calls during warming return a friendly message instead of panicking or returning stale data.
+
+**#2 Warming state in status:** `tool_status` appends `(warming up)` to the search mode line when `state.warming` is true. Agents can poll `status` to know when the index is ready.
+
+**#3 Interrogate synonyms + fallback:** Added synonyms to keyword-matching branches (organized, layout, overview, init, bootstrap, panic, crash, exception, api, surface, contract). When no keywords match, fallback shows the top 10 subsystems by size — always useful, never empty.
+
+**#4 Constants output truncation:** Symbol names in `constants` tool output can contain entire JSON objects or SVG code (from inline data). Truncated to 40 characters with `...`. Collapsed to one line per entry for readability.
+
+**#5 Blast disambiguation:** When multiple symbols match a `blast` query, shows alternatives with `file_id` and source preview instead of silently picking the first match.
+
+**#6 top_k clamping:** `search` tool caps `top_k` at 50. Shows `(capped from N)` in the search header when the requested value exceeds the cap.
+
+**#7 Why trace formatting:** Removed the confusing "reconstructed, no trace available" label. Improved rank display format.
+
+**Task-oriented tool descriptions + AGENTS.md on install:** Rewrote all 13 MCP tool descriptions to be task-oriented (what to use when) rather than capability-oriented (what the tool does). Added `write_agents_md()` to `graphiq setup` — writes `.graphiq/AGENTS.md` with a quick-reference table, 5 workflow guides, and per-tool usage details. Uses `include_str!("../AGENTS.md.template")` so the template lives in the crate and can be updated independently. Does NOT overwrite existing project AGENTS.md files.
+
+**Key lesson:** MCP tool ordering matters. `briefing` should be first (orient the agent), `search` second (most common action), maintenance tools last (rarely needed). Tool descriptions should answer "when should I use this?" not "what does this do?"

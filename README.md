@@ -10,30 +10,30 @@ Grep (BM25 `LIKE %term%` over all symbol names and source lines) is a strong bas
 
 | Metric | Grep | GraphIQ | Delta |
 |---|---|---|---|
-| MRR@10 | 0.941 | 0.959 | +1.9% |
-| NDCG@10 | 0.288 | 0.378 | +31% |
-| Combined | 0.615 | 0.669 | +8.7% |
+| MRR@10 | 0.927 | 0.922 | -0.5% |
+| NDCG@10 | 0.282 | 0.339 | +20% |
+| Combined | 0.605 | 0.631 | +4.3% |
 
 Per-category NDCG@10 (3-codebase average):
 
 | Category | Grep | GraphIQ |
 |---|---|---|
-| symbol-exact | 0.887 | 0.899 |
-| symbol-partial | 0.711 | 0.708 |
-| nl-descriptive | 0.069 | 0.289 |
-| nl-abstract | 0.030 | 0.216 |
-| error-debug | 0.159 | 0.268 |
-| file-path | 0.066 | 0.048 |
-| cross-cutting | 0.000 | 0.137 |
+| symbol-exact | 0.887 | 0.926 |
+| symbol-partial | 0.691 | 0.688 |
+| nl-descriptive | 0.061 | 0.217 |
+| nl-abstract | 0.029 | 0.242 |
+| error-debug | 0.159 | 0.040 |
+| file-path | 0.043 | 0.081 |
+| cross-cutting | 0.013 | 0.099 |
 
-GraphIQ wins 5 of 7 categories. File-path queries remain grep's strength. See [docs/benchmarks.md](docs/benchmarks.md) for per-codebase breakdowns and methodology.
+GraphIQ wins 5 of 7 categories. Grep retains an edge on MRR exact-name lookups and error-debug queries. See [docs/benchmarks.md](docs/benchmarks.md) for per-codebase breakdowns and methodology.
 
 ## Pipeline
 
 ```
 Query -> Query Family Router (8 families)
-      -> Seed Generation: BM25 -> name lookup -> graph walk -> numeric bridges -> self-model (~100 candidates)
-      -> Spectral Expansion: Chebyshev heat diffusion on graph Laplacian (~200 candidates)
+      -> Seed Generation: BM25 -> name lookup -> graph walk -> numeric bridges -> self-model -> source scan (ErrorDebug) (~100 candidates)
+      -> Spectral Expansion: Chebyshev heat diffusion on graph Laplacian + SNP structural fallback (~200 candidates)
       -> Unified Scoring: IDF coverage + holographic name gate + predictive surprise + MDL
       -> Confidence Fusion: BM25 lock -> kind boosts -> file diversity -> top_k results
 ```

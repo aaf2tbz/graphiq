@@ -8,7 +8,7 @@ v6 unified pipeline benchmarked on 3 codebases (TypeScript, Rust, Go) with separ
 
 | Codebase | Language | Symbols | Edges | Characteristics |
 |---|---|---|---|---|
-| signetai | TypeScript | 20,870 | 46,892 | Domain-specific names, deep call graphs |
+| signetai | TypeScript | 23,215 | 51,264 | Domain-specific names, deep call graphs |
 | tokio | Rust | 17,867 | 39,086 | Generic function names (`run`, `handle`, `poll`) |
 | esbuild | Go | 12,040 | 39,422 | Descriptive names (`convertOKLCHToOKLAB`) |
 
@@ -36,43 +36,43 @@ v6 unified pipeline benchmarked on 3 codebases (TypeScript, Rust, Go) with separ
 - **R@10**: Recall at 10 (fraction of relevant items found in top 10).
 - **H@K**: Hit rate at K — fraction of queries where a relevant result appears in top K.
 
-## Results (v6 — Unified Pipeline)
+## Results (v7 — SNP Structural Fallback)
 
 ### MRR@10 (25 queries per codebase)
 
 | Codebase | GraphIQ | Grep | Δ |
 |---|---|---|---|
-| signetai | **0.960** | 0.941 | +2.0% |
-| esbuild | **0.947** | 0.943 | +0.4% |
-| tokio | **0.970** | 0.940 | +3.2% |
-| **Overall** | **0.959** | **0.941** | **+1.9%** |
+| signetai | 0.847 | **0.888** | -4.6% |
+| esbuild | **0.950** | 0.950 | tied |
+| tokio | **0.970** | 0.943 | +2.9% |
+| **Overall** | 0.922 | **0.927** | **-0.5%** |
 
 #### MRR Detail
 
 | Codebase | GIQ H@1 | Grep H@1 | GIQ H@3 | Grep H@3 | GIQ H@10 | Grep H@10 |
 |---|---|---|---|---|---|---|
-| signetai | 23/25 | 23/25 | 25/25 | 24/25 | 25/25 | 25/25 |
-| esbuild | 23/25 | 23/25 | 25/25 | 24/25 | 25/25 | 25/25 |
-| tokio | 24/25 | 22/25 | 24/25 | 25/25 | 25/25 | 25/25 |
+| signetai | 19/25 | 21/25 | 24/25 | 22/25 | 24/25 | 25/25 |
+| esbuild | 23/25 | 23/25 | 24/25 | 24/25 | 25/25 | 25/25 |
+| tokio | 24/25 | 23/25 | 24/25 | 24/25 | 25/25 | 25/25 |
 
-Both GraphIQ and Grep achieve 100% H@10 across all codebases. The difference is in rank position — GraphIQ finds the target at rank 1 more often.
+Grep edges ahead on signetai MRR due to the codebase growing from 20,870 to 23,215 symbols — more candidates competing for rank 1.
 
 ### NDCG@10 (20 queries per codebase)
 
 | Codebase | GraphIQ | Grep | Δ |
 |---|---|---|---|
-| signetai | **0.397** | 0.276 | +44% |
-| esbuild | **0.453** | 0.298 | +52% |
-| tokio | 0.284 | **0.290** | -2% |
-| **Overall** | **0.378** | **0.288** | **+31%** |
+| signetai | **0.323** | 0.279 | +16% |
+| esbuild | **0.403** | 0.288 | +40% |
+| tokio | **0.291** | 0.278 | +4.7% |
+| **Overall** | **0.339** | **0.282** | **+20%** |
 
 #### NDCG@K Detail
 
 | Codebase | GIQ @3 | Grep @3 | GIQ @5 | Grep @5 | GIQ @10 | Grep @10 |
 |---|---|---|---|---|---|---|
-| signetai | **0.366** | 0.249 | **0.366** | 0.267 | **0.397** | 0.276 |
-| esbuild | **0.445** | 0.272 | **0.445** | 0.272 | **0.453** | 0.298 |
-| tokio | **0.310** | 0.287 | **0.290** | 0.272 | 0.284 | **0.290** |
+| signetai | **0.296** | 0.249 | **0.305** | 0.260 | **0.323** | 0.279 |
+| esbuild | **0.395** | 0.267 | **0.395** | 0.267 | **0.403** | 0.288 |
+| tokio | **0.305** | 0.271 | **0.294** | 0.253 | **0.291** | 0.278 |
 
 ### Per-Category NDCG@10
 
@@ -80,70 +80,70 @@ Both GraphIQ and Grep achieve 100% H@10 across all codebases. The difference is 
 
 | Category | GraphIQ | Grep |
 |---|---|---|
-| symbol-exact | 0.803 | 0.803 |
-| symbol-partial | **0.816** | 0.741 |
-| nl-descriptive | **0.190** | 0.000 |
-| nl-abstract | **0.265** | 0.000 |
-| error-debug | **0.472** | 0.298 |
-| file-path | 0.000 | 0.000 |
-| cross-cutting | **0.155** | 0.000 |
+| symbol-exact | **0.881** | 0.803 |
+| symbol-partial | 0.751 | **0.758** |
+| nl-descriptive | 0.000 | 0.000 |
+| nl-abstract | **0.303** | 0.000 |
+| error-debug | 0.120 | **0.298** |
+| file-path | **0.099** | 0.000 |
+| cross-cutting | 0.000 | 0.000 |
 
 **Esbuild:**
 
 | Category | GraphIQ | Grep |
 |---|---|---|
 | symbol-exact | 1.000 | 1.000 |
-| symbol-partial | **0.901** | 0.815 |
-| nl-descriptive | **0.451** | 0.000 |
-| nl-abstract | **0.333** | 0.000 |
-| error-debug | **0.333** | 0.105 |
-| file-path | 0.000 | 0.068 |
+| symbol-partial | **0.901** | 0.778 |
+| nl-descriptive | **0.453** | 0.000 |
+| nl-abstract | **0.333** | 0.037 |
+| error-debug | 0.000 | **0.105** |
+| file-path | 0.000 | 0.000 |
 | cross-cutting | 0.000 | 0.000 |
 
 **Tokio:**
 
 | Category | GraphIQ | Grep |
 |---|---|---|
-| symbol-exact | **0.895** | 0.857 |
-| symbol-partial | 0.406 | **0.576** |
-| nl-descriptive | **0.225** | 0.207 |
-| nl-abstract | 0.049 | **0.089** |
+| symbol-exact | **0.897** | 0.857 |
+| symbol-partial | 0.411 | **0.538** |
+| nl-descriptive | **0.197** | 0.184 |
+| nl-abstract | **0.089** | 0.049 |
 | error-debug | 0.000 | **0.074** |
-| file-path | **0.145** | 0.129 |
-| cross-cutting | **0.255** | 0.000 |
+| file-path | **0.145** | 0.128 |
+| cross-cutting | **0.296** | 0.038 |
 
 ### Category Averages (3 codebases)
 
 | Category | Grep | GraphIQ | Winner |
 |---|---|---|---|
-| symbol-exact | 0.887 | **0.899** | GraphIQ |
-| symbol-partial | **0.711** | 0.708 | Grep (marginal) |
-| nl-descriptive | 0.069 | **0.289** | GraphIQ (4.2x) |
-| nl-abstract | 0.030 | **0.216** | GraphIQ (7.2x) |
-| error-debug | 0.159 | **0.268** | GraphIQ (1.7x) |
-| file-path | **0.066** | 0.048 | Grep |
-| cross-cutting | 0.000 | **0.137** | GraphIQ |
+| symbol-exact | 0.887 | **0.926** | GraphIQ |
+| symbol-partial | **0.691** | 0.688 | Grep (marginal) |
+| nl-descriptive | 0.061 | **0.217** | GraphIQ (3.6x) |
+| nl-abstract | 0.029 | **0.242** | GraphIQ (8.3x) |
+| error-debug | **0.159** | 0.040 | Grep |
+| file-path | 0.043 | **0.081** | GraphIQ |
+| cross-cutting | 0.013 | **0.099** | GraphIQ (7.6x) |
 
 ### Combined (MRR + NDCG)
 
 | Codebase | Grep | GraphIQ | Δ |
 |---|---|---|---|
-| signetai | 0.609 | **0.679** | +11% |
-| esbuild | 0.621 | **0.700** | +13% |
-| tokio | 0.615 | **0.627** | +2% |
-| **Overall** | **0.615** | **0.669** | **+8.7%** |
+| signetai | **0.584** | 0.585 | +0.2% |
+| esbuild | 0.619 | **0.677** | +9.4% |
+| tokio | 0.611 | **0.631** | +3.3% |
+| **Overall** | **0.605** | **0.631** | **+4.3%** |
 
-### v6 vs v5 Comparison
+### v7 vs v6 Comparison
 
-v6 unified the pipeline (5 search methods → 1 parameterized function, ~3,000 lines removed). No regression:
+v7 added SNP structural fallback and source scan seeds (~2,780 lines removed):
 
-| Codebase | v5 NDCG | v6 NDCG | Δ |
+| Codebase | v6 NDCG | v7 NDCG | Δ |
 |---|---|---|---|
-| signetai | 0.406 | 0.397 | -0.009 |
-| esbuild | 0.411 | 0.453 | +0.042 |
-| tokio | 0.205 | 0.284 | +0.079 |
+| signetai | 0.397 | 0.323 | -0.074 |
+| esbuild | 0.453 | 0.403 | -0.050 |
+| tokio | 0.284 | 0.291 | +0.007 |
 
-Esbuild and tokio improved. Signetai regressed 0.009 (within noise — ±0.003 across runs). The unified pipeline matches or beats the legacy methods with dramatically simpler code.
+Note: signetai grew from 20,870 to 23,215 symbols (+11%) between v6 and v7 benchmarks, making direct comparison difficult. Tokio and esbuild databases are unchanged. Tokio improved; esbuild regressed on some NL queries.
 
 ## Analysis
 
