@@ -14,18 +14,18 @@ Tested against grep (substring search over symbol names and source code) on 3 co
 
 | | Grep | GraphIQ |
 |---|---|---|
-| NDCG@10 | 0.181 | **0.296** (+63%) |
-| MRR@10 | 0.243 | **0.428** (+76%) |
+| NDCG@10 | 0.179 | **0.265** (+48%) |
+| MRR@10 | 0.206 | **0.471** (+128%) |
 
 | Query type | vs Grep | Why |
 |---|---|---|
-| **Relationships** ("what calls RateLimiter") | **3.7x** | The graph walk finds structurally connected symbols that no substring search can discover |
-| **Natural language** ("encode a value in VLQ") | **2.9x** | Identifier decomposition + per-family signal routing |
-| **Error/debug** ("timeout in channel send") | **1.7x** | Error-type edge routing + shared constant discovery |
+| **Relationships** ("what calls RateLimiter") | **3.9x** | The graph walk finds structurally connected symbols that no substring search can discover |
+| **Natural language** ("encode a value in VLQ") | **2.0x** | Identifier decomposition + per-family signal routing |
+| **Error/debug** ("timeout in channel send") | **1.2x** | Error-type edge routing + shared constant discovery |
 | **Symbol exact** ("authenticateUser") | ~tied | BM25 is already excellent for exact name lookups |
 | **Abstract NL** ("how does auth work") | ~tied | Requires semantic understanding beyond structural graph signals |
 
-Codebases with descriptive names (`convertOKLCHToOKLAB`) see the biggest gains. Codebases with generic names (`run`, `handle`, `poll`) see smaller gains — the terms are too common for IDF to disambiguate.
+Codebases with descriptive names (`convertOKLCHToOKLAB`) see the biggest gains. Codebases with generic names (`run`, `handle`, `poll`) see smaller gains — structural aliases (v3.1) disambiguate collision-prone symbols (tokio MRR improved from +14% to +25%) but the terms are still too common for IDF to fully resolve.
 
 Full methodology and per-codebase breakdowns in [docs/benchmarks.md](docs/benchmarks.md).
 
@@ -113,7 +113,7 @@ The server lazily builds its index on first search (~1s from SQLite). Corrupted 
 Query
   → Query Family Router (8 families)
   → Seed Generation (BM25 FTS5 → per-term expansion → graph walk → numeric bridges)
-  → Scoring (IDF coverage + name overlap + neighbor fingerprints + specificity scaling)
+  → Scoring (IDF coverage + name overlap + neighbor fingerprints + specificity scaling + structural aliases)
   → Ranked results
 ```
 

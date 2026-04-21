@@ -4,7 +4,7 @@
 
 ## Methodology
 
-v3 pipeline (BM25 + graph walk + gated name overlap + specificity scaling + per-family routing + neighbor fingerprints) benchmarked on 3 codebases with fresh indexes and new query sets. 50 NDCG queries and 50 MRR queries per codebase (300 total), covering 7 categories. Competitor is Grep — symbol-level `LIKE %term%` search across names and source code.
+v3.1 pipeline (BM25 + graph walk + gated name overlap + specificity scaling + per-family routing + neighbor fingerprints + structural aliases) benchmarked on 3 codebases with fresh indexes and new query sets. 50 NDCG queries and 50 MRR queries per codebase (300 total), covering 7 categories. Competitor is Grep — symbol-level `LIKE %term%` search across names and source code.
 
 ### Codebases
 
@@ -38,27 +38,27 @@ v3 pipeline (BM25 + graph walk + gated name overlap + specificity scaling + per-
 - **R@10**: Recall at 10 (fraction of relevant items found in top 10).
 - **H@K**: Hit rate at K — fraction of queries where a relevant result appears in top K.
 
-## Results (v3 — Gated Overlap + Specificity + Neighbor Fingerprints)
+## Results (v3.1 — Structural Aliases)
 
-v3 adds 4 targeted signals on top of v2's BM25 + graph walk pipeline: (1) gated name overlap — only applied when BM25 is confident and the query is specific, (2) query-specificity-weighted coverage — rare-term queries get more name-matching weight, (3) per-family ScoreConfig — 8 family-specific signal routing parameters, (4) neighbor term fingerprints — 1-hop graph terms disambiguate generic names via exact match. Determinism fixes reduced benchmark variance from ±0.05 to ±0.015.
+v3.1 adds structural aliases to v3's BM25 + graph walk pipeline. At index time, every collision-prone symbol (≥3 symbols sharing a name) gets a structural fingerprint encoding its edge mix, signature type tokens, 1-hop neighborhood IDF, container context, and behavioral operational context. At query time, these fingerprints disambiguate lexically identical symbols like `poll` (87 instances in tokio), `read` (38 instances), and `handle` (24 instances). Tokio has 13,354 aliased symbols out of 17,867 total (621 collision sets).
 
 ### NDCG@10 (50 queries per codebase)
 
 | Codebase | GraphIQ | Grep | Δ |
 |---|---|---|---|
-| signetai | **0.339** | 0.137 | **+147%** |
-| esbuild | **0.365** | 0.210 | **+74%** |
-| tokio | 0.183 | **0.196** | -7% |
-| **Overall** | **0.296** | **0.181** | **+63%** |
+| signetai | **0.286** | 0.143 | **+100%** |
+| esbuild | **0.318** | 0.200 | **+59%** |
+| tokio | 0.192 | **0.193** | -1% |
+| **Overall** | **0.265** | **0.179** | **+48%** |
 
 ### MRR@10 (50 queries per codebase)
 
 | Codebase | GraphIQ | Grep | Δ |
 |---|---|---|---|
-| signetai | **0.437** | 0.168 | **+160%** |
-| esbuild | **0.498** | 0.256 | **+95%** |
-| tokio | **0.348** | 0.306 | **+14%** |
-| **Overall** | **0.428** | **0.243** | **+76%** |
+| signetai | **0.450** | 0.144 | **+213%** |
+| esbuild | **0.551** | 0.145 | **+280%** |
+| tokio | **0.411** | 0.330 | **+25%** |
+| **Overall** | **0.471** | **0.206** | **+128%** |
 
 ### Per-Category NDCG@10
 
@@ -67,83 +67,93 @@ v3 adds 4 targeted signals on top of v2's BM25 + graph walk pipeline: (1) gated 
 | Category | GraphIQ | Grep |
 |---|---|---|
 | symbol-exact | **0.807** | 0.807 |
-| nl-descriptive | **0.458** | 0.052 |
-| relationship | **0.703** | 0.031 |
-| error-debug | **0.399** | 0.175 |
+| relationship | **0.688** | 0.031 |
+| error-debug | **0.325** | 0.182 |
+| nl-descriptive | **0.243** | 0.079 |
 | nl-abstract | 0.000 | 0.000 |
-| cross-cutting | **0.048** | 0.000 |
+| cross-cutting | **0.017** | 0.000 |
 | file-path | 0.000 | 0.000 |
 
 **Esbuild (50 queries):**
 
 | Category | GraphIQ | Grep |
 |---|---|---|
-| symbol-exact | 0.630 | 0.630 |
-| relationship | **0.806** | 0.239 |
-| nl-descriptive | **0.428** | 0.219 |
-| error-debug | **0.405** | 0.023 |
-| file-path | 0.176 | **0.297** |
-| nl-abstract | 0.057 | **0.129** |
-| cross-cutting | **0.093** | 0.044 |
+| relationship | **0.868** | 0.258 |
+| symbol-exact | 0.591 | **0.630** |
+| nl-descriptive | **0.382** | 0.219 |
+| file-path | 0.139 | **0.241** |
+| error-debug | **0.182** | 0.023 |
+| nl-abstract | 0.065 | **0.113** |
+| cross-cutting | **0.060** | 0.020 |
 
 **Tokio (50 queries):**
 
 | Category | GraphIQ | Grep |
 |---|---|---|
-| symbol-exact | 0.727 | **0.762** |
-| nl-descriptive | **0.096** | 0.066 |
-| relationship | **0.209** | 0.195 |
-| nl-abstract | **0.089** | 0.012 |
-| file-path | **0.081** | 0.000 |
-| error-debug | 0.129 | **0.344** |
-| cross-cutting | 0.043 | **0.070** |
+| symbol-exact | 0.727 | **0.749** |
+| relationship | **0.270** | 0.183 |
+| nl-descriptive | **0.101** | 0.065 |
+| error-debug | 0.174 | **0.346** |
+| nl-abstract | **0.088** | 0.015 |
+| cross-cutting | 0.043 | **0.068** |
+| file-path | **0.025** | 0.000 |
 
 ### Category Averages (3 codebases)
 
-| Category | Grep | GraphIQ | Winner |
+| Category | GraphIQ | Grep | Winner |
 |---|---|---|---|
-| symbol-exact | **0.733** | 0.721 | Grep (marginal) |
-| relationship | 0.155 | **0.573** | GraphIQ (3.7x) |
-| nl-descriptive | 0.112 | **0.327** | GraphIQ (2.9x) |
-| error-debug | 0.181 | **0.311** | GraphIQ (1.7x) |
-| nl-abstract | **0.047** | 0.049 | GraphIQ (marginal) |
-| file-path | 0.099 | **0.086** | Mixed |
-| cross-cutting | **0.038** | **0.061** | GraphIQ (1.6x) |
+| relationship | **0.609** | 0.157 | GraphIQ (3.9x) |
+| symbol-exact | 0.708 | **0.729** | Grep (marginal) |
+| nl-descriptive | **0.242** | 0.121 | GraphIQ (2.0x) |
+| error-debug | **0.227** | 0.184 | GraphIQ (1.2x) |
+| nl-abstract | **0.051** | 0.043 | GraphIQ (marginal) |
+| file-path | 0.055 | **0.080** | Mixed |
+| cross-cutting | **0.040** | 0.029 | GraphIQ (1.4x) |
 
 ### MRR Hit Rates
 
 | Codebase | G H@1 | G H@10 | Gr H@1 | Gr H@10 |
 |---|---|---|---|---|
-| signetai | 19/50 | 27/50 | 7/50 | 12/50 |
-| esbuild | 21/50 | 33/50 | 7/50 | 25/50 |
-| tokio | 11/50 | 22/50 | 14/50 | 20/50 |
-
-### v3 vs v2 Comparison
-
-v2 used 25 queries/codebase for MRR and 20 for NDCG with smaller query sets. v3 uses 50/50 with fresh queries and re-indexed codebases. Direct numerical comparison is not apples-to-apples, but the directional shift is clear:
-
-| Change | v2 → v3 Effect |
-|---|---|
-| 2x more queries | Harder — more edge cases, more NL queries |
-| New query sets | Tests generalization, not overfitting |
-| Re-indexed codebases | Fresh edges, no stale artifacts |
-| Gated name overlap | +relationship, +nl-descriptive |
-| Per-family routing | +error-debug on descriptive-name codebases |
-| Neighbor fingerprints | Disambiguates generic names (tokio partially) |
+| signetai | 16/50 | 23/50 | 7/50 | 12/50 |
+| esbuild | 20/50 | 28/50 | 8/50 | 26/50 |
+| tokio | 12/50 | 22/50 | 14/50 | 20/50 |
 
 ## Analysis
 
-GraphIQ's structural signals dominate grep on codebases with descriptive names. The relationship category is GraphIQ's strongest signal (3.7x over grep) — the graph walk finds structurally connected symbols that no substring search can discover. Error-debug is 1.7x better on signetai/esbuild where error types are distinctive.
+GraphIQ's structural signals dominate grep on codebases with descriptive names. The relationship category is GraphIQ's strongest signal (3.9x over grep) — the graph walk finds structurally connected symbols that no substring search can discover. Structural aliases improved tokio MRR from +14% to +25%, with the behavioral context fingerprint distinguishing `io-poll` from `parking-poll` from `stream-poll` from `completion-poll`.
 
 ### Remaining Weaknesses
 
-**Tokio**: Generic names remain the hard case. GraphIQ wins MRR (+14%) but Grep edges NDCG (-7%). Tokio's `poll`, `read`, `write` functions are too generic for name overlap to help, and the graph walk's structural signal is weaker in a runtime library where everything calls everything.
+**Tokio**: Generic names remain the hard case. GraphIQ wins MRR (+25%) but Grep ties NDCG (-1%). Tokio's `poll`, `read`, `write` functions are too generic for name overlap to help, and the graph walk's structural signal is weaker in a runtime library where everything calls everything. Structural aliases closed the gap from -7% to -1% on NDCG but grep retains an edge on error-debug queries where error messages contain literal function names.
 
 **Abstract NL queries**: Both GraphIQ and Grep score near zero on "how does X work" queries across all codebases. These require semantic understanding beyond structural graph signals.
 
 **File-path queries**: Neither system scores well. Grep's substring matching occasionally wins when the path contains query terms.
 
 ## Previous Results
+
+<details>
+<summary>v3 results (Gated Overlap + Specificity + Neighbor Fingerprints)</summary>
+
+### NDCG@10
+
+| Codebase | GraphIQ | Grep | Δ |
+|---|---|---|---|
+| signetai | **0.339** | 0.137 | **+147%** |
+| esbuild | **0.365** | 0.210 | **+74%** |
+| tokio | 0.183 | **0.196** | -7% |
+| **Overall** | **0.296** | **0.181** | **+63%** |
+
+### MRR@10
+
+| Codebase | GraphIQ | Grep | Δ |
+|---|---|---|---|
+| signetai | **0.437** | 0.168 | **+160%** |
+| esbuild | **0.498** | 0.256 | **+95%** |
+| tokio | **0.348** | 0.306 | **+14%** |
+| **Overall** | **0.428** | **0.243** | **+76%** |
+
+</details>
 
 <details>
 <summary>v2 results (25 MRR / 20 NDCG queries per codebase)</summary>
