@@ -15,14 +15,7 @@ struct ServerState {
     db: graphiq_core::db::GraphDb,
     cache: graphiq_core::cache::HotCache,
     cruncher_index: Option<graphiq_core::cruncher::CruncherIndex>,
-    holo_index: Option<graphiq_core::holo_name::HoloIndex>,
-    spectral_index: Option<graphiq_core::spectral::SpectralIndex>,
-    predictive_model: Option<graphiq_core::spectral::PredictiveModel>,
-    fingerprints: Vec<graphiq_core::spectral::ChannelFingerprint>,
-    fp_id_to_idx: std::collections::HashMap<i64, usize>,
-    self_model: Option<graphiq_core::self_model::RepoSelfModel>,
     indexing: bool,
-    warming: bool,
 }
 
 fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
@@ -185,44 +178,10 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
     state.cache = graphiq_core::cache::HotCache::with_defaults();
     state.cache.prewarm(&state.db, 200);
 
-    let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
-    let mut ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &state.db);
-    ac.invalidate();
-
     if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
-        let hi = graphiq_core::holo_name::build_holo_index(&state.db, &ci);
-        ac.save("cruncher", &ci);
-        ac.save_holo(&hi);
         state.cruncher_index = Some(ci);
-        state.holo_index = Some(hi);
-        log_err("goober v5 index rebuilt");
+        log_err("cruncher index rebuilt");
     }
-
-    if let Ok(si) = graphiq_core::spectral::compute_spectral(&state.db) {
-        ac.save("spectral", &si);
-        log_err("spectral index rebuilt");
-        state.spectral_index = Some(si);
-    }
-
-    if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&state.db) {
-        ac.save_predictive(&pm);
-        log_err("predictive model rebuilt");
-        state.predictive_model = Some(pm);
-    }
-
-    let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&state.db);
-    ac.save("fingerprints", &(fps.clone(), id_map.clone()));
-    log_err(&format!("channel fingerprints rebuilt ({} symbols)", fps.len()));
-    state.fingerprints = fps;
-    state.fp_id_to_idx = id_map;
-
-    if let Ok(sm) = graphiq_core::self_model::build_self_model(&state.db) {
-        ac.save("self_model", &sm);
-        log_err(&format!("self-model built ({} concepts)", sm.concepts.len()));
-        state.self_model = Some(sm);
-    }
-
-    ac.save_manifest(&state.db);
 
     let msg = format!(
         "Indexed {} in {} files ({} symbols, {} edges)",
@@ -355,14 +314,7 @@ fn main() {
         db,
         cache: graphiq_core::cache::HotCache::with_defaults(),
         cruncher_index: None,
-        holo_index: None,
-        spectral_index: None,
-        predictive_model: None,
-        fingerprints: Vec::new(),
-        fp_id_to_idx: std::collections::HashMap::new(),
-        self_model: None,
         indexing: false,
-        warming: false,
     }));
 
     let running = Arc::new(AtomicBool::new(true));
@@ -432,14 +384,6 @@ fn main() {
 }
 
 fn background_warm(state: &Arc<Mutex<ServerState>>) {
-    {
-        let mut s = match state.lock() {
-            Ok(s) => s,
-            Err(e) => { log_err(&format!("warm: lock failed: {e}")); return; }
-        };
-        s.warming = true;
-    }
-
     let needs_full_index = {
         match state.lock() {
             Ok(s) => db_is_empty(&s.db),
@@ -461,7 +405,6 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
             log_err(&format!("warm: full index failed: {e}"));
         }
         s.indexing = false;
-        s.warming = false;
         log_err("warm: full index complete");
         return;
     }
@@ -470,78 +413,19 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
         Ok(s) => s,
         Err(e) => {
             log_err(&format!("warm: lock failed: {e}"));
-            if let Ok(mut s2) = state.lock() { s2.warming = false; }
             return;
         }
     };
 
     s.cache.prewarm(&s.db, 200);
-    let db_dir = s.db_path.parent().unwrap_or(std::path::Path::new("."));
-    let ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &s.db);
 
     if s.cruncher_index.is_none() {
-        if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
-            let hi = ac.load_holo().unwrap_or_else(|| graphiq_core::holo_name::build_holo_index(&s.db, &ci));
+        if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&s.db) {
             s.cruncher_index = Some(ci);
-            s.holo_index = Some(hi);
-            log_err("warm: cruncher+holo loaded from cache");
-        } else if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&s.db) {
-            let hi = graphiq_core::holo_name::build_holo_index(&s.db, &ci);
-            s.cruncher_index = Some(ci);
-            s.holo_index = Some(hi);
-            log_err("warm: cruncher+holo built");
+            log_err("warm: cruncher built");
         }
     }
 
-    if s.spectral_index.is_none() {
-        if let Some(si) = ac.load::<graphiq_core::spectral::SpectralIndex>("spectral") {
-            log_err("warm: spectral loaded from cache");
-            s.spectral_index = Some(si);
-        } else if let Ok(si) = graphiq_core::spectral::compute_spectral(&s.db) {
-            log_err("warm: spectral built");
-            s.spectral_index = Some(si);
-        }
-    }
-
-    if s.predictive_model.is_none() {
-        if let Some(pm) = ac.load_predictive() {
-            log_err("warm: predictive loaded from cache");
-            s.predictive_model = Some(pm);
-        } else if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&s.db) {
-            log_err("warm: predictive built");
-            s.predictive_model = Some(pm);
-        }
-    }
-
-    if s.fingerprints.is_empty() {
-        if let Some(cached) = ac.load::<(Vec<graphiq_core::spectral::ChannelFingerprint>, std::collections::HashMap<i64, usize>)>("fingerprints") {
-            log_err(&format!("warm: fingerprints loaded from cache ({} symbols)", cached.0.len()));
-            s.fingerprints = cached.0;
-            s.fp_id_to_idx = cached.1;
-        } else {
-            let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&s.db);
-            log_err(&format!("warm: fingerprints built ({} symbols)", fps.len()));
-            s.fingerprints = fps;
-            s.fp_id_to_idx = id_map;
-        }
-    }
-
-    if s.self_model.is_none() {
-        if let Ok(sm) = graphiq_core::self_model::build_self_model(&s.db) {
-            log_err(&format!("warm: self-model built ({} concepts)", sm.concepts.len()));
-            s.self_model = Some(sm);
-        }
-    }
-
-    log_err("warm: cache loading complete");
-
-    {
-        let mut s = match state.lock() {
-            Ok(s) => s,
-            Err(e) => { log_err(&format!("warm: final lock failed: {e}")); return; }
-        };
-        s.warming = false;
-    }
     log_err("warm: ready");
 }
 
@@ -856,7 +740,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "upgrade_index",
-                "description": "Rebuild stale or missing index artifacts (cruncher, spectral, predictive, fingerprints). Call after `doctor` reports stale artifacts, or after significant code changes to restore full search quality.",
+                "description": "Rebuild stale or missing index artifacts (cruncher). Call after `doctor` reports stale artifacts, or after significant code changes to restore full search quality.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {},
@@ -891,15 +775,12 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
     }
 
     if tool_name != "index" && tool_name != "status" && tool_name != "doctor" {
-        let (needs_index, currently_indexing, currently_warming) = {
+        let (needs_index, currently_indexing) = {
             match state.lock() {
-                Ok(s) => (db_is_empty(&s.db), s.indexing, s.warming),
-                Err(_) => (false, false, false),
+                Ok(s) => (db_is_empty(&s.db), s.indexing),
+                Err(_) => (false, false),
             }
         };
-        if currently_warming {
-            return tool_ok("Warming up — loading index artifacts. Please retry in a moment.".into());
-        }
         if currently_indexing {
             return tool_ok("Indexing in progress — please retry in a few seconds.".into());
         }
@@ -976,14 +857,7 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
                 Ok(s) => s,
                 Err(e) => return tool_error(&format!("lock error: {e}")),
             };
-            let _needs_spectral = s.spectral_index.is_some();
-            let _needs_predictive = s.predictive_model.is_some();
-            let _needs_fingerprints = !s.fingerprints.is_empty();
-            let _ci_ptr = s.cruncher_index.as_ref().map(|ci| ci as *const _);
-            let _hi_ptr = s.holo_index.as_ref().map(|hi| hi as *const _);
-            let _spec_ptr = s.spectral_index.as_ref().map(|si| si as *const _);
-            let _pm_ptr = s.predictive_model.as_ref().map(|pm| pm as *const _);
-            tool_why(&s.db, &s.cache, s.cruncher_index.as_ref(), s.holo_index.as_ref(), s.spectral_index.as_ref(), s.predictive_model.as_ref(), if s.fingerprints.is_empty() { None } else { Some(&s.fingerprints) }, if s.fp_id_to_idx.is_empty() { None } else { Some(&s.fp_id_to_idx) }, arguments)
+            tool_why(&s.db, &s.cache, s.cruncher_index.as_ref(), arguments)
         }
         "interrogate" => {
             let s = match state.lock() {
@@ -1061,20 +935,8 @@ fn tool_search(
     let file_filter = args.get("file_filter").and_then(|v| v.as_str());
 
     let mut engine = graphiq_core::search::SearchEngine::new(&state.db, &state.cache);
-    if let (Some(ci), Some(hi)) = (state.cruncher_index.as_ref(), state.holo_index.as_ref()) {
-        engine = engine.with_goober(ci, hi);
-    }
-    if let Some(ref spec) = state.spectral_index {
-        engine = engine.with_spectral(spec);
-    }
-    if let Some(ref pm) = state.predictive_model {
-        engine = engine.with_predictive(pm);
-    }
-    if !state.fingerprints.is_empty() {
-        engine = engine.with_fingerprints(&state.fingerprints, &state.fp_id_to_idx);
-    }
-    if let Some(ref sm) = state.self_model {
-        engine = engine.with_self_model(sm);
+    if let Some(ci) = state.cruncher_index.as_ref() {
+        engine = engine.with_cruncher(ci);
     }
     let mut q = graphiq_core::search::SearchQuery::new(query).top_k(top_k);
     if let Some(f) = file_filter {
@@ -1330,29 +1192,13 @@ fn tool_status(state: &ServerState) -> Value {
                 .unwrap_or(0);
 
             let mut engine = graphiq_core::search::SearchEngine::new(&state.db, &state.cache);
-            if let (Some(ci), Some(hi)) = (state.cruncher_index.as_ref(), state.holo_index.as_ref()) {
-                engine = engine.with_goober(ci, hi);
-            }
-            if let Some(ref spec) = state.spectral_index {
-                engine = engine.with_spectral(spec);
-            }
-            if let Some(ref pm) = state.predictive_model {
-                engine = engine.with_predictive(pm);
-            }
-            if !state.fingerprints.is_empty() {
-                engine = engine.with_fingerprints(&state.fingerprints, &state.fp_id_to_idx);
-            }
-            if let Some(ref sm) = state.self_model {
-                engine = engine.with_self_model(sm);
+            if let Some(ci) = state.cruncher_index.as_ref() {
+                engine = engine.with_cruncher(ci);
             }
             let mode = engine.active_mode();
 
             let mut artifacts = Vec::new();
             artifacts.push(format!("cruncher: {}", if state.cruncher_index.is_some() { "ready" } else { "missing" }));
-            artifacts.push(format!("holo: {}", if state.holo_index.is_some() { "ready" } else { "missing" }));
-            artifacts.push(format!("spectral: {}", if state.spectral_index.is_some() { "ready" } else { "missing" }));
-            artifacts.push(format!("predictive: {}", if state.predictive_model.is_some() { "ready" } else { "missing" }));
-            artifacts.push(format!("fingerprints: {}", if !state.fingerprints.is_empty() { "ready" } else { "missing" }));
 
             let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
             let manifest_section = match graphiq_core::manifest::read_manifest(db_dir) {
@@ -1364,14 +1210,14 @@ fn tool_status(state: &ServerState) -> Value {
                         manifest.schema_version, manifest.indexed_at
                     );
                     s.push_str(&format!(
-                        "\n    fts: {}  cruncher: {}  holo: {}  spectral: {}  predictive: {}  fingerprints: {}",
-                        fresh.fts, fresh.cruncher, fresh.holo, fresh.spectral, fresh.predictive, fresh.fingerprints,
+                        "\n    fts: {}  cruncher: {}",
+                        fresh.fts, fresh.cruncher,
                     ));
                     s.push_str(&format!(
                         "\n    manifest mode: {}  live mode: {}",
                         manifest_mode, mode,
                     ));
-                    if manifest_mode != graphiq_core::search::SearchMode::Deformed {
+                    if manifest_mode != graphiq_core::search::SearchMode::Fts {
                         let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
                         if !reasons.is_empty() {
                             s.push_str("\n    downgrade reasons:");
@@ -1386,10 +1232,8 @@ fn tool_status(state: &ServerState) -> Value {
                 Err(e) => format!("\n  Manifest: read error: {e}"),
             };
 
-            let warm_status = if state.warming { " (warming up)" } else { "" };
-
             let text = format!(
-                "GraphIQ v{}\n  Project:  {}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB: {}\n  Search mode: {}{}\n  Artifacts: {}{}",
+                "GraphIQ v{}\n  Project:  {}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB: {}\n  Search mode: {}\n  Artifacts: {}{}",
                 SERVER_VERSION,
                 state.project_root.display(),
                 stats.files,
@@ -1398,7 +1242,6 @@ fn tool_status(state: &ServerState) -> Value {
                 stats.file_edges,
                 human_bytes(size),
                 mode,
-                warm_status,
                 artifacts.join(", "),
                 manifest_section,
             );
@@ -1615,11 +1458,6 @@ fn tool_why(
     db: &graphiq_core::db::GraphDb,
     cache: &graphiq_core::cache::HotCache,
     cruncher_index: Option<&graphiq_core::cruncher::CruncherIndex>,
-    holo_index: Option<&graphiq_core::holo_name::HoloIndex>,
-    spectral_index: Option<&graphiq_core::spectral::SpectralIndex>,
-    predictive_model: Option<&graphiq_core::spectral::PredictiveModel>,
-    fingerprints: Option<&[graphiq_core::spectral::ChannelFingerprint]>,
-    fp_id_to_idx: Option<&std::collections::HashMap<i64, usize>>,
     args: Value,
 ) -> Value {
     let query = match args.get("query").and_then(|v| v.as_str()) {
@@ -1632,17 +1470,8 @@ fn tool_why(
     };
 
     let mut engine = graphiq_core::search::SearchEngine::new(db, cache);
-    if let (Some(ci), Some(hi)) = (cruncher_index, holo_index) {
-        engine = engine.with_goober(ci, hi);
-    }
-    if let Some(spec) = spectral_index {
-        engine = engine.with_spectral(spec);
-    }
-    if let Some(pm) = predictive_model {
-        engine = engine.with_predictive(pm);
-    }
-    if let (Some(fps), Some(fp_map)) = (fingerprints, fp_id_to_idx) {
-        engine = engine.with_fingerprints(fps, fp_map);
+    if let Some(ci) = cruncher_index {
+        engine = engine.with_cruncher(ci);
     }
 
     let q = graphiq_core::search::SearchQuery::new(query).top_k(20).with_trace();
@@ -2025,10 +1854,6 @@ fn tool_doctor(state: &ServerState) -> Value {
             let all_artifacts: Vec<(&str, graphiq_core::manifest::ArtifactStatus)> = vec![
                 ("fts", fresh.fts),
                 ("cruncher", fresh.cruncher),
-                ("holo", fresh.holo),
-                ("spectral", fresh.spectral),
-                ("predictive", fresh.predictive),
-                ("fingerprints", fresh.fingerprints),
             ];
 
             let mut stale_count = 0;
@@ -2050,7 +1875,7 @@ fn tool_doctor(state: &ServerState) -> Value {
             lines.push(String::new());
             lines.push(format!("  Active search mode: {}", mode));
 
-            if mode != graphiq_core::search::SearchMode::Deformed {
+            if mode != graphiq_core::search::SearchMode::Fts {
                 let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
                 if !reasons.is_empty() {
                     lines.push("  Downgrade reasons:".into());
@@ -2085,37 +1910,9 @@ fn tool_upgrade_index(state: &mut ServerState) -> Result<String, String> {
 
     if state.cruncher_index.is_none() {
         if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
-            let hi = graphiq_core::holo_name::build_holo_index(&state.db, &ci);
             state.cruncher_index = Some(ci);
-            state.holo_index = Some(hi);
-            rebuilt.push("cruncher + holo");
-            log_err("upgrade: cruncher + holo rebuilt");
-        }
-    }
-
-    if state.spectral_index.is_none() {
-        if let Ok(si) = graphiq_core::spectral::compute_spectral(&state.db) {
-            state.spectral_index = Some(si);
-            rebuilt.push("spectral");
-            log_err("upgrade: spectral rebuilt");
-        }
-    }
-
-    if state.predictive_model.is_none() {
-        if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&state.db) {
-            state.predictive_model = Some(pm);
-            rebuilt.push("predictive");
-            log_err("upgrade: predictive model rebuilt");
-        }
-    }
-
-    if state.fingerprints.is_empty() {
-        let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&state.db);
-        if !fps.is_empty() {
-            state.fingerprints = fps;
-            state.fp_id_to_idx = id_map;
-            rebuilt.push("fingerprints");
-            log_err(&format!("upgrade: fingerprints rebuilt ({} symbols)", state.fingerprints.len()));
+            rebuilt.push("cruncher");
+            log_err("upgrade: cruncher rebuilt");
         }
     }
 

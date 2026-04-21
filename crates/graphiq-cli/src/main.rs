@@ -60,10 +60,6 @@ enum Commands {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
-    Spectral {
-        #[arg(long, default_value = ".graphiq/graphiq.db")]
-        db: PathBuf,
-    },
     Subsystems {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
@@ -151,7 +147,6 @@ fn main() {
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
         Commands::Lsa { db } => cmd_lsa(&db),
-        Commands::Spectral { db } => cmd_spectral(&db),
         Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
         Commands::Roles { db, subsystem, top } => cmd_roles(&db, subsystem, top),
         Commands::Demo => cmd_demo(),
@@ -266,10 +261,6 @@ fn cmd_search(
         let fresh = graphiq_core::manifest::check_artifact_freshness(&db, &manifest);
         let stale: Vec<(&str, graphiq_core::manifest::ArtifactStatus)> = vec![
             ("cruncher", fresh.cruncher),
-            ("holo", fresh.holo),
-            ("spectral", fresh.spectral),
-            ("predictive", fresh.predictive),
-            ("fingerprints", fresh.fingerprints),
         ]
         .into_iter()
         .filter(|(_, s)| *s != graphiq_core::manifest::ArtifactStatus::Ready)
@@ -287,81 +278,12 @@ fn cmd_search(
     let cache = graphiq_core::cache::HotCache::with_defaults();
     cache.prewarm(&db, 200);
 
-    let db_dir = db_path.parent().unwrap_or(db_path);
-    let mut ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &db);
-
-    let goober = if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
-        let hi = if let Some(cached_hi) = ac.load_holo() {
-            cached_hi
-        } else {
-            let hi = graphiq_core::holo_name::build_holo_index(&db, &ci);
-            ac.save_holo(&hi);
-            hi
-        };
-        Some((ci, hi))
-    } else {
-        graphiq_core::cruncher::build_cruncher_index(&db).ok().map(|ci| {
-            ac.save("cruncher", &ci);
-            let hi = graphiq_core::holo_name::build_holo_index(&db, &ci);
-            ac.save_holo(&hi);
-            (ci, hi)
-        })
-    };
+    let cruncher = graphiq_core::cruncher::build_cruncher_index(&db).ok();
 
     let mut engine = graphiq_core::search::SearchEngine::new(&db, &cache);
-    if let Some((ref ci, ref hi)) = goober {
-        engine = engine.with_goober(ci, hi);
+    if let Some(ref ci) = cruncher {
+        engine = engine.with_cruncher(ci);
     }
-
-    let spectral = if let Some(si) = ac.load::<graphiq_core::spectral::SpectralIndex>("spectral") {
-        Some(si)
-    } else {
-        let si = graphiq_core::spectral::compute_spectral(&db).ok();
-        if let Some(ref s) = si {
-            ac.save("spectral", s);
-        }
-        si
-    };
-    if let Some(ref spec) = spectral {
-        engine = engine.with_spectral(spec);
-    }
-
-    let predictive = if let Some(pm) = ac.load_predictive() {
-        Some(pm)
-    } else {
-        let pm = graphiq_core::spectral::compute_predictive_model(&db).ok();
-        if let Some(ref p) = pm {
-            ac.save_predictive(p);
-        }
-        pm
-    };
-    if let Some(ref pm) = predictive {
-        engine = engine.with_predictive(pm);
-    }
-
-    let (fp_vec, fp_id_map) = if let Some(cached) = ac.load::<(Vec<graphiq_core::spectral::ChannelFingerprint>, std::collections::HashMap<i64, usize>)>("fingerprints") {
-        cached
-    } else {
-        let fps = graphiq_core::spectral::compute_channel_fingerprints(&db);
-        ac.save("fingerprints", &(fps.0.clone(), fps.1.clone()));
-        fps
-    };
-    engine = engine.with_fingerprints(&fp_vec, &fp_id_map);
-
-    let self_model = if let Some(sm) = ac.load::<graphiq_core::self_model::RepoSelfModel>("self_model") {
-        Some(sm)
-    } else {
-        let sm = graphiq_core::self_model::build_self_model(&db).ok();
-        if let Some(ref s) = sm {
-            ac.save("self_model", s);
-        }
-        sm
-    };
-    if let Some(ref sm) = self_model {
-        engine = engine.with_self_model(sm);
-    }
-
-    ac.save_manifest(&db);
 
     if debug {
         eprintln!("search mode: {}", engine.active_mode());
@@ -511,13 +433,9 @@ fn cmd_status(db_path: &std::path::Path) {
                 println!("    Artifacts:");
                 println!("      fts:          {}", fresh.fts);
                 println!("      cruncher:     {}", fresh.cruncher);
-                println!("      holo:         {}", fresh.holo);
-                println!("      spectral:     {}", fresh.spectral);
-                println!("      predictive:   {}", fresh.predictive);
-                println!("      fingerprints: {}", fresh.fingerprints);
                 let mode = graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
                 println!("    Active mode: {}", mode);
-                if mode != graphiq_core::search::SearchMode::CARE && mode != graphiq_core::search::SearchMode::Deformed {
+                if mode != graphiq_core::search::SearchMode::GraphWalk {
                     let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
                     if !reasons.is_empty() {
                         println!("    Downgrade reasons:");
@@ -570,8 +488,6 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
 
     let manifest = graphiq_core::manifest::build_manifest_all_ready(&db);
     let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
-    let ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &db);
-    ac.invalidate();
     if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
         eprintln!("  warning: failed to write manifest: {e}");
     }
@@ -617,40 +533,6 @@ fn cmd_lsa(db_path: &std::path::Path) {
     }
 
     eprintln!("LSA done.");
-}
-
-fn cmd_spectral(db_path: &std::path::Path) {
-    if !db_path.exists() {
-        eprintln!("database not found: {}", db_path.display());
-        eprintln!("run `graphiq index` first to create the database");
-        std::process::exit(1);
-    }
-
-    let db = open_db_or_exit(db_path);
-
-    eprintln!("Computing spectral embedding (k={})...", graphiq_core::spectral::SPECTRAL_DIM);
-    let index = match graphiq_core::spectral::compute_spectral(&db) {
-        Ok(i) => i,
-        Err(e) => {
-            eprintln!("spectral computation failed: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    eprintln!("Storing spectral coords and eigenvalues...");
-    match graphiq_core::spectral::store_spectral_coords(
-        &db,
-        &index.symbol_ids,
-        &index.symbol_coords,
-        &index.eigenvalues,
-        index.lambda_max,
-    ) {
-        Ok(n) => eprintln!("  {} symbol coords stored", n),
-        Err(e) => eprintln!("  store failed: {e}"),
-    }
-
-    eprintln!("  {} eigenvectors, lambda_max = {:.6}", index.eigenvalues.len(), index.lambda_max);
-    eprintln!("Spectral done.");
 }
 
 fn cmd_subsystems(db_path: &std::path::Path, compute_roles: bool) {
@@ -806,17 +688,10 @@ fn cmd_doctor(db_path: &std::path::Path) {
             println!();
 
             println!("  Artifact status (probing):");
-            let goober_ok = graphiq_core::cruncher::build_cruncher_index(&db).is_ok();
-            let spectral_ok = graphiq_core::spectral::compute_spectral(&db).is_ok();
-            let predictive_ok = graphiq_core::spectral::compute_predictive_model(&db).is_ok();
-            let (fps, _) = graphiq_core::spectral::compute_channel_fingerprints(&db);
+            let cruncher_ok = graphiq_core::cruncher::build_cruncher_index(&db).is_ok();
 
             println!("    fts:          ready ({} symbols in FTS)", stats.symbols);
-            println!("    cruncher:     {}", if goober_ok { "ready" } else { "missing" });
-            println!("    holo:         {}", if goober_ok { "ready" } else { "missing" });
-            println!("    spectral:     {}", if spectral_ok { "ready" } else { "missing" });
-            println!("    predictive:   {}", if predictive_ok { "ready" } else { "missing" });
-            println!("    fingerprints: {}", if !fps.is_empty() { "ready" } else { "missing" });
+            println!("    cruncher:     {}", if cruncher_ok { "ready" } else { "missing" });
             return;
         }
         Err(e) => {
@@ -835,10 +710,6 @@ fn cmd_doctor(db_path: &std::path::Path) {
     let all_artifacts: Vec<(&str, graphiq_core::manifest::ArtifactStatus)> = vec![
         ("fts", fresh.fts),
         ("cruncher", fresh.cruncher),
-        ("holo", fresh.holo),
-        ("spectral", fresh.spectral),
-        ("predictive", fresh.predictive),
-        ("fingerprints", fresh.fingerprints),
     ];
 
     let mut stale_count = 0;
@@ -860,7 +731,7 @@ fn cmd_doctor(db_path: &std::path::Path) {
     println!();
     println!("  Active search mode: {}", mode);
 
-    if mode != graphiq_core::search::SearchMode::Deformed {
+    if mode != graphiq_core::search::SearchMode::GraphWalk {
         let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
         if !reasons.is_empty() {
             println!("  Downgrade reasons:");
@@ -893,7 +764,7 @@ fn cmd_upgrade_index(db_path: &std::path::Path) {
     let needs_rebuild = existing.as_ref().map_or(true, |m| {
         let fresh = graphiq_core::manifest::check_artifact_freshness(&db, m);
         let all: Vec<_> = vec![
-            fresh.cruncher, fresh.holo, fresh.spectral, fresh.predictive, fresh.fingerprints,
+            fresh.cruncher,
         ];
         all.iter().any(|s| *s != graphiq_core::manifest::ArtifactStatus::Ready)
     });
@@ -902,9 +773,6 @@ fn cmd_upgrade_index(db_path: &std::path::Path) {
         if let Some(m) = &existing {
             let fresh = graphiq_core::manifest::check_artifact_freshness(&db, m);
             if fresh.cruncher == graphiq_core::manifest::ArtifactStatus::Ready
-                && fresh.spectral == graphiq_core::manifest::ArtifactStatus::Ready
-                && fresh.predictive == graphiq_core::manifest::ArtifactStatus::Ready
-                && fresh.fingerprints == graphiq_core::manifest::ArtifactStatus::Ready
             {
                 println!("All artifacts are fresh. No rebuild needed.");
                 return;
@@ -916,28 +784,10 @@ fn cmd_upgrade_index(db_path: &std::path::Path) {
 
     let mut rebuilt = Vec::new();
 
-    if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&db) {
-        let _hi = graphiq_core::holo_name::build_holo_index(&db, &ci);
-        rebuilt.push("cruncher + holo");
+    if let Ok(_ci) = graphiq_core::cruncher::build_cruncher_index(&db) {
+        rebuilt.push("cruncher");
     } else {
         eprintln!("  warning: cruncher build failed");
-    }
-
-    if let Ok(_si) = graphiq_core::spectral::compute_spectral(&db) {
-        rebuilt.push("spectral");
-    } else {
-        eprintln!("  warning: spectral build failed");
-    }
-
-    if let Ok(_pm) = graphiq_core::spectral::compute_predictive_model(&db) {
-        rebuilt.push("predictive");
-    } else {
-        eprintln!("  warning: predictive model build failed");
-    }
-
-    let (fps, _) = graphiq_core::spectral::compute_channel_fingerprints(&db);
-    if !fps.is_empty() {
-        rebuilt.push("fingerprints");
     }
 
     let manifest = graphiq_core::manifest::build_manifest_all_ready(&db);
@@ -2356,9 +2206,8 @@ end
     let fts = graphiq_core::fts::FtsSearch::new(&db);
 
     let cruncher_idx = graphiq_core::cruncher::build_cruncher_index(&db).unwrap();
-    let holo_idx = graphiq_core::holo_name::build_holo_index(&db, &cruncher_idx);
     let engine = graphiq_core::search::SearchEngine::new(&db, &cache)
-        .with_goober(&cruncher_idx, &holo_idx);
+        .with_cruncher(&cruncher_idx);
 
     let queries = &[
         ("symbol-exact", "authenticate"),
@@ -2398,9 +2247,9 @@ end
         println!();
     }
 
-    println!("── BM25 (FTS) vs GraphIQ (GooberV5) ──");
+    println!("── BM25 (FTS) vs GraphIQ ──");
     println!("  Left: BM25 text search only.");
-    println!("  Right: BM25 + graph walk + structural rerank + holographic gate.");
+    println!("  Right: BM25 + graph walk + structural rerank.");
     println!();
 
     let file_paths: std::collections::HashMap<i64, String> = {

@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use graphiq_core::cruncher;
-use graphiq_core::holo_name;
 use graphiq_core::db::GraphDb;
 use graphiq_core::search::{SearchEngine, SearchQuery};
 use graphiq_core::cache::HotCache;
@@ -492,26 +491,9 @@ fn main() {
             Ok(idx) => idx,
             Err(e) => { eprintln!("cruncher build failed: {e}"); std::process::exit(1); }
         };
-        let hi = holo_name::build_holo_index(&db, &ci);
-        eprintln!("Computing spectral index...");
-        let spectral = match graphiq_core::spectral::compute_spectral(&db) {
-            Ok(mut idx) => {
-                let kappa = graphiq_core::spectral::compute_ricci_curvature(&idx.graph);
-                idx.graph.edge_curvature = Some(kappa);
-                Some(idx)
-            }
-            Err(e) => { eprintln!("spectral failed: {e}"); None }
-        };
-        let predictive = graphiq_core::spectral::compute_predictive_model(&db).ok();
-        let (fp_vec, fp_id_map) = graphiq_core::spectral::compute_channel_fingerprints(&db);
-        let self_model = graphiq_core::self_model::build_self_model(&db).ok();
         let cache = HotCache::with_defaults();
         cache.prewarm(&db, 200);
-        let mut engine = SearchEngine::new(&db, &cache).with_goober(&ci, &hi);
-        if let Some(ref spec) = spectral { engine = engine.with_spectral(spec); }
-        if let Some(ref pm) = predictive { engine = engine.with_predictive(pm); }
-        engine = engine.with_fingerprints(&fp_vec, &fp_id_map);
-        if let Some(ref sm) = self_model { engine = engine.with_self_model(sm); }
+        let engine = SearchEngine::new(&db, &cache).with_cruncher(&ci);
 
         let fe = FullEngine {
              db: &db,
@@ -545,41 +527,10 @@ fn main() {
         Err(e) => { eprintln!("cruncher build failed: {e}"); std::process::exit(1); }
     };
 
-    let hi = holo_name::build_holo_index(&db, &ci);
-
-    eprintln!("Computing spectral index...");
-    let spectral = match graphiq_core::spectral::compute_spectral(&db) {
-        Ok(mut idx) => {
-            eprintln!("Computing Ricci curvature...");
-            let kappa = graphiq_core::spectral::compute_ricci_curvature(&idx.graph);
-            idx.graph.edge_curvature = Some(kappa);
-            Some(idx)
-        }
-        Err(e) => { eprintln!("spectral failed: {e}"); None }
-    };
-
-    let predictive = graphiq_core::spectral::compute_predictive_model(&db).ok();
-
-    eprintln!("Computing channel fingerprints...");
-    let (fp_vec, fp_id_map) = graphiq_core::spectral::compute_channel_fingerprints(&db);
-
-    let self_model = graphiq_core::self_model::build_self_model(&db).ok();
-
     let cache = HotCache::with_defaults();
     cache.prewarm(&db, 200);
 
-    let mut engine = SearchEngine::new(&db, &cache)
-        .with_goober(&ci, &hi);
-    if let Some(ref spec) = spectral {
-        engine = engine.with_spectral(spec);
-    }
-    if let Some(ref pm) = predictive {
-        engine = engine.with_predictive(pm);
-    }
-    engine = engine.with_fingerprints(&fp_vec, &fp_id_map);
-    if let Some(ref sm) = self_model {
-        engine = engine.with_self_model(sm);
-    }
+    let engine = SearchEngine::new(&db, &cache).with_cruncher(&ci);
 
     let ndcg_file = args.get(2).filter(|s| !s.is_empty()).map(|s| s.as_str());
     let mrr_file = args.get(3).filter(|s| !s.is_empty()).map(|s| s.as_str());

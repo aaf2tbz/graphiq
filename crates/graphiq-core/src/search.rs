@@ -1,36 +1,27 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use crate::blast;
 use crate::cache::HotCache;
 use crate::cruncher::CruncherIndex;
-use crate::holo_name::HoloIndex;
 use crate::db::GraphDb;
 use crate::edge::{BlastDirection, BlastRadius};
 use crate::fts::{FtsConfig, FtsSearch};
 use crate::graph::StructuralExpander;
 use crate::rerank::{Reranker, ScoredSymbol};
-use crate::spectral::{ChannelFingerprint, PredictiveModel, SpectralIndex};
 use crate::query_family::{self, QueryFamily, RetrievalPolicy};
 use crate::trace::RetrievalTrace;
-use crate::self_model::RepoSelfModel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
     Fts,
-    GooberV5,
-    Geometric,
-    Deformed,
-    CARE,
+    GraphWalk,
 }
 
 impl std::fmt::Display for SearchMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SearchMode::Fts => write!(f, "FTS"),
-            SearchMode::GooberV5 => write!(f, "GooberV5"),
-            SearchMode::Geometric => write!(f, "Geometric"),
-            SearchMode::Deformed => write!(f, "Deformed"),
-            SearchMode::CARE => write!(f, "CARE"),
+            SearchMode::GraphWalk => write!(f, "GraphWalk"),
         }
     }
 }
@@ -107,12 +98,6 @@ pub struct SearchEngine<'a> {
     db: &'a GraphDb,
     cache: &'a HotCache,
     cruncher_index: Option<&'a CruncherIndex>,
-    holo_index: Option<&'a HoloIndex>,
-    spectral_index: Option<&'a SpectralIndex>,
-    predictive_model: Option<&'a PredictiveModel>,
-    fingerprints: Option<&'a [ChannelFingerprint]>,
-    fp_id_to_idx: Option<&'a HashMap<i64, usize>>,
-    self_model: Option<&'a RepoSelfModel>,
 }
 
 impl<'a> SearchEngine<'a> {
@@ -121,43 +106,11 @@ impl<'a> SearchEngine<'a> {
             db,
             cache,
             cruncher_index: None,
-            holo_index: None,
-            spectral_index: None,
-            predictive_model: None,
-            fingerprints: None,
-            fp_id_to_idx: None,
-            self_model: None,
         }
     }
 
-    pub fn with_goober(mut self, ci: &'a CruncherIndex, hi: &'a HoloIndex) -> Self {
+    pub fn with_cruncher(mut self, ci: &'a CruncherIndex) -> Self {
         self.cruncher_index = Some(ci);
-        self.holo_index = Some(hi);
-        self
-    }
-
-    pub fn with_spectral(mut self, si: &'a SpectralIndex) -> Self {
-        self.spectral_index = Some(si);
-        self
-    }
-
-    pub fn with_predictive(mut self, pm: &'a PredictiveModel) -> Self {
-        self.predictive_model = Some(pm);
-        self
-    }
-
-    pub fn with_fingerprints(
-        mut self,
-        fps: &'a [ChannelFingerprint],
-        id_map: &'a HashMap<i64, usize>,
-    ) -> Self {
-        self.fingerprints = Some(fps);
-        self.fp_id_to_idx = Some(id_map);
-        self
-    }
-
-    pub fn with_self_model(mut self, model: &'a RepoSelfModel) -> Self {
-        self.self_model = Some(model);
         self
     }
 
@@ -174,60 +127,10 @@ impl<'a> SearchEngine<'a> {
     }
 
     pub fn active_mode(&self) -> SearchMode {
-        if self.cruncher_index.is_some()
-            && self.holo_index.is_some()
-            && self.spectral_index.is_some()
-            && self.predictive_model.is_some()
-            && self.fingerprints.is_some()
-            && self.fp_id_to_idx.is_some()
-        {
-            SearchMode::Deformed
-        } else if self.cruncher_index.is_some()
-            && self.holo_index.is_some()
-            && self.spectral_index.is_some()
-        {
-            SearchMode::Geometric
-        } else if self.cruncher_index.is_some() && self.holo_index.is_some() {
-            SearchMode::GooberV5
+        if self.cruncher_index.is_some() {
+            SearchMode::GraphWalk
         } else {
             SearchMode::Fts
-        }
-    }
-
-    fn route_mode(&self, family: QueryFamily) -> SearchMode {
-        let has_spectral = self.spectral_index.is_some()
-            && self.predictive_model.is_some()
-            && self.fingerprints.is_some();
-        let has_geometric = self.spectral_index.is_some();
-        let has_goober = self.cruncher_index.is_some() && self.holo_index.is_some();
-
-        match family {
-            QueryFamily::SymbolExact | QueryFamily::SymbolPartial => {
-                if has_goober { SearchMode::GooberV5 }
-                else { SearchMode::Fts }
-            }
-            QueryFamily::ErrorDebug => {
-                if has_spectral { SearchMode::Deformed }
-                else if has_geometric { SearchMode::Geometric }
-                else if has_goober { SearchMode::GooberV5 }
-                else { SearchMode::Fts }
-            }
-            QueryFamily::NaturalAbstract | QueryFamily::CrossCuttingSet => {
-                if has_spectral { SearchMode::Deformed }
-                else if has_geometric { SearchMode::Geometric }
-                else if has_goober { SearchMode::GooberV5 }
-                else { SearchMode::Fts }
-            }
-            QueryFamily::NaturalDescriptive | QueryFamily::Relationship => {
-                if has_spectral { SearchMode::Geometric }
-                else if has_goober { SearchMode::GooberV5 }
-                else { SearchMode::Fts }
-            }
-            QueryFamily::FilePath => {
-                if has_spectral { SearchMode::Geometric }
-                else if has_goober { SearchMode::GooberV5 }
-                else { SearchMode::Fts }
-            }
         }
     }
 
@@ -242,21 +145,18 @@ impl<'a> SearchEngine<'a> {
                 total_fts_candidates: 0,
                 total_expanded: 0,
                 from_cache: true,
-                search_mode: self.route_mode(family),
+                search_mode: self.active_mode(),
                 query_family: family,
                 traces: HashMap::new(),
             };
         }
 
         let policy = RetrievalPolicy::for_family(family);
-        let mode = self.route_mode(family);
+        let mode = self.active_mode();
 
         let mut result = match mode {
-            SearchMode::Deformed | SearchMode::Geometric | SearchMode::GooberV5 => {
-                self.search_unified(query, query_hash, &policy, family)
-            }
+            SearchMode::GraphWalk => self.search_unified(query, query_hash, &policy, family),
             SearchMode::Fts => self.search_fts_fallback(query, query_hash, family),
-            SearchMode::CARE => self.search_unified(query, query_hash, &policy, family),
         };
 
         if family == QueryFamily::SymbolExact {
@@ -270,46 +170,30 @@ impl<'a> SearchEngine<'a> {
         &self,
         query: &SearchQuery,
         query_hash: u64,
-        policy: &RetrievalPolicy,
+        _policy: &RetrievalPolicy,
         family: QueryFamily,
     ) -> SearchResult {
         let ci = self.cruncher_index.unwrap();
-        let hi = self.holo_index.unwrap();
 
         let seed_config = crate::seeds::SeedConfig::for_family(family);
-        let (seeds, total_fts, _bm25_original, source_scan_start) = crate::seeds::generate_seeds(
-            self.db, &query.query, &seed_config, self.self_model,
+        let (seeds, total_fts, _bm25_original) = crate::seeds::generate_seeds(
+            self.db, &query.query, &seed_config,
         );
-
-        let has_spectral = self.spectral_index.is_some()
-            && self.predictive_model.is_some()
-            && self.fingerprints.is_some();
 
         let pipeline_config = crate::pipeline::PipelineConfig {
             top_k: query.top_k,
-            use_heat_diffusion: self.spectral_index.is_some(),
-            heat_t: policy.spectral_heat_scale,
-            cheb_order: policy.spectral_expansion_seeds,
-            walk_weight: policy.evidence_weight,
-            heat_top_k: 50,
-            predictive: if policy.allow_predictive { self.predictive_model } else { None },
-            fingerprints: if policy.allow_fingerprints { self.fingerprints } else { None },
-            fp_id_to_idx: if policy.allow_fingerprints { self.fp_id_to_idx } else { None },
-            evidence_weight: policy.evidence_weight,
+            walk_weight: 1.0,
         };
 
         let raw_results = crate::pipeline::unified_search(
             &query.query,
             ci,
-            hi,
             &seeds,
-            self.spectral_index,
             &pipeline_config,
-            source_scan_start,
         );
 
         let file_paths = self.load_file_paths();
-        let mut results: Vec<ScoredSymbol> = raw_results
+        let results: Vec<ScoredSymbol> = raw_results
             .into_iter()
             .filter_map(|(id, score)| {
                 let sym = self.db.get_symbol(id).ok()??;
@@ -329,8 +213,6 @@ impl<'a> SearchEngine<'a> {
             })
             .collect();
 
-        Self::apply_diversity_boost(&mut results, policy.diversity_boost);
-
         for r in &results {
             self.cache.put_source(r.symbol.id, r.symbol.source.clone());
         }
@@ -339,19 +221,13 @@ impl<'a> SearchEngine<'a> {
 
         self.cache.put_results(query_hash, results.clone());
 
-        let mode = if has_spectral {
-            SearchMode::Deformed
-        } else {
-            SearchMode::GooberV5
-        };
-
         SearchResult {
             results,
             blast_radius: blast_result,
             total_fts_candidates: total_fts,
             total_expanded: 0,
             from_cache: false,
-            search_mode: mode,
+            search_mode: SearchMode::GraphWalk,
             query_family: family,
             traces: HashMap::new(),
         }
@@ -515,24 +391,6 @@ impl<'a> SearchEngine<'a> {
 
         result.results = promoted;
         result.results.extend(rest);
-        result.results.truncate(result.results.len().max(10).min(result.results.len()));
-    }
-
-    fn apply_diversity_boost(results: &mut Vec<ScoredSymbol>, diversity_boost: f64) {
-        if diversity_boost <= 0.0 || results.len() <= 1 {
-            return;
-        }
-        let mut seen_files: HashSet<i64> = HashSet::new();
-        for result in results.iter_mut() {
-            let file_id = result.symbol.file_id;
-            if seen_files.contains(&file_id) {
-                let penalty = 1.0 / (1.0 + diversity_boost);
-                result.score *= penalty;
-            } else {
-                seen_files.insert(file_id);
-            }
-        }
-        results.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
     }
 }
 

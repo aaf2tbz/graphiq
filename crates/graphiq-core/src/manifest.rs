@@ -28,10 +28,6 @@ impl std::fmt::Display for ArtifactStatus {
 pub struct ArtifactMap {
     pub fts: ArtifactStatus,
     pub cruncher: ArtifactStatus,
-    pub holo: ArtifactStatus,
-    pub spectral: ArtifactStatus,
-    pub predictive: ArtifactStatus,
-    pub fingerprints: ArtifactStatus,
 }
 
 impl ArtifactMap {
@@ -39,10 +35,6 @@ impl ArtifactMap {
         Self {
             fts: ArtifactStatus::Missing,
             cruncher: ArtifactStatus::Missing,
-            holo: ArtifactStatus::Missing,
-            spectral: ArtifactStatus::Missing,
-            predictive: ArtifactStatus::Missing,
-            fingerprints: ArtifactStatus::Missing,
         }
     }
 
@@ -50,10 +42,6 @@ impl ArtifactMap {
         Self {
             fts: ArtifactStatus::Ready,
             cruncher: ArtifactStatus::Ready,
-            holo: ArtifactStatus::Ready,
-            spectral: ArtifactStatus::Ready,
-            predictive: ArtifactStatus::Ready,
-            fingerprints: ArtifactStatus::Ready,
         }
     }
 }
@@ -107,23 +95,8 @@ impl Manifest {
     pub fn compute_active_mode(artifacts: &ArtifactMap) -> SearchMode {
         if artifacts.fts == ArtifactStatus::Ready
             && artifacts.cruncher == ArtifactStatus::Ready
-            && artifacts.holo == ArtifactStatus::Ready
-            && artifacts.spectral == ArtifactStatus::Ready
-            && artifacts.predictive == ArtifactStatus::Ready
-            && artifacts.fingerprints == ArtifactStatus::Ready
         {
-            SearchMode::CARE
-        } else if artifacts.fts == ArtifactStatus::Ready
-            && artifacts.cruncher == ArtifactStatus::Ready
-            && artifacts.holo == ArtifactStatus::Ready
-            && artifacts.spectral == ArtifactStatus::Ready
-        {
-            SearchMode::Geometric
-        } else if artifacts.fts == ArtifactStatus::Ready
-            && artifacts.cruncher == ArtifactStatus::Ready
-            && artifacts.holo == ArtifactStatus::Ready
-        {
-            SearchMode::GooberV5
+            SearchMode::GraphWalk
         } else {
             SearchMode::Fts
         }
@@ -131,34 +104,10 @@ impl Manifest {
 
     pub fn compute_downgrade_reasons(artifacts: &ArtifactMap) -> Vec<String> {
         let mut reasons = Vec::new();
-        if artifacts.spectral != ArtifactStatus::Ready {
-            reasons.push(format!(
-                "spectral index {} — CARE and Geometric modes unavailable",
-                artifacts.spectral
-            ));
-        }
-        if artifacts.predictive != ArtifactStatus::Ready {
-            reasons.push(format!(
-                "predictive model {} — CARE mode unavailable",
-                artifacts.predictive
-            ));
-        }
-        if artifacts.fingerprints != ArtifactStatus::Ready {
-            reasons.push(format!(
-                "channel fingerprints {} — CARE mode unavailable",
-                artifacts.fingerprints
-            ));
-        }
         if artifacts.cruncher != ArtifactStatus::Ready {
             reasons.push(format!(
-                "cruncher index {} — all advanced modes unavailable",
+                "cruncher index {} — GraphWalk mode unavailable",
                 artifacts.cruncher
-            ));
-        }
-        if artifacts.holo != ArtifactStatus::Ready {
-            reasons.push(format!(
-                "holo index {} — all advanced modes unavailable",
-                artifacts.holo
             ));
         }
         reasons
@@ -201,18 +150,6 @@ pub fn check_artifact_freshness(
     if topology_changed {
         if artifacts.cruncher == ArtifactStatus::Ready {
             artifacts.cruncher = ArtifactStatus::Stale;
-        }
-        if artifacts.holo == ArtifactStatus::Ready {
-            artifacts.holo = ArtifactStatus::Stale;
-        }
-        if artifacts.spectral == ArtifactStatus::Ready {
-            artifacts.spectral = ArtifactStatus::Stale;
-        }
-        if artifacts.predictive == ArtifactStatus::Ready {
-            artifacts.predictive = ArtifactStatus::Stale;
-        }
-        if artifacts.fingerprints == ArtifactStatus::Ready {
-            artifacts.fingerprints = ArtifactStatus::Stale;
         }
     }
 
@@ -273,23 +210,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_artifact_status_all_ready_gives_care() {
+    fn test_artifact_status_all_ready_gives_graphwalk() {
         let artifacts = ArtifactMap::all_ready();
-        assert_eq!(Manifest::compute_active_mode(&artifacts), SearchMode::CARE);
-    }
-
-    #[test]
-    fn test_artifact_status_missing_spectral_gives_goober_v5() {
-        let mut artifacts = ArtifactMap::all_ready();
-        artifacts.spectral = ArtifactStatus::Missing;
-        assert_eq!(Manifest::compute_active_mode(&artifacts), SearchMode::GooberV5);
-    }
-
-    #[test]
-    fn test_artifact_status_missing_predictive_gives_geometric() {
-        let mut artifacts = ArtifactMap::all_ready();
-        artifacts.predictive = ArtifactStatus::Missing;
-        assert_eq!(Manifest::compute_active_mode(&artifacts), SearchMode::Geometric);
+        assert_eq!(Manifest::compute_active_mode(&artifacts), SearchMode::GraphWalk);
     }
 
     #[test]
@@ -308,11 +231,9 @@ mod tests {
     #[test]
     fn test_downgrade_reasons() {
         let mut artifacts = ArtifactMap::all_ready();
-        artifacts.predictive = ArtifactStatus::Missing;
-        artifacts.fingerprints = ArtifactStatus::Stale;
+        artifacts.cruncher = ArtifactStatus::Missing;
         let reasons = Manifest::compute_downgrade_reasons(&artifacts);
-        assert!(reasons.iter().any(|r| r.contains("predictive")));
-        assert!(reasons.iter().any(|r| r.contains("fingerprints")));
+        assert!(reasons.iter().any(|r| r.contains("cruncher")));
     }
 
     #[test]
@@ -334,15 +255,15 @@ mod tests {
             edges: 50,
             files: 10,
             artifacts: ArtifactMap::all_ready(),
-            active_search_mode: "CARE".into(),
-            best_available_mode: "CARE".into(),
+            active_search_mode: "GraphWalk".into(),
+            best_available_mode: "GraphWalk".into(),
             downgrade_reasons: None,
         };
         write_manifest(tmp.path(), &manifest).unwrap();
         let read = read_manifest(tmp.path()).unwrap().unwrap();
         assert_eq!(read.schema_version, MANIFEST_SCHEMA_VERSION);
         assert_eq!(read.symbols, 100);
-        assert_eq!(read.artifacts.spectral, ArtifactStatus::Ready);
+        assert_eq!(read.artifacts.cruncher, ArtifactStatus::Ready);
     }
 
     #[test]

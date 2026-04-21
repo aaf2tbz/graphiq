@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use crate::db::GraphDb;
 use crate::fts::{FtsConfig, FtsSearch};
 use crate::query_family::QueryFamily;
-use crate::self_model::RepoSelfModel;
 
 pub fn bm25_seeds<'a>(db: &'a GraphDb, query: &str, family: QueryFamily) -> (Vec<(i64, f64)>, FtsSearch<'a>) {
     let fts = match family {
@@ -193,99 +192,11 @@ pub fn numeric_bridge_seeds(
     candidates.into_iter().collect()
 }
 
-pub fn self_model_expansion(
-    model: &RepoSelfModel,
-    query: &str,
-    existing_seeds: &[(i64, f64)],
-) -> Vec<(i64, f64)> {
-    let existing: HashSet<i64> = existing_seeds.iter().map(|(id, _)| *id).collect();
-    let expanded = model.expand_query(query);
-    expanded
-        .into_iter()
-        .filter(|(id, _)| !existing.contains(id))
-        .map(|(id, score)| (id, score * 5.0))
-        .collect()
-}
-
-pub fn source_scan_seeds(
-    db: &GraphDb,
-    query: &str,
-    existing_seeds: &[(i64, f64)],
-) -> Vec<(i64, f64)> {
-    let terms: Vec<&str> = query
-        .split_whitespace()
-        .filter(|t| t.len() >= 2)
-        .collect();
-    if terms.is_empty() {
-        return Vec::new();
-    }
-
-    let existing_ids: HashSet<i64> = existing_seeds.iter().map(|(id, _)| *id).collect();
-    let conn = db.conn();
-    let mut candidates: HashMap<i64, f64> = HashMap::new();
-
-    for term in &terms {
-        let lower = term.to_lowercase();
-        let words: Vec<String> = lower
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| w.len() >= 2)
-            .map(|w| w.to_string())
-            .collect();
-
-        for word in &words {
-            let name_pattern = format!("%{}%", word.replace('_', "%"));
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT id, name FROM symbols WHERE lower(name) LIKE ?1"
-            ) {
-                if let Ok(rows) = stmt.query_map([&name_pattern], |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                }) {
-                    for (id, name) in rows.filter_map(|r| r.ok()) {
-                        if existing_ids.contains(&id) { continue; }
-                        let name_lower = name.to_lowercase();
-                        let score = if name_lower == lower {
-                            3.0
-                        } else if name_lower.starts_with(&lower) {
-                            2.5
-                        } else if name_lower.contains(&lower) {
-                            2.0
-                        } else {
-                            1.0
-                        };
-                        *candidates.entry(id).or_insert(0.0) += score;
-                    }
-                }
-            }
-
-            let src_pattern = format!("%{}%", word);
-            if let Ok(mut stmt) = conn.prepare(
-                "SELECT id FROM symbols WHERE lower(source) LIKE ?1"
-            ) {
-                if let Ok(rows) = stmt.query_map([&src_pattern], |row| {
-                    row.get::<_, i64>(0)
-                }) {
-                    for id in rows.filter_map(|r| r.ok()) {
-                        if existing_ids.contains(&id) { continue; }
-                        *candidates.entry(id).or_insert(0.0) += 0.5;
-                    }
-                }
-            }
-        }
-    }
-
-    let mut results: Vec<(i64, f64)> = candidates.into_iter().collect();
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    results.truncate(100);
-    results
-}
-
 pub struct SeedConfig {
     pub family: QueryFamily,
     pub allow_per_term: bool,
     pub allow_graph: bool,
     pub allow_numeric: bool,
-    pub allow_self_model: bool,
-    pub allow_source_scan: bool,
 }
 
 impl SeedConfig {
@@ -301,8 +212,6 @@ impl SeedConfig {
             allow_per_term: is_nl,
             allow_graph: is_nl,
             allow_numeric: is_nl,
-            allow_self_model: family == QueryFamily::NaturalAbstract,
-            allow_source_scan: matches!(family, QueryFamily::ErrorDebug),
         }
     }
 }
@@ -311,8 +220,7 @@ pub fn generate_seeds(
     db: &GraphDb,
     query: &str,
     config: &SeedConfig,
-    self_model: Option<&RepoSelfModel>,
-) -> (Vec<(i64, f64)>, usize, Vec<(i64, f64)>, usize) {
+) -> (Vec<(i64, f64)>, usize, Vec<(i64, f64)>) {
     let (mut seeds, fts) = bm25_seeds(db, query, config.family);
     let total_fts = seeds.len();
     let original_bm25 = seeds.clone();
@@ -344,28 +252,5 @@ pub fn generate_seeds(
         }
     }
 
-    if config.allow_self_model {
-        if let Some(model) = self_model {
-            let model_seeds = self_model_expansion(model, query, &seeds);
-            for (id, score) in model_seeds {
-                if !seeds.iter().any(|(sid, _)| *sid == id) {
-                    seeds.push((id, score));
-                }
-            }
-        }
-    }
-
-    let pre_source_scan_len = seeds.len();
-
-    if config.allow_source_scan {
-        let scan_seeds = source_scan_seeds(db, query, &seeds);
-        let bm25_max = seeds.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
-        for (id, score) in scan_seeds {
-            if !seeds.iter().any(|(sid, _)| *sid == id) {
-                seeds.push((id, score * bm25_max * 0.5));
-            }
-        }
-    }
-
-    (seeds, total_fts, original_bm25, pre_source_scan_len)
+    (seeds, total_fts, original_bm25)
 }

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use crate::db::GraphDb;
-use crate::self_model::{self, ConceptKind, RepoSelfModel};
 use crate::subsystems::{self, SubsystemIndex};
 
 const GENERIC_NAMES: &[&str] = &[
@@ -95,7 +94,6 @@ struct BriefingData {
     kinds: HashMap<String, i64>,
     edge_types: HashMap<String, i64>,
     subsystems: SubsystemIndex,
-    model: RepoSelfModel,
 }
 
 fn gather_data(db: &GraphDb) -> Result<BriefingData, String> {
@@ -148,7 +146,6 @@ fn gather_data(db: &GraphDb) -> Result<BriefingData, String> {
     }
 
     let subsystems = subsystems::detect_subsystems(db)?;
-    let model = self_model::build_self_model(db)?;
 
     Ok(BriefingData {
         files: stats.files,
@@ -158,7 +155,6 @@ fn gather_data(db: &GraphDb) -> Result<BriefingData, String> {
         kinds,
         edge_types,
         subsystems,
-        model,
     })
 }
 
@@ -265,25 +261,24 @@ fn write_architecture(out: &mut String, data: &BriefingData, limit: Option<usize
 }
 
 fn write_public_api(out: &mut String, data: &BriefingData, limit: Option<usize>) {
-    let public: Vec<_> = data.model.concepts.iter()
-        .filter(|c| matches!(c.kind, ConceptKind::PublicApi))
-        .collect();
-
-    if public.is_empty() {
-        return;
-    }
+    let mut subs: Vec<_> = data.subsystems.subsystems.iter().collect();
+    subs.sort_by(|a, b| b.symbol_ids.len().cmp(&a.symbol_ids.len()));
 
     let mut api_entries: Vec<(String, String)> = Vec::new();
-    for concept in &public {
-        for name in &concept.key_symbol_names {
+    for sub in &subs {
+        for name in &sub.symbol_names {
             if !is_generic_name(name) {
-                api_entries.push((name.clone(), concept.name.clone()));
+                api_entries.push((name.to_string(), sub.name.clone()));
             }
         }
     }
 
     if let Some(n) = limit {
         api_entries.truncate(n);
+    }
+
+    if api_entries.is_empty() {
+        return;
     }
 
     out.push_str("## Public API\n\n");
@@ -294,27 +289,31 @@ fn write_public_api(out: &mut String, data: &BriefingData, limit: Option<usize>)
 }
 
 fn write_concepts(out: &mut String, data: &BriefingData) {
-    let concerns: Vec<_> = data.model.concepts.iter()
-        .filter(|c| matches!(c.kind, ConceptKind::Concern | ConceptKind::ErrorSurface))
+    let mut subs: Vec<_> = data.subsystems.subsystems.iter().collect();
+    subs.sort_by(|a, b| b.boundary_edge_count.cmp(&a.boundary_edge_count).reverse());
+
+    let cross_cutting: Vec<_> = subs.iter()
+        .filter(|s| s.boundary_edge_count > s.internal_edge_count / 2)
+        .take(10)
         .collect();
 
-    if concerns.is_empty() {
+    if cross_cutting.is_empty() {
         return;
     }
 
     out.push_str("## Cross-Cutting Concerns\n\n");
-    for concept in &concerns {
-        let kind_label = match concept.kind {
-            ConceptKind::Concern => "concern",
-            ConceptKind::ErrorSurface => "error surface",
-            _ => unreachable!(),
-        };
+    for sub in &cross_cutting {
+        let name = humanize_subsystem_name(&sub.name);
+        let key: Vec<_> = sub.symbol_names.iter()
+            .take(8)
+            .filter(|n| !is_generic_name(n))
+            .cloned()
+            .collect();
         out.push_str(&format!(
-            "### {} ({})\n\n{}\n\nKey: {}\n\n",
-            concept.name,
-            kind_label,
-            concept.description,
-            concept.key_symbol_names.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
+            "### {} ({} boundary edges)\n\nKey: {}\n\n",
+            name,
+            sub.boundary_edge_count,
+            key.join(", ")
         ));
     }
 }

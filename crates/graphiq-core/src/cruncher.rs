@@ -670,7 +670,6 @@ mod fuzz_tests {
     use super::*;
     use crate::db::GraphDb;
     use crate::fts::FtsSearch;
-    use crate::holo_name::{build_holo_index, holo_query_name_cosine};
     use crate::symbol::{SymbolBuilder, SymbolKind};
 
     fn build_tiny_db() -> GraphDb {
@@ -696,7 +695,6 @@ mod fuzz_tests {
 
     fn run_fuzz_query(db: &GraphDb, query: &str) {
         let ci = build_cruncher_index(db).unwrap();
-        let _hi = build_holo_index(db, &ci);
         let fts = FtsSearch::new(db);
         let bm25: Vec<(i64, f64)> = fts
             .search(query, Some(30))
@@ -717,7 +715,6 @@ mod fuzz_tests {
                 let channels = compute_sec_channels(&query_terms, &ci, i);
                 let _ = negentropy(&channels);
                 let _ = channel_coherence(&query_terms, &ci, i);
-                let _ = holo_query_name_cosine(query, &_hi, i);
             }
         }
     }

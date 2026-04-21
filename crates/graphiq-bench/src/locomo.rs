@@ -177,14 +177,11 @@ fn main() {
 
     let cache = HotCache::with_defaults();
 
-    let goober = graphiq_core::cruncher::build_cruncher_index(&db).ok().map(|ci| {
-        let hi = graphiq_core::holo_name::build_holo_index(&db, &ci);
-        (ci, hi)
-    });
+    let cruncher = graphiq_core::cruncher::build_cruncher_index(&db).ok();
 
     let mut engine = SearchEngine::new(&db, &cache);
-    if let Some((ref ci, ref hi)) = goober {
-        engine = engine.with_goober(ci, hi);
+    if let Some(ref ci) = cruncher {
+        engine = engine.with_cruncher(ci);
     }
 
     println!("\nRunning {} queries ...\n", queries.len());
