@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::db::GraphDb;
-use crate::lsa::extract_terms;
 use crate::tokenize::decompose_identifier;
+use crate::tokenize::extract_terms;
 
 const TOP_K_TERMS: usize = 30;
 pub const MAX_SEEDS: usize = 30;

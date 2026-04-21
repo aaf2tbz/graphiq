@@ -8,7 +8,7 @@ use crate::edge::{BlastDirection, BlastRadius};
 use crate::fts::{FtsConfig, FtsSearch};
 use crate::graph::StructuralExpander;
 use crate::rerank::{Reranker, ScoredSymbol};
-use crate::query_family::{self, QueryFamily, RetrievalPolicy};
+use crate::query_family::{self, QueryFamily};
 use crate::trace::RetrievalTrace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,11 +151,10 @@ impl<'a> SearchEngine<'a> {
             };
         }
 
-        let policy = RetrievalPolicy::for_family(family);
         let mode = self.active_mode();
 
         let mut result = match mode {
-            SearchMode::GraphWalk => self.search_unified(query, query_hash, &policy, family),
+            SearchMode::GraphWalk => self.search_unified(query, query_hash, family),
             SearchMode::Fts => self.search_fts_fallback(query, query_hash, family),
         };
 
@@ -170,7 +169,6 @@ impl<'a> SearchEngine<'a> {
         &self,
         query: &SearchQuery,
         query_hash: u64,
-        _policy: &RetrievalPolicy,
         family: QueryFamily,
     ) -> SearchResult {
         let ci = self.cruncher_index.unwrap();

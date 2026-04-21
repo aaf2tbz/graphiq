@@ -7,9 +7,8 @@ use crate::query_family::QueryFamily;
 pub enum SeedOrigin {
     Bm25,
     NameExpansion,
-    HeatDiffusion,
     FilePathRouter,
-    StructuralExpansion,
+    GraphWalk,
     FtsDecomposed,
 }
 
@@ -44,11 +43,6 @@ pub struct TraceScoreBreakdown {
     pub coverage_score: f64,
     pub name_score: f64,
     pub walk_evidence: f64,
-    pub holo_name_sim: f64,
-    pub negentropy: f64,
-    pub coherence: f64,
-    pub surprise_boost: f64,
-    pub structural_bonus: f64,
     pub is_seed: bool,
     pub bm25_locked: bool,
     pub final_score: f64,
@@ -96,8 +90,8 @@ impl RetrievalTrace {
         let seed_count = self.seeds.len();
         let bm25_seeds = self.seeds.iter().filter(|s| matches!(s.origin, SeedOrigin::Bm25)).count();
         let name_seeds = self.seeds.iter().filter(|s| matches!(s.origin, SeedOrigin::NameExpansion)).count();
-        let heat_seeds = self.seeds.iter().filter(|s| matches!(s.origin, SeedOrigin::HeatDiffusion)).count();
-        lines.push(format!("    seeds: {} total ({} bm25, {} name, {} heat)", seed_count, bm25_seeds, name_seeds, heat_seeds));
+        let walk_seeds = self.seeds.iter().filter(|s| matches!(s.origin, SeedOrigin::GraphWalk)).count();
+        lines.push(format!("    seeds: {} total ({} bm25, {} name, {} walk)", seed_count, bm25_seeds, name_seeds, walk_seeds));
 
         if !self.expansions.is_empty() {
             lines.push(format!("    expansions: {} steps", self.expansions.len()));
@@ -118,8 +112,7 @@ impl RetrievalTrace {
         let s = &self.score;
         lines.push("    score breakdown:".into());
         lines.push(format!("      bm25={:.3}  coverage={:.3}  name={:.3}", s.bm25_raw, s.coverage_score, s.name_score));
-        lines.push(format!("      walk_evidence={:.3}  holo={:.3}  negentropy={:.3}", s.walk_evidence, s.holo_name_sim, s.negentropy));
-        lines.push(format!("      coherence={:.3}  surprise={:.3}  structural={:.3}", s.coherence, s.surprise_boost, s.structural_bonus));
+        lines.push(format!("      walk_evidence={:.3}", s.walk_evidence));
         lines.push(format!("      is_seed={}  bm25_locked={}  final={:.3}", s.is_seed, s.bm25_locked, s.final_score));
 
         let conf = &self.confidence;
@@ -147,9 +140,8 @@ impl RetrievalTrace {
             let origin = match seed.origin {
                 SeedOrigin::Bm25 => "BM25 seed",
                 SeedOrigin::NameExpansion => "name match expansion",
-                SeedOrigin::HeatDiffusion => "heat diffusion",
                 SeedOrigin::FilePathRouter => "file path router",
-                SeedOrigin::StructuralExpansion => "structural expansion",
+                SeedOrigin::GraphWalk => "graph walk",
                 SeedOrigin::FtsDecomposed => "FTS decomposed",
             };
             lines.push(format!("  {} (raw={:.3})", origin, seed.raw_score));
@@ -168,16 +160,7 @@ impl RetrievalTrace {
             lines.push(format!("  Name match: {:.3}", s.name_score));
         }
         if s.walk_evidence > 0.0 {
-            lines.push(format!("  Walk evidence (heat diffusion): {:.3}", s.walk_evidence));
-        }
-        if s.holo_name_sim > 0.0 {
-            lines.push(format!("  Holographic name similarity: {:.3}", s.holo_name_sim));
-        }
-        if s.surprise_boost > 0.0 {
-            lines.push(format!("  Predictive surprise: {:.3}", s.surprise_boost));
-        }
-        if s.structural_bonus > 0.0 {
-            lines.push(format!("  Structural recall bonus: {:.3}", s.structural_bonus));
+            lines.push(format!("  Walk evidence: {:.3}", s.walk_evidence));
         }
         if s.bm25_locked {
             lines.push("  BM25 lock: YES (top seed promoted to #1)".into());

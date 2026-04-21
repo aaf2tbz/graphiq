@@ -149,18 +149,6 @@ fn main() {
         db_stats.files, db_stats.symbols, db_stats.edges
     );
 
-    print!("Computing Evidence Index ... ");
-    let _evidence_index = match graphiq_core::evidence::build_evidence_index(&db) {
-        Ok(idx) => {
-            println!("done ({} symbols)", idx.symbol_ids.len());
-            Some(idx)
-        }
-        Err(e) => {
-            println!("failed: {e}");
-            None
-        }
-    };
-
     let queries: Vec<LocomoQuery> = if let Some(qf) = args.get(3) {
         let content = std::fs::read_to_string(qf).unwrap_or_else(|e| {
             eprintln!("error reading query file: {e}");

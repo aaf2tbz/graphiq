@@ -31,11 +31,6 @@ impl fmt::Display for QueryFamily {
 pub struct RetrievalPolicy {
     pub family: QueryFamily,
     pub bm25_lock_strength: f64,
-    pub allow_spectral: bool,
-    pub allow_predictive: bool,
-    pub allow_fingerprints: bool,
-    pub spectral_expansion_seeds: usize,
-    pub spectral_heat_scale: f64,
     pub diversity_boost: f64,
     pub evidence_weight: f64,
 }
@@ -46,88 +41,48 @@ impl RetrievalPolicy {
             QueryFamily::SymbolExact => Self {
                 family,
                 bm25_lock_strength: 1.0,
-                allow_spectral: false,
-                allow_predictive: false,
-                allow_fingerprints: false,
-                spectral_expansion_seeds: 0,
-                spectral_heat_scale: 0.0,
                 diversity_boost: 0.0,
                 evidence_weight: 0.0,
             },
             QueryFamily::SymbolPartial => Self {
                 family,
                 bm25_lock_strength: 0.7,
-                allow_spectral: true,
-                allow_predictive: false,
-                allow_fingerprints: false,
-                spectral_expansion_seeds: 15,
-                spectral_heat_scale: 3.0,
                 diversity_boost: 0.5,
                 evidence_weight: 0.3,
             },
             QueryFamily::FilePath => Self {
                 family,
                 bm25_lock_strength: 0.3,
-                allow_spectral: false,
-                allow_predictive: false,
-                allow_fingerprints: false,
-                spectral_expansion_seeds: 0,
-                spectral_heat_scale: 0.0,
                 diversity_boost: 0.8,
                 evidence_weight: 0.0,
             },
             QueryFamily::ErrorDebug => Self {
                 family,
                 bm25_lock_strength: 0.5,
-                allow_spectral: true,
-                allow_predictive: true,
-                allow_fingerprints: true,
-                spectral_expansion_seeds: 20,
-                spectral_heat_scale: 5.0,
                 diversity_boost: 0.5,
                 evidence_weight: 0.5,
             },
             QueryFamily::NaturalDescriptive => Self {
                 family,
                 bm25_lock_strength: 0.5,
-                allow_spectral: true,
-                allow_predictive: true,
-                allow_fingerprints: true,
-                spectral_expansion_seeds: 20,
-                spectral_heat_scale: 5.0,
                 diversity_boost: 0.5,
                 evidence_weight: 0.5,
             },
             QueryFamily::NaturalAbstract => Self {
                 family,
                 bm25_lock_strength: 0.3,
-                allow_spectral: true,
-                allow_predictive: true,
-                allow_fingerprints: true,
-                spectral_expansion_seeds: 30,
-                spectral_heat_scale: 7.0,
                 diversity_boost: 1.0,
                 evidence_weight: 1.0,
             },
             QueryFamily::CrossCuttingSet => Self {
                 family,
                 bm25_lock_strength: 0.3,
-                allow_spectral: true,
-                allow_predictive: true,
-                allow_fingerprints: true,
-                spectral_expansion_seeds: 30,
-                spectral_heat_scale: 5.0,
                 diversity_boost: 1.5,
                 evidence_weight: 1.0,
             },
             QueryFamily::Relationship => Self {
                 family,
                 bm25_lock_strength: 0.3,
-                allow_spectral: true,
-                allow_predictive: false,
-                allow_fingerprints: true,
-                spectral_expansion_seeds: 25,
-                spectral_heat_scale: 5.0,
                 diversity_boost: 0.8,
                 evidence_weight: 1.0,
             },
@@ -405,15 +360,11 @@ mod tests {
     fn test_retrieval_policy_symbol_exact_locks_bm25() {
         let p = RetrievalPolicy::for_family(QueryFamily::SymbolExact);
         assert_eq!(p.bm25_lock_strength, 1.0);
-        assert!(!p.allow_spectral);
     }
 
     #[test]
-    fn test_retrieval_policy_abstract_allows_all() {
+    fn test_retrieval_policy_abstract_low_lock() {
         let p = RetrievalPolicy::for_family(QueryFamily::NaturalAbstract);
-        assert!(p.allow_spectral);
-        assert!(p.allow_predictive);
-        assert!(p.allow_fingerprints);
         assert!(p.bm25_lock_strength < 0.5);
     }
 

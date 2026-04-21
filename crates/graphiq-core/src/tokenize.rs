@@ -81,6 +81,164 @@ pub fn decompose_identifier(name: &str) -> String {
         .join(" ")
 }
 
+fn is_stop_term(t: &str) -> bool {
+    matches!(
+        t,
+        "the"
+            | "a"
+            | "an"
+            | "is"
+            | "are"
+            | "was"
+            | "were"
+            | "be"
+            | "been"
+            | "being"
+            | "have"
+            | "has"
+            | "had"
+            | "do"
+            | "does"
+            | "did"
+            | "will"
+            | "would"
+            | "could"
+            | "should"
+            | "may"
+            | "might"
+            | "shall"
+            | "can"
+            | "need"
+            | "to"
+            | "of"
+            | "in"
+            | "for"
+            | "on"
+            | "with"
+            | "at"
+            | "by"
+            | "from"
+            | "as"
+            | "into"
+            | "through"
+            | "during"
+            | "before"
+            | "after"
+            | "above"
+            | "below"
+            | "between"
+            | "out"
+            | "off"
+            | "over"
+            | "under"
+            | "again"
+            | "further"
+            | "then"
+            | "once"
+            | "here"
+            | "there"
+            | "when"
+            | "where"
+            | "why"
+            | "how"
+            | "all"
+            | "each"
+            | "every"
+            | "both"
+            | "few"
+            | "more"
+            | "most"
+            | "other"
+            | "some"
+            | "such"
+            | "no"
+            | "nor"
+            | "not"
+            | "only"
+            | "own"
+            | "same"
+            | "so"
+            | "than"
+            | "too"
+            | "very"
+            | "just"
+            | "because"
+            | "but"
+            | "and"
+            | "or"
+            | "if"
+            | "while"
+            | "about"
+            | "up"
+            | "it"
+            | "its"
+            | "this"
+            | "that"
+            | "these"
+            | "those"
+            | "my"
+            | "your"
+            | "his"
+            | "her"
+            | "their"
+            | "our"
+            | "what"
+            | "which"
+            | "who"
+            | "whom"
+            | "self"
+            | "pub"
+            | "fn"
+            | "let"
+            | "mut"
+            | "use"
+            | "mod"
+            | "impl"
+            | "struct"
+            | "enum"
+            | "trait"
+            | "type"
+            | "const"
+            | "static"
+            | "return"
+            | "new"
+            | "true"
+            | "false"
+            | "none"
+            | "ok"
+            | "err"
+            | "null"
+            | "undefined"
+            | "function"
+            | "class"
+            | "import"
+            | "export"
+            | "default"
+            | "extends"
+            | "implements"
+    )
+}
+
+pub fn extract_terms(text: &str) -> Vec<String> {
+    let lower = text.to_lowercase();
+    let mut terms: Vec<String> = lower
+        .split_whitespace()
+        .filter(|t| t.len() >= 2)
+        .filter(|t| !is_stop_term(t))
+        .map(|t| t.to_string())
+        .collect();
+
+    let decomposed = decompose_identifier(text);
+    for t in decomposed.split_whitespace() {
+        let t = t.to_lowercase();
+        if t.len() >= 2 && !is_stop_term(&t) {
+            terms.push(t);
+        }
+    }
+
+    terms
+}
+
 pub fn stem_word(word: &str) -> String {
     let w = word.to_lowercase();
     if w.len() < 4 {

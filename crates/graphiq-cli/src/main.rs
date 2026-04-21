@@ -56,10 +56,6 @@ enum Commands {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
-    Lsa {
-        #[arg(long, default_value = ".graphiq/graphiq.db")]
-        db: PathBuf,
-    },
     Subsystems {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
@@ -146,7 +142,6 @@ fn main() {
         } => cmd_blast(&symbol, &db, depth, &direction),
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
-        Commands::Lsa { db } => cmd_lsa(&db),
         Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
         Commands::Roles { db, subsystem, top } => cmd_roles(&db, subsystem, top),
         Commands::Demo => cmd_demo(),
@@ -491,48 +486,6 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
     if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
         eprintln!("  warning: failed to write manifest: {e}");
     }
-}
-
-fn cmd_lsa(db_path: &std::path::Path) {
-    if !db_path.exists() {
-        eprintln!("database not found: {}", db_path.display());
-        eprintln!("run `graphiq index` first to create the database");
-        std::process::exit(1);
-    }
-
-    let db = open_db_or_exit(db_path);
-
-    eprintln!("Computing LSA (anisotropic hypersphere)...");
-    let lsa = match graphiq_core::lsa::compute_lsa(&db) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("LSA computation failed: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    eprintln!("Storing LSA vectors...");
-    match graphiq_core::lsa::store_lsa_vectors(&db, &lsa.symbol_ids, &lsa.symbol_vecs) {
-        Ok(n) => eprintln!("  {} symbol vectors stored", n),
-        Err(e) => eprintln!("  vector store failed: {e}"),
-    }
-
-    match graphiq_core::lsa::store_lsa_basis(&db, &lsa.term_basis, &lsa.term_index, &lsa.term_idf) {
-        Ok(()) => eprintln!("  {} term basis vectors stored", lsa.term_index.len()),
-        Err(e) => eprintln!("  basis store failed: {e}"),
-    }
-
-    match graphiq_core::lsa::store_lsa_sigma(&db, &lsa.singular_values) {
-        Ok(()) => eprintln!("  {} singular values stored", lsa.singular_values.len()),
-        Err(e) => eprintln!("  sigma store failed: {e}"),
-    }
-
-    match graphiq_core::lsa::store_anisotropy_weights(&db, &lsa.anisotropy_weights) {
-        Ok(()) => eprintln!("  {} anisotropy weights stored", lsa.anisotropy_weights.len()),
-        Err(e) => eprintln!("  anisotropy store failed: {e}"),
-    }
-
-    eprintln!("LSA done.");
 }
 
 fn cmd_subsystems(db_path: &std::path::Path, compute_roles: bool) {
