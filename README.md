@@ -1,10 +1,14 @@
 # GraphIQ
 
-Structural code intelligence. GraphIQ indexes your codebase into a structural graph — calls, imports, type flow, error surfaces — and searches it with ranked retrieval that understands how your code is connected, not just what strings it contains.
+GraphIQ is a local code search engine that understands how your code is connected. It indexes your codebase into a structural graph — calls, imports, type flow, error surfaces, shared constants — then searches that graph with ranked retrieval instead of plain substring matching. You ask "rate limit middleware" and it finds `rateLimitMiddleware` through name decomposition, then walks the graph to discover `TokenBucket`, `ThrottleConfig`, and `checkRateLimit` even though none of those names contain "middleware."
 
-No embeddings. No LLM. No network requests. Everything lives in a single SQLite file.
+Everything runs locally. No embeddings, no LLM, no network requests. A single SQLite file (~6.5MB for 20K symbols). ~18μs query latency from an MCP server.
 
-## Benchmarks
+### What GraphIQ is not
+
+Not a semantic search engine. It doesn't understand meaning — it understands structure. A query like "how does the scheduling system work" will mostly fail because the answer requires reasoning, not graph traversal. It also doesn't do fuzzy matching or typo correction. The retrieval is built on exact term overlap and graph adjacency, weighted by information-theoretic signals (IDF, coverage fraction, specificity). This is a strength — it's deterministic and fast — but it means queries need to share vocabulary with the code.
+
+### Where it wins
 
 Tested against grep (substring search over symbol names and source code) on 3 codebases, 50 queries each for NDCG and MRR (300 total):
 
@@ -13,7 +17,15 @@ Tested against grep (substring search over symbol names and source code) on 3 co
 | NDCG@10 | 0.181 | **0.296** (+63%) |
 | MRR@10 | 0.243 | **0.428** (+76%) |
 
-GraphIQ wins 5 of 7 query categories. The biggest gains are on relationship queries (3.7x), natural language descriptions (2.9x), and error debugging (1.7x). Grep retains a marginal edge on exact-name lookups.
+| Query type | vs Grep | Why |
+|---|---|---|
+| **Relationships** ("what calls RateLimiter") | **3.7x** | The graph walk finds structurally connected symbols that no substring search can discover |
+| **Natural language** ("encode a value in VLQ") | **2.9x** | Identifier decomposition + per-family signal routing |
+| **Error/debug** ("timeout in channel send") | **1.7x** | Error-type edge routing + shared constant discovery |
+| **Symbol exact** ("authenticateUser") | ~tied | BM25 is already excellent for exact name lookups |
+| **Abstract NL** ("how does auth work") | ~tied | Requires semantic understanding beyond structural graph signals |
+
+Codebases with descriptive names (`convertOKLCHToOKLAB`) see the biggest gains. Codebases with generic names (`run`, `handle`, `poll`) see smaller gains — the terms are too common for IDF to disambiguate.
 
 Full methodology and per-codebase breakdowns in [docs/benchmarks.md](docs/benchmarks.md).
 
@@ -105,32 +117,9 @@ Query
   → Ranked results
 ```
 
-### Query Families
+The pipeline classifies every query into one of 8 families (symbol lookup, NL description, error debug, relationship, etc.), then routes it through family-specific scoring parameters. Symbol lookups trust BM25. NL queries expand through the graph. Relationship queries lean into structural adjacency. Each family gets its own walk depth, expansion strategy, and signal weights.
 
-| Family | Example |
-|---|---|
-| Symbol (exact/partial) | `RateLimiter`, `rate limit` |
-| Natural language | `encode a value in VLQ` |
-| Abstract questions | `how does auth work` |
-| Error/debug | `timeout in channel send` |
-| Cross-cutting sets | `all connector implementations` |
-| Relationships | `RateLimiter vs TokenBucket` |
-| File paths | `scheduler/worker.rs` |
-
-Each family gets its own scoring configuration — walk depth, expansion strategy, and signal weights are tuned per category.
-
-### Graph Edge Types
-
-| Edge | What it captures |
-|---|---|
-| Calls | Direct function calls |
-| Imports | Module imports |
-| Contains | Scope containment (struct → method) |
-| SharesType | Matching type tokens in signatures |
-| SharesErrorType | Shared error parameters |
-| SharesDataShape | Shared field access patterns |
-| SharesConstant | Shared numeric/string literals |
-| CommentRef | Symbol names mentioned in comments |
+Graph edges capture calls, imports, type flow, shared error types, shared constants, and comment references. The full architecture is documented in [How GraphIQ works](docs/how-graphiq-works.md).
 
 ## Languages
 
