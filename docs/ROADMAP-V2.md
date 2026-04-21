@@ -46,22 +46,23 @@ Results within acceptable thresholds on 2/3 codebases:
 
 tokio regression is the known cost of removing holographic name matching. To recover in future work.
 
-## Phase 3: Cleanup (in progress)
+## Phase 3: Cleanup ✅
 
 - [x] Update README.md
 - [x] Update benchmarks.md
 - [x] Update research.md (Phase 28)
 - [x] Update ROADMAP-V2.md
-- [ ] Remove dead imports/unused code in remaining files (sec, evidence, lsa, rerank, router, file_router)
-- [ ] Simplify query family routing (8 → fewer families)
-- [ ] Remove dead modules if any remain
+- [x] Delete 6 dead modules: sec.rs, lsa.rs, evidence.rs, router.rs, file_router.rs, topo.rs (4,776 lines)
+- [x] Move extract_terms from lsa.rs to tokenize.rs
+- [x] Strip dead fields from RetrievalPolicy and TraceScoreBreakdown
+- [x] Remove Lsa CLI subcommand
+- [x] Remove EvidenceIndex from bench locomos
 
-## Phase 4: Release (pending)
+## Phase 4: Release ✅
 
-- [ ] Version bump to 2.0.0
-- [ ] Update CI, homebrew
-- [ ] Merge v2 → main
-- [ ] Release notes documenting the simplification
+- [x] Version bump to 2.0.0
+- [x] Merge v2 → main
+- [ ] Update homebrew formula (manual)
 
 ## What Stays Unchanged
 

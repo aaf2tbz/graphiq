@@ -104,6 +104,9 @@ graphiq reindex /path/to/project
 graphiq status
 graphiq doctor
 graphiq upgrade-index
+graphiq constants
+graphiq subsystems --roles
+graphiq roles --top 30
 
 graphiq setup --project /path/to/project
 graphiq demo
@@ -193,11 +196,16 @@ graphiq/
       seeds.rs          seed generation (BM25, name lookup, graph walk, bridges)
       scoring.rs        scoring (IDF coverage + name match + walk evidence)
       pipeline.rs       unified_search()
-      search.rs         router, query family dispatch
+      search.rs         search engine, query dispatch
       query_family.rs   8-family query classifier
       cruncher.rs       adjacency lists, term sets, IDF
       deep_graph.rs     type flow, error type, data shape edges
       blast.rs          blast radius computation
+      index.rs          indexing pipeline, TreeSitter parsing
+      tokenize.rs       identifier decomposition, term extraction
+      cache.rs          in-process LRU cache (neighborhoods, results, blast)
+      briefing.rs       project briefing generation
+      db.rs             SQLite schema and queries
       languages/        14 TreeSitter grammars
     graphiq-cli/        CLI binary
     graphiq-mcp/        MCP server binary

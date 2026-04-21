@@ -1,6 +1,6 @@
 [package]
 name = "graphiq-cli"
-version = "0.8.0"
+version = "2.0.0"
 edition = "2021"
 
 [[bin]]
