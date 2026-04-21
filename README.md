@@ -150,10 +150,8 @@ Index size for a ~20K symbol codebase: ~6.5MB.
 
 ## Documentation
 
-- [How seed generation works](docs/how-seed-generation-works.md)
-- [How scoring works](docs/how-scoring-works.md)
-- [Benchmarks](docs/benchmarks.md) — full methodology and results
-- [Retrieval pipeline](docs/retrieval.md) — pipeline details
+- [How GraphIQ works](docs/how-graphiq-works.md) — full system explanation
+- [Benchmarks](docs/benchmarks.md) — methodology and results
 - [Research notes](docs/research.md) — experimental history
 
 ## License
