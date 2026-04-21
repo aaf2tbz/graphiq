@@ -51,6 +51,7 @@ pub struct CruncherIndex {
     pub id_to_idx: HashMap<i64, usize>,
     pub name_to_indices: HashMap<String, Vec<usize>>,
     pub structural_degree: Vec<f64>,
+    pub neighbor_terms: Vec<HashSet<String>>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -379,6 +380,24 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         })
         .collect();
 
+    eprintln!("  Cruncher: building neighbor term fingerprints...");
+    let neighbor_terms: Vec<HashSet<String>> = (0..n)
+        .map(|i| {
+            let mut terms = HashSet::new();
+            for edge in outgoing[i].iter().take(30) {
+                for t in term_sets[edge.target].terms.keys().take(10) {
+                    terms.insert(t.clone());
+                }
+            }
+            for edge in incoming[i].iter().take(30) {
+                for t in term_sets[edge.target].terms.keys().take(10) {
+                    terms.insert(t.clone());
+                }
+            }
+            terms
+        })
+        .collect();
+
     Ok(CruncherIndex {
         n,
         symbol_ids,
@@ -394,6 +413,7 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         id_to_idx,
         name_to_indices,
         structural_degree,
+        neighbor_terms,
     })
 }
 
@@ -465,6 +485,47 @@ pub fn name_coverage(query_terms: &[QueryTerm], name_terms: &HashSet<String>) ->
         }
     }
     (score, matched)
+}
+
+pub fn compute_name_overlap(
+    query_terms: &[QueryTerm],
+    name_terms: &HashSet<String>,
+) -> f64 {
+    let query_name_set: HashSet<String> = query_terms
+        .iter()
+        .flat_map(|qt| qt.variants.iter().cloned())
+        .collect();
+
+    if query_name_set.is_empty() || name_terms.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = query_name_set
+        .iter()
+        .filter(|t| name_terms.contains(*t))
+        .count();
+
+    let min_size = query_name_set.len().min(name_terms.len());
+    intersection as f64 / min_size as f64
+}
+
+pub fn neighbor_match_score(
+    query_terms: &[QueryTerm],
+    neighbor_terms: &HashSet<String>,
+) -> f64 {
+    if neighbor_terms.is_empty() {
+        return 0.0;
+    }
+    let mut score = 0.0f64;
+    for qt in query_terms {
+        for variant in &qt.variants {
+            if neighbor_terms.contains(variant) {
+                score += qt.idf;
+                break;
+            }
+        }
+    }
+    score
 }
 
 pub fn per_term_match(term_set: &TermSet, qt: &QueryTerm) -> f64 {

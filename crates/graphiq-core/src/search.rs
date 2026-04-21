@@ -180,7 +180,6 @@ impl<'a> SearchEngine<'a> {
 
         let pipeline_config = crate::pipeline::PipelineConfig {
             top_k: query.top_k,
-            walk_weight: 1.0,
         };
 
         let raw_results = crate::pipeline::unified_search(
@@ -188,6 +187,7 @@ impl<'a> SearchEngine<'a> {
             ci,
             &seeds,
             &pipeline_config,
+            family,
         );
 
         let file_paths = self.load_file_paths();

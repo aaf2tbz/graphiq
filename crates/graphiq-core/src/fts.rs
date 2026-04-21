@@ -110,7 +110,7 @@ impl<'a> FtsSearch<'a> {
                     merged.push(r);
                 }
             }
-            merged.sort_by(|a, b| b.bm25_score.partial_cmp(&a.bm25_score).unwrap());
+            merged.sort_by(|a, b| b.bm25_score.partial_cmp(&a.bm25_score).unwrap().then(a.symbol.id.cmp(&b.symbol.id)));
             merged.truncate(limit);
             merged
         } else {
@@ -128,7 +128,7 @@ impl<'a> FtsSearch<'a> {
              FROM symbols_fts
              JOIN symbols sym ON sym.id = symbols_fts.rowid
              WHERE symbols_fts MATCH ?1
-             ORDER BY score
+             ORDER BY score, sym.id
              LIMIT ?2",
             w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9],
         );
@@ -150,7 +150,7 @@ impl<'a> FtsSearch<'a> {
             .flatten()
             .filter(|r| r.bm25_score.is_finite() && r.bm25_score > 0.0)
             .collect();
-        results.sort_by(|a, b| b.bm25_score.partial_cmp(&a.bm25_score).unwrap());
+        results.sort_by(|a, b| b.bm25_score.partial_cmp(&a.bm25_score).unwrap().then(a.symbol.id.cmp(&b.symbol.id)));
         results
     }
 }

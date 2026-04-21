@@ -78,14 +78,13 @@ pub fn per_term_fts_expansion(
     }
 
     let n_terms = terms.len() as f64;
-    candidates
+    let mut results: Vec<(i64, f64)> = candidates
         .into_iter()
-        .map(|(id, total_score)| {
-            let coverage = total_score / n_terms;
-            (id, coverage)
-        })
+        .map(|(id, total_score)| (id, total_score / n_terms))
         .filter(|(_, score)| *score > 0.0)
-        .collect()
+        .collect();
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    results
 }
 
 pub fn graph_aware_expansion(
@@ -137,7 +136,7 @@ pub fn graph_aware_expansion(
     }
 
     let mut results: Vec<(i64, f64)> = candidates.into_iter().collect();
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
     results.truncate(50);
     results
 }
@@ -189,7 +188,9 @@ pub fn numeric_bridge_seeds(
         }
     }
 
-    candidates.into_iter().collect()
+    let mut results: Vec<(i64, f64)> = candidates.into_iter().collect();
+    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    results
 }
 
 pub struct SeedConfig {

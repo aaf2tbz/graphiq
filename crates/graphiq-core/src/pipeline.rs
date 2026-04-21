@@ -1,16 +1,16 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use crate::cruncher::{
     CruncherIndex, MAX_SEEDS,
     build_query_terms,
     term_match_score, name_coverage,
-    per_term_match,
+    per_term_match, compute_name_overlap, neighbor_match_score,
 };
+use crate::query_family::QueryFamily;
 use crate::scoring::{Candidate, ScoreConfig, score_candidates, apply_bm25_lock};
 
 pub struct PipelineConfig {
     pub top_k: usize,
-    pub walk_weight: f64,
 }
 
 pub fn unified_search(
@@ -18,6 +18,7 @@ pub fn unified_search(
     idx: &CruncherIndex,
     bm25_seeds: &[(i64, f64)],
     config: &PipelineConfig,
+    family: QueryFamily,
 ) -> Vec<(i64, f64)> {
     let query_terms = build_query_terms(query, &idx.global_idf);
     if query_terms.is_empty() {
@@ -27,12 +28,14 @@ pub fn unified_search(
     let _n_qt = query_terms.len();
     let bm25_max = bm25_seeds.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
 
-    let mut candidates: HashMap<usize, Candidate> = HashMap::new();
+    let mut candidates: BTreeMap<usize, Candidate> = BTreeMap::new();
 
     for &(id, score) in bm25_seeds.iter().take(MAX_SEEDS) {
         if let Some(&i) = idx.id_to_idx.get(&id) {
             let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
             let (name_s, _) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+            let no = compute_name_overlap(&query_terms, &idx.term_sets[i].name_terms);
+            let ns = neighbor_match_score(&query_terms, &idx.neighbor_terms[i]);
 
             let mut sp = HashSet::new();
             sp.insert(i);
@@ -46,6 +49,8 @@ pub fn unified_search(
                 is_seed: true,
                 walk_evidence: 0.0,
                 seed_paths: sp,
+                name_overlap: no,
+                neighbor_score: ns,
             });
         }
     }
@@ -63,6 +68,8 @@ pub fn unified_search(
                 }
                 let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
                 let (name_s, _) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
+                let no = compute_name_overlap(&query_terms, &idx.term_sets[i].name_terms);
+                let ns = neighbor_match_score(&query_terms, &idx.neighbor_terms[i]);
 
                 candidates.insert(i, Candidate {
                     idx: i,
@@ -77,13 +84,18 @@ pub fn unified_search(
                         sp.insert(i);
                         sp
                     },
+                    name_overlap: no,
+                    neighbor_score: ns,
                 });
             }
         }
     }
 
-    {
-        let seed_indices: Vec<usize> = candidates.keys().cloned().collect();
+    let score_config = ScoreConfig::for_family(family);
+
+    if score_config.walk_enabled {
+        let mut seed_indices: Vec<usize> = candidates.keys().cloned().collect();
+        seed_indices.sort_unstable();
 
         for &seed_i in seed_indices.iter().take(8) {
             let mut queue: VecDeque<(usize, f64, usize)> = VecDeque::new();
@@ -128,17 +140,21 @@ pub fn unified_search(
                 let evidence = cov_score * proximity * edge_w;
 
                 let entry = candidates.entry(neighbor_i).or_insert_with(|| {
-                    let (ns, _) =
+                    let (ns_name, _) =
                         name_coverage(&query_terms, &idx.term_sets[neighbor_i].name_terms);
+                    let no = compute_name_overlap(&query_terms, &idx.term_sets[neighbor_i].name_terms);
+                    let ns_nbr = neighbor_match_score(&query_terms, &idx.neighbor_terms[neighbor_i]);
                     Candidate {
                         idx: neighbor_i,
                         bm25_score: 0.0,
                         coverage_score: cov_score,
                         coverage_count: cov_count,
-                        name_score: ns,
+                        name_score: ns_name,
                         is_seed: false,
                         walk_evidence: 0.0,
                         seed_paths: HashSet::new(),
+                        name_overlap: no,
+                        neighbor_score: ns_nbr,
                     }
                 });
 
@@ -167,23 +183,16 @@ pub fn unified_search(
         }
     }
 
-    let score_config = ScoreConfig {
-        bm25_w: 4.0,
-        cov_w: 1.0,
-        name_w: 1.2,
-        walk_weight: config.walk_weight,
-    };
-
     let mut scored = score_candidates(&candidates, &query_terms, &score_config, idx);
     apply_bm25_lock(&mut scored, bm25_seeds, &query_terms, idx);
 
     let mut results: Vec<(i64, f64)> = Vec::with_capacity(config.top_k);
-    let mut file_counts: HashMap<i64, usize> = HashMap::new();
+    let mut file_counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
 
     for (i, score) in scored {
         let fid = idx.symbol_file_ids[i];
         let fc = file_counts.entry(fid).or_insert(0);
-        if *fc >= 3 {
+        if *fc >= score_config.diversity_max_per_file {
             continue;
         }
         *fc += 1;
