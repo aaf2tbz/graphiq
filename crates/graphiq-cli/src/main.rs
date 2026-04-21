@@ -84,6 +84,8 @@ enum Commands {
         project: Option<PathBuf>,
         #[arg(long)]
         skip_index: bool,
+        #[arg(long)]
+        ephemeral: bool,
     },
     Doctor {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
@@ -156,7 +158,8 @@ fn main() {
         Commands::Setup {
             project,
             skip_index,
-        } => cmd_setup(project.as_deref(), skip_index),
+            ephemeral,
+        } => cmd_setup(project.as_deref(), skip_index, ephemeral),
         Commands::Doctor { db } => cmd_doctor(&db),
         Commands::UpgradeIndex { db } => cmd_upgrade_index(&db),
         Commands::Constants { db, query, top } => cmd_constants(&db, query.as_deref(), top),
@@ -1029,7 +1032,7 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
     }
 }
 
-fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
+ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool, ephemeral: bool) {
     use serde_json::{json, Value};
 
     fn pretty(v: &Value) -> String {
@@ -1088,9 +1091,13 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
     if let Some(ref config_path) = claude_config {
         if config_path.exists() || config_path.parent().map_or(false, |p| p.exists()) {
             let project_str = project_path.display().to_string();
+            let mut args = vec![project_str.clone()];
+            if ephemeral {
+                args.push("--ephemeral".to_string());
+            }
             let entry = json!({
                 "command": "graphiq-mcp",
-                "args": [project_str]
+                "args": args
             });
 
             let (config, written) = if config_path.exists() {
@@ -1150,9 +1157,13 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
 
     if let Some(ref config_path) = opencode_config {
         let project_str = project_path.display().to_string();
+        let mut cmd = vec!["graphiq-mcp".to_string(), project_str.clone()];
+        if ephemeral {
+            cmd.push("--ephemeral".to_string());
+        }
         let entry = json!({
             "type": "local",
-            "command": ["graphiq-mcp", project_str],
+            "command": cmd,
             "enabled": true
         });
 
@@ -1206,6 +1217,7 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
 
     if let Some(ref config_path) = codex_config {
         let project_str = project_path.display().to_string();
+        let args_suffix = if ephemeral { ", \"--ephemeral\"" } else { "" };
 
         let (content, written) = if config_path.exists() {
             match std::fs::read_to_string(config_path) {
@@ -1217,8 +1229,8 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
                     } else {
                         let mut cleaned = existing;
                         let section = format!(
-                            "\n[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"]\nenabled = true\n",
-                            project_str
+                            "\n[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"{}]\nenabled = true\n",
+                            project_str, args_suffix
                         );
                         cleaned.push_str(&section);
                         (cleaned, true)
@@ -1231,8 +1243,8 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
             }
         } else {
             let section = format!(
-                "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"]\nenabled = true\n",
-                project_str
+                "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"{}]\nenabled = true\n",
+                project_str, args_suffix
             );
             (section, true)
         };
@@ -1253,6 +1265,7 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
 
     if let Some(ref config_path) = hermes_config {
         let project_str = project_path.display().to_string();
+        let ephemeral_line = if ephemeral { "\n      - --ephemeral" } else { "" };
 
         let (content, written) = if config_path.exists() {
             match std::fs::read_to_string(config_path) {
@@ -1266,7 +1279,7 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
                         .map(|re| {
                             let replacement = format!(
                                 "mcp_servers:\n  graphiq:\n    command: graphiq-mcp\n    args:\n      - {}\
-                                \n    enabled: true",
+                                {ephemeral_line}\n    enabled: true",
                                 project_str
                             );
                             re.replace(&existing, replacement.as_str()).to_string()
@@ -1275,7 +1288,7 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
                         (updated, false)
                     } else {
                         let section = format!(
-                            "\nmcp_servers:\n  graphiq:\n    command: graphiq-mcp\n    args:\n      - {}\n    enabled: true\n",
+                            "\nmcp_servers:\n  graphiq:\n    command: graphiq-mcp\n    args:\n      - {}{ephemeral_line}\n    enabled: true\n",
                             project_str
                         );
                         let mut out = existing;
@@ -1290,7 +1303,7 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
             }
         } else {
             let section = format!(
-                "mcp_servers:\n  graphiq:\n    command: graphiq-mcp\n    args:\n      - {}\n    enabled: true\n",
+                "mcp_servers:\n  graphiq:\n    command: graphiq-mcp\n    args:\n      - {}{ephemeral_line}\n    enabled: true\n",
                 project_str
             );
             (section, true)
@@ -1316,7 +1329,7 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
 
     println!();
 
-    if !skip_index {
+    if !skip_index && !ephemeral {
         let db_path = project_path.join(".graphiq").join("graphiq.db");
         if let Some(parent) = db_path.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -1370,7 +1383,11 @@ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool) {
 
     if let Some(ref bin_path) = graphiq_bin {
         println!();
-        println!("  MCP server: {} <project>", bin_path.display());
+        if ephemeral {
+            println!("  MCP server: {} <project> --ephemeral", bin_path.display());
+        } else {
+            println!("  MCP server: {} <project>", bin_path.display());
+        }
         println!("  Installed at: {}", bin_path.display());
     }
 

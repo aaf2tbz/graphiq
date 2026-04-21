@@ -23,7 +23,7 @@ struct ServerState {
     self_model: Option<graphiq_core::self_model::RepoSelfModel>,
 }
 
-fn resolve_project_root(raw: &str) -> PathBuf {
+fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
     let mut path = PathBuf::from(raw);
 
     if path.exists() && path.is_file() && path.extension().map_or(false, |e| e == "db") {
@@ -51,18 +51,45 @@ fn resolve_project_root(raw: &str) -> PathBuf {
         return resolved;
     }
 
-    let mut candidate = resolved.clone();
-    loop {
-        if candidate.join(".git").exists() {
-            log_err(&format!("detected git root: {}", candidate.display()));
-            return candidate;
+    if !explicit {
+        let mut candidate = resolved.clone();
+        loop {
+            if candidate.join(".git").exists() {
+                log_err(&format!("detected git root: {}", candidate.display()));
+                return candidate;
+            }
+            if !candidate.pop() {
+                break;
+            }
         }
-        if !candidate.pop() {
-            break;
+        log_err(&format!("no git root found, using: {}", resolved.display()));
+        return resolved;
+    }
+
+    if resolved.join(".git").exists() {
+        log_err(&format!("project root (git): {}", resolved.display()));
+        return resolved;
+    }
+
+    let mut git_children: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&resolved) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.join(".git").exists() && p.is_dir() {
+                git_children.push(p);
+            }
         }
     }
 
-    log_err(&format!("no git root found, using: {}", resolved.display()));
+    if git_children.len() == 1 {
+        log_err(&format!(
+            "project root (single child repo): {}",
+            git_children[0].display()
+        ));
+        return git_children.remove(0);
+    }
+
+    log_err(&format!("project root (explicit): {}", resolved.display()));
     resolved
 }
 
@@ -70,43 +97,11 @@ fn resolve_db_path(project_root: &Path) -> PathBuf {
     project_root.join(".graphiq").join("graphiq.db")
 }
 
-fn discover_db(project_root: &Path) -> Option<PathBuf> {
-    let direct = project_root.join(".graphiq").join("graphiq.db");
-    if direct.exists() {
-        return Some(direct);
-    }
-
-    let mut found: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(project_root) {
-        for entry in entries.flatten() {
-            let candidate = entry.path().join(".graphiq").join("graphiq.db");
-            if candidate.exists() {
-                found.push(candidate);
-            }
-        }
-    }
-
-    if found.len() == 1 {
-        log_err(&format!(
-            "discovered nested index: {}",
-            found[0].display()
-        ));
-        Some(found.into_iter().next().unwrap())
-    } else if found.len() > 1 {
-        log_err(&format!(
-            "ambiguous: found {} nested indexes, using direct path",
-            found.len()
-        ));
-        None
-    } else {
-        None
-    }
-}
-
-fn parse_args() -> (Option<PathBuf>, Option<PathBuf>) {
+fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut db_override: Option<PathBuf> = None;
     let mut project_arg: Option<PathBuf> = None;
+    let mut ephemeral = false;
 
     if let Ok(val) = std::env::var("GRAPHIQ_DB") {
         if !val.is_empty() {
@@ -127,6 +122,10 @@ fn parse_args() -> (Option<PathBuf>, Option<PathBuf>) {
                     i += 1;
                 }
             }
+            "--ephemeral" => {
+                ephemeral = true;
+                i += 1;
+            }
             arg => {
                 if !arg.starts_with('-') && project_arg.is_none() {
                     project_arg = Some(PathBuf::from(arg));
@@ -136,89 +135,11 @@ fn parse_args() -> (Option<PathBuf>, Option<PathBuf>) {
         }
     }
 
-    (project_arg, db_override)
+    (project_arg, db_override, ephemeral)
 }
 
 fn db_is_empty(db: &graphiq_core::db::GraphDb) -> bool {
     db.stats().map(|s| s.files == 0).unwrap_or(true)
-}
-
-fn ensure_indexed(state: &mut ServerState) -> Result<(), String> {
-    let stats = state
-        .db
-        .stats()
-        .map_err(|e| format!("failed to read stats: {e}"))?;
-
-    if stats.files == 0 {
-        log_err("database is empty — use the 'index' tool to index, or run 'graphiq setup'");
-    }
-
-    state.cache.prewarm(&state.db, 200);
-
-    let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
-    let ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &state.db);
-
-    if state.cruncher_index.is_none() && stats.files > 0 {
-        if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
-            let hi = ac.load_holo().unwrap_or_else(|| {
-                let hi = graphiq_core::cruncher::build_holo_index(&state.db, &ci);
-                hi
-            });
-            state.cruncher_index = Some(ci);
-            state.holo_index = Some(hi);
-            log_err("goober v5 index loaded from cache");
-        } else if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&state.db) {
-            let hi = graphiq_core::cruncher::build_holo_index(&state.db, &ci);
-            state.cruncher_index = Some(ci);
-            state.holo_index = Some(hi);
-            log_err("goober v5 index built");
-        }
-    }
-
-    if state.spectral_index.is_none() && state.cruncher_index.is_some() {
-        if let Some(si) = ac.load::<graphiq_core::spectral::SpectralIndex>("spectral") {
-            log_err("spectral index loaded from cache");
-            state.spectral_index = Some(si);
-        } else if let Ok(si) = graphiq_core::spectral::compute_spectral(&state.db) {
-            log_err("spectral index built");
-            state.spectral_index = Some(si);
-        }
-    }
-
-    if state.predictive_model.is_none() && state.cruncher_index.is_some() {
-        if let Some(pm) = ac.load_predictive() {
-            log_err("predictive model loaded from cache");
-            state.predictive_model = Some(pm);
-        } else if let Ok(pm) = graphiq_core::spectral::compute_predictive_model(&state.db) {
-            log_err("predictive model built");
-            state.predictive_model = Some(pm);
-        }
-    }
-
-    if state.fingerprints.is_empty() && state.cruncher_index.is_some() {
-        if let Some(cached) = ac.load::<(Vec<graphiq_core::spectral::ChannelFingerprint>, std::collections::HashMap<i64, usize>)>("fingerprints") {
-            log_err(&format!("channel fingerprints loaded from cache ({} symbols)", cached.0.len()));
-            state.fingerprints = cached.0;
-            state.fp_id_to_idx = cached.1;
-        } else {
-            let (fps, id_map) = graphiq_core::spectral::compute_channel_fingerprints(&state.db);
-            log_err(&format!("channel fingerprints built ({} symbols)", fps.len()));
-            state.fingerprints = fps;
-            state.fp_id_to_idx = id_map;
-        }
-    }
-
-    if state.self_model.is_none() && state.cruncher_index.is_some() {
-        if let Some(sm) = ac.load::<graphiq_core::self_model::RepoSelfModel>("self_model") {
-            log_err(&format!("self-model loaded from cache ({} concepts)", sm.concepts.len()));
-            state.self_model = Some(sm);
-        } else if let Ok(sm) = graphiq_core::self_model::build_self_model(&state.db) {
-            log_err(&format!("self-model built ({} concepts)", sm.concepts.len()));
-            state.self_model = Some(sm);
-        }
-    }
-
-    Ok(())
 }
 
 fn do_index(state: &mut ServerState) -> Result<String, String> {
@@ -320,14 +241,30 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
 }
 
 fn main() {
-    let (project_arg, db_override) = parse_args();
+    let (project_arg, db_override, ephemeral) = parse_args();
 
+    let explicit = project_arg.is_some();
     let raw_arg = project_arg
         .as_deref()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| ".".into());
 
-    let project_root = resolve_project_root(&raw_arg);
+    let project_root = resolve_project_root(&raw_arg, explicit);
+
+    let ephemeral_dir: Option<PathBuf> = if ephemeral {
+        let dir = std::env::temp_dir().join(format!(
+            "graphiq-{:x}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        log_err(&format!("ephemeral mode: {}", dir.display()));
+        Some(dir)
+    } else {
+        None
+    };
+
     let db_path = match db_override {
         Some(ref p) => {
             let resolved = if p.is_absolute() {
@@ -342,24 +279,15 @@ fn main() {
             resolved
         }
         None => {
-            let computed = resolve_db_path(&project_root);
-            if !computed.exists() {
-                if let Some(discovered) = discover_db(&project_root) {
-                    discovered
-                } else {
-                    computed
-                }
+            if let Some(ref edir) = ephemeral_dir {
+                edir.join("graphiq.db")
             } else {
-                computed
+                resolve_db_path(&project_root)
             }
         }
     };
 
     let project_root = {
-        let db_dir_project = db_path
-            .parent()
-            .and_then(|p| p.parent())
-            .map(|p| p.to_path_buf());
         if let Ok(temp_db) = graphiq_core::db::GraphDb::open(&db_path) {
             if let Ok(Some(stored)) = temp_db.get_meta("project_root") {
                 let stored_path = PathBuf::from(&stored);
@@ -374,10 +302,10 @@ fn main() {
                     project_root
                 }
             } else {
-                db_dir_project.unwrap_or(project_root)
+                project_root
             }
         } else {
-            db_dir_project.unwrap_or(project_root)
+            project_root
         }
     };
 
@@ -419,14 +347,6 @@ fn main() {
         }
     };
 
-    if db_is_empty(&db) {
-        log_err(&format!(
-            "database is empty at {}. Use the 'index' tool or run 'graphiq index {}' to populate it.",
-            db_path.display(),
-            project_root.display()
-        ));
-    }
-
     let state = Arc::new(Mutex::new(ServerState {
         project_root: project_root.clone(),
         db_path: db_path.clone(),
@@ -442,6 +362,27 @@ fn main() {
     }));
 
     let running = Arc::new(AtomicBool::new(true));
+
+    if ephemeral {
+        let edir_clone = ephemeral_dir.clone();
+        unsafe {
+            let _ = signal_hook::low_level::register(signal_hook::consts::SIGTERM, move || {
+                if let Some(ref d) = edir_clone {
+                    let _ = std::fs::remove_dir_all(d);
+                }
+                std::process::exit(0);
+            });
+        }
+        let edir_clone2 = ephemeral_dir.clone();
+        unsafe {
+            let _ = signal_hook::low_level::register(signal_hook::consts::SIGINT, move || {
+                if let Some(ref d) = edir_clone2 {
+                    let _ = std::fs::remove_dir_all(d);
+                }
+                std::process::exit(0);
+            });
+        }
+    }
 
     log_err("ready");
 
@@ -478,6 +419,11 @@ fn main() {
         if let Err(e) = handle_message(&msg, &state, &running, &mut stdout) {
             log_err(&format!("handler error: {e}"));
         }
+    }
+
+    if let Some(ref edir) = ephemeral_dir {
+        log_err(&format!("ephemeral cleanup: {}", edir.display()));
+        let _ = std::fs::remove_dir_all(edir);
     }
 }
 
@@ -527,35 +473,6 @@ fn handle_message(
                 }
             });
             send_response(id, &result, out)?;
-            let state_c = Arc::clone(state);
-            std::thread::spawn(move || {
-                let mut s = match state_c.lock() {
-                    Ok(s) => s,
-                    Err(e) => {
-                        log_err(&format!("lazy index: lock failed: {e}"));
-                        return;
-                    }
-                };
-                let db_dir = s.db_path.parent().unwrap_or(std::path::Path::new("."));
-                let ac = graphiq_core::artifact_cache::ArtifactCache::new(db_dir, &s.db);
-                if s.cruncher_index.is_none() {
-                    if let Some(ci) = ac.load::<graphiq_core::cruncher::CruncherIndex>("cruncher") {
-                        let hi = ac.load_holo().unwrap_or_else(|| graphiq_core::cruncher::build_holo_index(&s.db, &ci));
-                        s.cruncher_index = Some(ci);
-                        s.holo_index = Some(hi);
-                        log_err("lazy: goober v5 index loaded from cache");
-                    } else if let Ok(ci) = graphiq_core::cruncher::build_cruncher_index(&s.db) {
-                        let hi = graphiq_core::cruncher::build_holo_index(&s.db, &ci);
-                        s.cruncher_index = Some(ci);
-                        s.holo_index = Some(hi);
-                        log_err("lazy: goober v5 index built");
-                    }
-                }
-                if let Err(e) = ensure_indexed(&mut s) {
-                    log_err(&format!("lazy auto-index failed: {e}"));
-                }
-                log_err("lazy indexing complete");
-            });
         }
         "initialized" => {}
         "ping" => {
@@ -845,15 +762,21 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
     }
 
     if tool_name != "index" && tool_name != "status" && tool_name != "doctor" {
-        let s = match state.lock() {
-            Ok(s) => s,
-            Err(e) => return tool_error(&format!("lock error: {e}")),
+        let needs_index = {
+            match state.lock() {
+                Ok(s) => db_is_empty(&s.db),
+                Err(_) => false,
+            }
         };
-        if db_is_empty(&s.db) {
-            return tool_error(&format!(
-                "Database is empty at {}. Use the 'index' tool to populate it.",
-                s.db_path.display()
-            ));
+        if needs_index {
+            let mut s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            log_err("auto-indexing (cold start)...");
+            if let Err(e) = do_index(&mut s) {
+                return tool_error(&format!("auto-index failed: {e}"));
+            }
         }
     }
 

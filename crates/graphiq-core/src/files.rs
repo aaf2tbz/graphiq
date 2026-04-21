@@ -159,6 +159,7 @@ pub fn content_hash(content: &[u8]) -> String {
 }
 
 pub fn walk_project(root: &Path) -> impl Iterator<Item = PathBuf> {
+    let root_owned = root.to_path_buf();
     let mut builder = ignore::WalkBuilder::new(root);
     builder
         .hidden(true)
@@ -167,7 +168,7 @@ pub fn walk_project(root: &Path) -> impl Iterator<Item = PathBuf> {
         .git_global(true)
         .add_custom_ignore_filename(".graphiqignore");
 
-    builder.filter_entry(|entry| {
+    builder.filter_entry(move |entry| {
         let name = entry.file_name().to_string_lossy();
         if name == ".git"
             || name == ".github"
@@ -185,6 +186,11 @@ pub fn walk_project(root: &Path) -> impl Iterator<Item = PathBuf> {
             || name == ".sqmd"
         {
             return false;
+        }
+        if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+            if entry.path().join(".git").exists() && entry.path() != root_owned {
+                return false;
+            }
         }
         if entry.file_type().is_some_and(|ft| ft.is_file()) {
             let path_str = entry.path().to_string_lossy();
