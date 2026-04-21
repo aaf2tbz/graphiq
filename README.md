@@ -101,6 +101,7 @@ graphiq blast RateLimiter
 graphiq blast RateLimiter --depth 5 --direction forward
 
 graphiq index /path/to/project
+GRAPHIQ_DB=/tmp/graphiq.db graphiq index /path/to/project
 graphiq reindex /path/to/project
 graphiq status
 graphiq doctor
@@ -110,7 +111,7 @@ graphiq setup --project /path/to/project
 graphiq demo
 ```
 
-`--debug` on search prints per-result score breakdowns, active search mode, and query family.
+`--debug` on search prints per-result score breakdowns, active search mode, and query family. `GRAPHIQ_DB` overrides the database path for all CLI commands.
 
 ## MCP Server
 
@@ -134,7 +135,19 @@ graphiq demo
 
 ```bash
 graphiq-mcp /path/to/project
+graphiq-mcp /path/to/project --db /custom/path/graphiq.db
+GRAPHIQ_DB=/custom/graphiq.db graphiq-mcp /path/to/project
 ```
+
+The MCP server lazily indexes — it starts immediately and only builds the index when you call `search` (or explicitly `index`). If the database is empty, all query tools return an error directing you to index first. The index is also session-scoped: it's disposed when the server process exits rather than persisting indefinitely.
+
+On startup, the server resolves the database path in this order:
+1. `--db` flag (absolute or relative to cwd)
+2. `GRAPHIQ_DB` environment variable
+3. `.graphiq/graphiq.db` inside the project root
+4. Auto-discovery of nested indexes (e.g. monorepo with a single child index)
+
+The project root is stored in the DB at index time. If the server is given a different root than what was indexed, it uses the stored root automatically. Corrupted databases are detected and recreated on startup.
 
 ### Supported Harnesses
 
@@ -157,7 +170,7 @@ graphiq-mcp /path/to/project
 
 ```
 .graphiq/
-  graphiq.db                SQLite (symbols, edges, FTS5 index)
+  graphiq.db                SQLite (symbols, edges, FTS5 index, meta table)
   manifest.json             artifact freshness tracking
   cache/                    precomputed artifacts (zstd-compressed)
     cruncher.bin.zst        adjacency lists, term sets, IDF
