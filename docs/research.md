@@ -536,3 +536,38 @@ Seven production-readiness improvements to the MCP server (`graphiq-mcp`) for ag
 **Task-oriented tool descriptions + AGENTS.md on install:** Rewrote all 13 MCP tool descriptions to be task-oriented (what to use when) rather than capability-oriented (what the tool does). Added `write_agents_md()` to `graphiq setup` — writes `.graphiq/AGENTS.md` with a quick-reference table, 5 workflow guides, and per-tool usage details. Uses `include_str!("../AGENTS.md.template")` so the template lives in the crate and can be updated independently. Does NOT overwrite existing project AGENTS.md files.
 
 **Key lesson:** MCP tool ordering matters. `briefing` should be first (orient the agent), `search` second (most common action), maintenance tools last (rarely needed). Tool descriptions should answer "when should I use this?" not "what does this do?"
+
+### Phase 28: v2 Simplification
+
+Removed the entire spectral/holographic/predictive artifact pipeline: 5,087 lines deleted, ~18GB RAM eliminated, warm search from 850ms to ~50ms.
+
+**What was removed:**
+- `spectral.rs` (42KB) — Chebyshev heat diffusion, Ricci curvature, MDL explanation sets, channel fingerprints
+- `self_model.rs` (34KB) — deterministic concept nodes for abstract queries
+- `holo.rs` (22KB) — holographic reduced representations (1024-dim FFT vectors)
+- `structural_fallback.rs` (9KB) — SNP structural neighborhood profiling
+- `holo_name.rs` (5KB) — holographic name matching
+- `artifact_cache.rs` (7KB) — multi-artifact zstd disk cache
+
+**What was simplified:**
+- `pipeline.rs` (533→174 lines) — removed heat diffusion, SNP fallback, source scan, predictive surprise
+- `scoring.rs` (209→111 lines) — 15-term product → 5-term sum: bm25 + idf_coverage + name_match + graph_walk, with coverage_frac^0.3 × kind_boost × test_penalty
+- `seeds.rs` (371→260 lines) — removed self-model expansion, source scan seeds
+- `search.rs` (646→415 lines) — removed warmup state, holo/spectral references
+- Removed `nalgebra` dependency from Cargo.toml
+
+**Results:**
+
+| Codebase | NDCG v1→v2 | MRR v1→v2 |
+|---|---|---|
+| signetai | 0.323→**0.330** (+) | 0.847→**0.900** (+) |
+| esbuild | 0.403→**0.405** (=) | 0.950→0.940 (-) |
+| tokio | **0.291**→0.221 (-) | **0.970**→0.848 (-) |
+
+**Key findings:**
+- signetai IMPROVED — the artifact pipeline was overriding good BM25 seeds with noise on domain-specific names
+- tokio regressed — generic names (`run`, `handle`, `poll`) benefited from holographic name matching's 6.8x cosine separation
+- The artifact pipeline was load-bearing for generic-name codebases, net-negative for descriptive-name codebases
+- Warm search: 850ms → ~50ms. Cold search: ~30s → ~5-10s. Disk cache: 75MB → ~6.5MB (cruncher only)
+
+**Key lesson:** 18GB of spectral/holographic/predictive artifacts produced marginal NDCG improvement (+0.02-0.05) while actively hurting on codebases with descriptive names. The graph walk captures most structural signal; BM25 captures lexical signal. The complex math was refinancing a rounding error.

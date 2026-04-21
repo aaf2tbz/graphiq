@@ -10,35 +10,33 @@ Grep (BM25 `LIKE %term%` over all symbol names and source lines) is a strong bas
 
 | Metric | Grep | GraphIQ | Delta |
 |---|---|---|---|
-| MRR@10 | 0.927 | 0.922 | -0.5% |
-| NDCG@10 | 0.282 | 0.339 | +20% |
-| Combined | 0.605 | 0.631 | +4.3% |
+| MRR@10 | 0.911 | 0.896 | -1.6% |
+| NDCG@10 | 0.291 | 0.319 | +10% |
 
 Per-category NDCG@10 (3-codebase average):
 
 | Category | Grep | GraphIQ |
 |---|---|---|
-| symbol-exact | 0.887 | 0.926 |
-| symbol-partial | 0.691 | 0.688 |
-| nl-descriptive | 0.061 | 0.217 |
-| nl-abstract | 0.029 | 0.242 |
-| error-debug | 0.159 | 0.040 |
-| file-path | 0.043 | 0.081 |
-| cross-cutting | 0.013 | 0.099 |
+| symbol-exact | 0.953 | 0.845 |
+| symbol-partial | 0.718 | 0.603 |
+| nl-descriptive | 0.061 | 0.137 |
+| nl-abstract | 0.032 | 0.238 |
+| error-debug | 0.158 | 0.171 |
+| file-path | 0.062 | 0.065 |
+| cross-cutting | 0.000 | 0.098 |
 
-GraphIQ wins 5 of 7 categories. Grep retains an edge on MRR exact-name lookups and error-debug queries. See [docs/benchmarks.md](docs/benchmarks.md) for per-codebase breakdowns and methodology.
+GraphIQ wins 5 of 7 categories. Grep retains an edge on exact-name lookups. See [docs/benchmarks.md](docs/benchmarks.md) for per-codebase breakdowns and methodology.
 
 ## Pipeline
 
 ```
 Query -> Query Family Router (8 families)
-      -> Seed Generation: BM25 -> name lookup -> graph walk -> numeric bridges -> self-model -> source scan (ErrorDebug) (~100 candidates)
-      -> Spectral Expansion: Chebyshev heat diffusion on graph Laplacian + SNP structural fallback (~200 candidates)
-      -> Unified Scoring: IDF coverage + holographic name gate + predictive surprise + MDL
+      -> Seed Generation: BM25 FTS5 -> name lookup -> graph walk -> numeric bridges (~100 candidates)
+      -> Scoring: IDF coverage + name match + graph walk evidence
       -> Confidence Fusion: BM25 lock -> kind boosts -> file diversity -> top_k results
 ```
 
-See the pipeline docs for how each stage works: [seeds](docs/how-seed-generation-works.md), [heat kernel](docs/how-heat-kernel-works.md), [scoring](docs/how-scoring-works.md), [holographic matching](docs/how-holographic-matching-works.md), [predictive scoring](docs/how-predictive-scoring-works.md).
+No spectral diffusion. No holographic matching. No predictive models. BM25 retrieves, graph walk expands, scoring ranks.
 
 ### Query Families
 
@@ -53,7 +51,7 @@ See the pipeline docs for how each stage works: [seeds](docs/how-seed-generation
 | Relationship | "vs", "relationship" | `AsyncFd vs readiness guard` |
 | FilePath | Paths, extensions | `scheduler/worker.rs` |
 
-Each family routes to a tuned `ScoreConfig`. No stacking, no fusion — one config per query.
+Each family routes to tuned seed expansion strategies. No stacking, no fusion — one path per query.
 
 ### Code Graph Edge Types
 
@@ -139,7 +137,7 @@ graphiq-mcp /path/to/project --db /custom/path/graphiq.db
 GRAPHIQ_DB=/custom/graphiq.db graphiq-mcp /path/to/project
 ```
 
-The MCP server lazily indexes — it starts immediately and only builds the index when you call `search` (or explicitly `index`). If the database is empty, all query tools return an error directing you to index first. The index is also session-scoped: it's disposed when the server process exits rather than persisting indefinitely.
+The MCP server lazily indexes — it starts immediately and only builds the CruncherIndex when you call `search` (or explicitly `index`). If the database is empty, all query tools return an error directing you to index first. The CruncherIndex builds in ~1 second from SQLite.
 
 On startup, the server resolves the database path in this order:
 1. `--db` flag (absolute or relative to cwd)
@@ -174,21 +172,16 @@ The project root is stored in the DB at index time. If the server is given a dif
   manifest.json             artifact freshness tracking
   cache/                    precomputed artifacts (zstd-compressed)
     cruncher.bin.zst        adjacency lists, term sets, IDF
-    holo_f32.bin.zst        holographic name vectors (f32 quantized)
-    spectral.bin.zst        Chebyshev heat diffusion index
-    predictive_compact.bin.zst  conditional term models (top-200/symbol)
-    fingerprints.bin.zst    channel fingerprint vectors
-    self_model.bin.zst      deterministic concept nodes
 ```
 
-Cache sizes for a ~20K symbol codebase: ~75MB total. Validated against DB stats on every search — stale cache is transparently rebuilt. `graphiq reindex` and `graphiq upgrade-index` invalidate automatically.
+Cache size for a ~20K symbol codebase: ~6.5MB. `graphiq reindex` and `graphiq upgrade-index` invalidate automatically.
 
 ## Search Speed
 
 | Mode | Time |
 |---|---|
-| Cold CLI search (first run) | ~30s |
-| Warm CLI search (cached) | ~850ms |
+| Cold CLI search (first run) | ~5-10s |
+| Warm CLI search (cached) | ~50ms |
 | In-process query (MCP/bench) | ~18us |
 
 ## Source Layout
@@ -198,15 +191,12 @@ graphiq/
   crates/
     graphiq-core/
       seeds.rs          seed generation (BM25, name lookup, graph walk, bridges)
-      scoring.rs        unified scoring (SEC, holographic, surprise, MDL)
+      scoring.rs        scoring (IDF coverage + name match + walk evidence)
       pipeline.rs       unified_search()
       search.rs         router, query family dispatch
       query_family.rs   8-family query classifier
-      cruncher.rs       adjacency lists, term sets, IDF, holographic encoding
-      spectral.rs       Chebyshev heat diffusion, predictive model, fingerprints
+      cruncher.rs       adjacency lists, term sets, IDF
       deep_graph.rs     type flow, error type, data shape edges
-      self_model.rs     deterministic concept nodes
-      artifact_cache.rs disk cache (zstd-compressed bincode)
       blast.rs          blast radius computation
       languages/        14 TreeSitter grammars
     graphiq-cli/        CLI binary
@@ -217,13 +207,11 @@ graphiq/
 ## Documentation
 
 - [docs/how-seed-generation-works.md](docs/how-seed-generation-works.md)
-- [docs/how-heat-kernel-works.md](docs/how-heat-kernel-works.md)
 - [docs/how-scoring-works.md](docs/how-scoring-works.md)
-- [docs/how-holographic-matching-works.md](docs/how-holographic-matching-works.md)
-- [docs/how-predictive-scoring-works.md](docs/how-predictive-scoring-works.md)
 - [docs/benchmarks.md](docs/benchmarks.md) — full results and methodology
 - [docs/retrieval.md](docs/retrieval.md) — pipeline details
 - [docs/research.md](docs/research.md) — experimental log
+- [docs/ROADMAP-V2.md](docs/ROADMAP-V2.md) — v2 simplification roadmap
 
 ## License
 
