@@ -2,7 +2,13 @@
 
 Experimental history and lessons from building GraphIQ's retrieval engine.
 
-**Current version**: v3 (Phases 28–29). See [how-graphiq-works.md](how-graphiq-works.md) for the current architecture.
+## The System Today (v3)
+
+GraphIQ v3 is a 4-stage pipeline: **BM25 seeds → graph walk → scoring → post-processing.** No spectral math, no holographic encoding, no predictive models. Those were removed in v2 (Phase 28) after proving that the pipeline engineering patterns (confidence gating, specificity scaling, per-family routing) — not the math itself — were what actually improved results. v3 re-implements those patterns with simple token overlap instead of 1024-dim FFT vectors.
+
+**Current benchmark (3 codebases, 50 queries each):** NDCG@10 0.296 (+63% vs grep), MRR@10 0.428 (+76% vs grep). Full results in [benchmarks.md](benchmarks.md). Architecture in [how-graphiq-works.md](how-graphiq-works.md).
+
+**What's in this document:** Everything below this line is a lab notebook — the 29 phases of experimentation that produced the current system. Phases 1–27 describe the v1 pipeline (spectral, holographic, predictive artifacts). Phase 28 is the v2 simplification that removed it all. Phase 29 is the current v3 system. Numbers from earlier phases are historical, not canonical.
 
 ## Table of Contents
 
@@ -37,35 +43,37 @@ Experimental history and lessons from building GraphIQ's retrieval engine.
 
 ## Timeline Overview
 
-| Phase | What | Version | Outcome |
-|---|---|---|---|
-| 1 | 9 standalone retrieval systems vs BM25 | — | None beat BM25 generally |
-| 2 | Goober: BM25 + structural reranking | — | Simpler system beat CruncherV2 everywhere |
-| 3 | SEC negentropy + query intent (V3→V4) | — | Marginal gains on tokio |
-| 4 | Holographic name matching experiments | V5–V11 | 7 versions, most net-negative |
-| 5 | Per-candidate gating | V5 final | Beat V4 on all 3 codebases |
-| 6 | Spectral graph infrastructure | — | Chebyshev heat kernel |
-| 9 | Geometric search pipeline | — | Matched V5 with zero tuning |
-| 10 | Ricci curvature + channel fingerprints | — | Curvature useless for scoring |
-| 11 | Predictive surprise + channel capacity + MDL | — | Gains on weak categories, no regressions |
-| 12 | SearchMode enum + capability negotiation | — | Closed trust gap |
-| 13–14 | Artifact lifecycle + 8-family router | — | Per-family permission boundaries |
-| 15–16 | File path router + cross-cutting sets | — | Fixed file-path zero on esbuild |
-| 17 | Gated edge evidence | — | Family-based evidence gating |
-| 18 | RetrievalTrace | — | Falsifiable ranking explanations |
-| 19 | Benchmark lab expansion | — | Separate NDCG/MRR query sets |
-| 20 | Repo self-model | — | nl-abstract improved on 2/3 |
-| 21 | CARE fusion | — | Beat parents on MRR, not NDCG |
-| 22 | 5-codebase benchmarks + deep graph edges | — | MRR wins on all 5 |
-| 23 | Speed benchmark | — | 1,300–11,700x faster than grep |
-| 24 | Unified pipeline (v6) | v6 | 3,000 lines removed, zero regression |
-| 25 | Artifact disk cache | — | 14s → 850ms warm search |
-| 26 | SNP structural fallback | v7 | tokio +0.007, esbuild -0.050 |
-| 27 | MCP server hardening | — | Production readiness |
-| 28 | v2 simplification | **v2** | 5,087 lines removed, 18GB RAM freed |
-| 29 | v3 gated signals + per-family routing | **v3 (current)** | Recovered v1 patterns without FFT |
+| Phase | What | Version | Status | Outcome |
+|---|---|---|---|---|
+| 1 | 9 standalone retrieval systems vs BM25 | — | v1 | None beat BM25 generally |
+| 2 | Goober: BM25 + structural reranking | — | v1 | Simpler system beat CruncherV2 everywhere |
+| 3 | SEC negentropy + query intent (V3→V4) | — | v1 | Marginal gains on tokio |
+| 4 | Holographic name matching experiments | V5–V11 | v1 | 7 versions, most net-negative |
+| 5 | Per-candidate gating | V5 final | v1 | Beat V4 on all 3 codebases |
+| 6 | Spectral graph infrastructure | — | v1 | Chebyshev heat kernel |
+| 9 | Geometric search pipeline | — | v1 | Matched V5 with zero tuning |
+| 10 | Ricci curvature + channel fingerprints | — | v1 | Curvature useless for scoring |
+| 11 | Predictive surprise + channel capacity + MDL | — | v1 | Gains on weak categories, no regressions |
+| 12 | SearchMode enum + capability negotiation | — | v1 | Closed trust gap |
+| 13–14 | Artifact lifecycle + 8-family router | — | v1 | Per-family permission boundaries |
+| 15–16 | File path router + cross-cutting sets | — | v1 | Fixed file-path zero on esbuild |
+| 17 | Gated edge evidence | — | v1 | Family-based evidence gating |
+| 18 | RetrievalTrace | — | v1 | Falsifiable ranking explanations |
+| 19 | Benchmark lab expansion | — | v1 | Separate NDCG/MRR query sets |
+| 20 | Repo self-model | — | v1 | nl-abstract improved on 2/3 |
+| 21 | CARE fusion | — | v1 | Beat parents on MRR, not NDCG |
+| 22 | 5-codebase benchmarks + deep graph edges | — | v1 | MRR wins on all 5 (historical numbers) |
+| 23 | Speed benchmark | — | v1 | 1,300–11,700x faster than grep |
+| 24 | Unified pipeline (v6) | v6 | v1 | 3,000 lines removed, zero regression |
+| 25 | Artifact disk cache | — | v1 | 14s → 850ms warm search |
+| 26 | SNP structural fallback | v7 | v1 | tokio +0.007, esbuild -0.050 |
+| 27 | MCP server hardening | — | **current** | Production readiness |
+| 28 | v2 simplification | **v2** | **current** | 5,087 lines removed, 18GB RAM freed |
+| 29 | v3 gated signals + per-family routing | **v3** | **current** | Recovered v1 patterns without FFT |
 
 ---
+
+> **Phases 1–27: v1 pipeline (spectral/holographic/predictive artifacts).** These features were removed in Phase 28. The lessons survived; the code didn't.
 
 ## Phase 1: Can We Beat BM25?
 
@@ -263,6 +271,8 @@ CARE beats both parents on MRR for signetai (+0.005) and tokio (+0.026), but nev
 
 ## Phase 22: 5-Codebase Benchmarks + Deep Graph Edges
 
+> **Historical.** These results are from the v1 pipeline (spectral/holographic/predictive artifacts). The current v3 benchmark uses 3 codebases with different query sets. See [benchmarks.md](benchmarks.md) for canonical numbers.
+
 Expanded benchmark coverage from 3 to 5 codebases (adding flask/Python and junit5/Java) and built 4 new edge types for richer structural connectivity.
 
 **New codebases:**
@@ -302,6 +312,8 @@ Expanded benchmark coverage from 3 to 5 codebases (adding flask/Python and junit
 
 ## Phase 23: Speed Benchmark
 
+> **Historical.** Run on v1 pipeline. Warm cache latency improved from 850ms → 50ms after v2 removed the artifact pipeline. Current performance: ~18μs in-process, ~50ms warm CLI.
+
 Added `graphiq-bench speed` — measures warm cache latency for both GraphIQ and Grep, 10 queries, 5 warmup, 50 timed iterations.
 
 | Codebase | Syms | GraphIQ MRR | Grep MRR | GraphIQ med | Grep med | Speedup |
@@ -315,6 +327,8 @@ Added `graphiq-bench speed` — measures warm cache latency for both GraphIQ and
 GraphIQ wins MRR on all 5 and is **1,300–11,700x faster** on warm cache. Grep's `LIKE %term%` does a full table scan on every symbol's name and source code for each query term. GraphIQ uses BM25's FTS5 inverted index (O(1) per term) plus pre-built graph adjacency lists.
 
 ## Phase 24: Unified Pipeline (v6)
+
+> **Historical.** This unified the v1 search methods. The code simplification survived into v2/v3, but the spectral/predictive features it tuned were later removed.
 
 Consolidated ~3,000 lines of near-duplicate scoring code into a single clean architecture. The 5 search methods (GooberV5, Geometric, Deformed, Curved, CARE) shared ~90% code — parameterized into `ScoreConfig`.
 
@@ -353,6 +367,8 @@ Consolidated ~3,000 lines of near-duplicate scoring code into a single clean arc
 
 ## Phase 25: Artifact Disk Cache
 
+> **Historical.** Cached spectral/holographic artifacts to disk. Removed entirely in Phase 28.
+
 CLI search was rebuilding two expensive artifacts on every invocation: HoloIndex (~10s for 30K term FFT vectors) and PredictiveModel (~4s for 20K symbols × 5K vocab terms). Warm cache time was 14s.
 
 **Two compact cache formats:**
@@ -372,6 +388,8 @@ CLI search was rebuilding two expensive artifacts on every invocation: HoloIndex
 Search quality: zero regression — scores identical to 3 decimal places. f32 quantization of normalized unit vectors is lossless for cosine similarity.
 
 ## Phase 26: SNP Structural Fallback + Source Scan Seeds
+
+> **Historical.** These features were removed in Phase 28. Source scan seeds (ErrorDebug only) were re-added in Phase 29.
 
 The tokio problem: generic function names (`run`, `handle`, `poll`) give BM25 nothing distinctive. A search for "how does blocking work" matches hundreds of functions equally.
 
@@ -395,6 +413,8 @@ The tokio problem: generic function names (`run`, `handle`, `poll`) give BM25 no
 
 ## Phase 27: MCP Server Hardening
 
+> **Mostly current.** These MCP improvements carried forward into the current system.
+
 Seven production-readiness improvements to the MCP server for agent usability:
 
 1. **Cold-start readiness** — `initialize` returns `_meta.ready: false` when artifacts aren't loaded. Tool calls during warming return a friendly message instead of panicking.
@@ -410,6 +430,8 @@ Rewrote all 13 MCP tool descriptions to be task-oriented (what to use when). Add
 **Key lesson:** MCP tool ordering matters. `briefing` first, `search` second, maintenance last. Tool descriptions should answer "when should I use this?" not "what does this do?"
 
 ## Phase 28: v2 Simplification — Remove the Artifact Pipeline
+
+> **Break point.** Everything above this line is the v1 pipeline. Everything below is the current system.
 
 > **Major version change.** Removed the entire spectral/holographic/predictive artifact pipeline.
 

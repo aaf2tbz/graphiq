@@ -1,5 +1,7 @@
 # Benchmarks
 
+**Current benchmark: v3** — 3 codebases, 50 NDCG + 50 MRR queries per codebase (300 total), fresh indexes and new query sets. The 5-codebase benchmarks in the [research notes](research.md#phase-22-5-codebase-benchmarks--deep-graph-edges) were run on the v1 pipeline (spectral/holographic artifacts) and do not reflect the current system.
+
 ## Methodology
 
 v3 pipeline (BM25 + graph walk + gated name overlap + specificity scaling + per-family routing + neighbor fingerprints) benchmarked on 3 codebases with fresh indexes and new query sets. 50 NDCG queries and 50 MRR queries per codebase (300 total), covering 7 categories. Competitor is Grep — symbol-level `LIKE %term%` search across names and source code.
