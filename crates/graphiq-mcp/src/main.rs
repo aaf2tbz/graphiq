@@ -22,6 +22,7 @@ struct ServerState {
     fp_id_to_idx: std::collections::HashMap<i64, usize>,
     self_model: Option<graphiq_core::self_model::RepoSelfModel>,
     indexing: bool,
+    warming: bool,
 }
 
 fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
@@ -361,6 +362,7 @@ fn main() {
         fp_id_to_idx: std::collections::HashMap::new(),
         self_model: None,
         indexing: false,
+        warming: false,
     }));
 
     let running = Arc::new(AtomicBool::new(true));
@@ -430,6 +432,14 @@ fn main() {
 }
 
 fn background_warm(state: &Arc<Mutex<ServerState>>) {
+    {
+        let mut s = match state.lock() {
+            Ok(s) => s,
+            Err(e) => { log_err(&format!("warm: lock failed: {e}")); return; }
+        };
+        s.warming = true;
+    }
+
     let needs_full_index = {
         match state.lock() {
             Ok(s) => db_is_empty(&s.db),
@@ -451,6 +461,7 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
             log_err(&format!("warm: full index failed: {e}"));
         }
         s.indexing = false;
+        s.warming = false;
         log_err("warm: full index complete");
         return;
     }
@@ -459,6 +470,7 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
         Ok(s) => s,
         Err(e) => {
             log_err(&format!("warm: lock failed: {e}"));
+            if let Ok(mut s2) = state.lock() { s2.warming = false; }
             return;
         }
     };
@@ -522,6 +534,15 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
     }
 
     log_err("warm: cache loading complete");
+
+    {
+        let mut s = match state.lock() {
+            Ok(s) => s,
+            Err(e) => { log_err(&format!("warm: final lock failed: {e}")); return; }
+        };
+        s.warming = false;
+    }
+    log_err("warm: ready");
 }
 
 fn handle_message(
@@ -566,7 +587,8 @@ fn handle_message(
                 },
                 "_meta": {
                     "projectRoot": pr,
-                    "dbPath": dp
+                    "dbPath": dp,
+                    "ready": false
                 }
             });
             send_response(id, &result, out)?;
@@ -869,12 +891,15 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
     }
 
     if tool_name != "index" && tool_name != "status" && tool_name != "doctor" {
-        let (needs_index, currently_indexing) = {
+        let (needs_index, currently_indexing, currently_warming) = {
             match state.lock() {
-                Ok(s) => (db_is_empty(&s.db), s.indexing),
-                Err(_) => (false, false),
+                Ok(s) => (db_is_empty(&s.db), s.indexing, s.warming),
+                Err(_) => (false, false, false),
             }
         };
+        if currently_warming {
+            return tool_ok("Warming up — loading index artifacts. Please retry in a moment.".into());
+        }
         if currently_indexing {
             return tool_ok("Indexing in progress — please retry in a few seconds.".into());
         }
@@ -1028,11 +1053,11 @@ fn tool_search(
         return tool_error("query must not be empty");
     }
 
-    let top_k = args
+    let requested_top_k = args
         .get("top_k")
         .and_then(|v| v.as_u64())
-        .unwrap_or(10)
-        .min(50) as usize;
+        .unwrap_or(10);
+    let top_k = requested_top_k.min(50) as usize;
     let file_filter = args.get("file_filter").and_then(|v| v.as_str());
 
     let mut engine = graphiq_core::search::SearchEngine::new(&state.db, &state.cache);
@@ -1059,12 +1084,14 @@ fn tool_search(
     let result = engine.search(&q);
 
     let mut lines = Vec::new();
+    let cap_note = if requested_top_k > 50 { format!(" (capped from {})", requested_top_k) } else { String::new() };
     lines.push(format!(
-        "Search: \"{}\" ({} results, family: {}, mode: {})",
+        "Search: \"{}\" ({} results, family: {}, mode: {}{})",
         query,
         result.results.len(),
         result.query_family,
         result.search_mode,
+        cap_note,
     ));
     lines.push(String::new());
 
@@ -1177,6 +1204,18 @@ fn tool_blast(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
         ));
     }
 
+    let disambig = if candidates.len() > 1 {
+        let alts: Vec<String> = candidates.iter().take(5).map(|s| {
+            let f = s.source.lines().next().unwrap_or("").trim();
+            let preview = if f.len() > 60 { &f[..60] } else { f };
+            format!("    {} (file_id: {})  {}", s.kind.as_str(), s.file_id, preview)
+        }).collect();
+        let extra = if candidates.len() > 5 { format!("\n    ... and {} more", candidates.len() - 5) } else { String::new() };
+        format!("\nNote: {} symbols match '{}'. Using first result.\nAlternatives:\n{}{}\n", candidates.len(), symbol_name, alts.join("\n"), extra)
+    } else {
+        String::new()
+    };
+
     let direction = match direction_str {
         "forward" | "f" => graphiq_core::edge::BlastDirection::Forward,
         "backward" | "b" => graphiq_core::edge::BlastDirection::Backward,
@@ -1184,7 +1223,7 @@ fn tool_blast(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     };
 
     match graphiq_core::blast::compute_blast_radius(db, sym.id, depth, direction, None) {
-        Ok(radius) => tool_ok(graphiq_core::blast::format_blast_report(&radius)),
+        Ok(radius) => tool_ok(format!("{}{}", disambig, graphiq_core::blast::format_blast_report(&radius))),
         Err(e) => tool_error(&format!("blast computation failed: {e}")),
     }
 }
@@ -1347,8 +1386,10 @@ fn tool_status(state: &ServerState) -> Value {
                 Err(e) => format!("\n  Manifest: read error: {e}"),
             };
 
+            let warm_status = if state.warming { " (warming up)" } else { "" };
+
             let text = format!(
-                "GraphIQ v{}\n  Project:  {}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB: {}\n  Search mode: {}\n  Artifacts: {}{}",
+                "GraphIQ v{}\n  Project:  {}\n  Files: {}\n  Symbols: {}\n  Edges: {}\n  File Edges: {}\n  DB: {}\n  Search mode: {}{}\n  Artifacts: {}{}",
                 SERVER_VERSION,
                 state.project_root.display(),
                 stats.files,
@@ -1357,6 +1398,7 @@ fn tool_status(state: &ServerState) -> Value {
                 stats.file_edges,
                 human_bytes(size),
                 mode,
+                warm_status,
                 artifacts.join(", "),
                 manifest_section,
             );
@@ -1618,15 +1660,9 @@ fn tool_why(
     let sym = &scored.symbol;
     let mut lines = Vec::new();
     lines.push(format!("=== Why did '{}' rank for '{}'? ===", sym.name, query));
-    lines.push(format!("Score: {:.4}", scored.score));
+    lines.push(format!("Score: {:.4} (rank #{})", scored.score,
+        result.results.iter().position(|r| r.symbol.name == symbol_name).unwrap_or(0) + 1));
     lines.push(format!("Family: {}  Mode: {}", result.query_family, result.search_mode));
-
-    let rank = result.results.iter().position(|r| r.symbol.name == symbol_name).unwrap_or(0);
-    if rank < 5 {
-        lines.push(format!("Rank: #{} (BM25 seed region)", rank + 1));
-    } else {
-        lines.push(format!("Rank: #{} (structural expansion)", rank + 1));
-    }
 
     let query_lower = query.to_lowercase();
     let query_terms: Vec<String> = query_lower.split_whitespace().filter(|w| w.len() >= 3).map(|s| s.to_string()).collect();
@@ -1679,7 +1715,7 @@ fn tool_why(
     }
 
     if !evidence_chain.is_empty() {
-        lines.push("\nEvidence chain (reconstructed, no trace available):".into());
+        lines.push("\nEvidence chain:".into());
         for ec in evidence_chain.iter().take(15) {
             lines.push(ec.clone());
         }
@@ -1732,7 +1768,7 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     let lower = question.to_lowercase();
     let mut lines: Vec<String> = Vec::new();
 
-    if lower.contains("subsystem") || lower.contains("module") || lower.contains("component") || lower.contains("architecture") {
+    if lower.contains("subsystem") || lower.contains("module") || lower.contains("component") || lower.contains("architecture") || lower.contains("structure") || lower.contains("organized") || lower.contains("layout") || lower.contains("overview") {
         let active: Vec<_> = subsystems.subsystems.iter()
             .filter(|s| s.internal_edge_count > 0)
             .collect();
@@ -1755,7 +1791,7 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
         }
     }
 
-    if lower.contains("entry point") || lower.contains("entrypoint") || lower.contains("main") || lower.contains("start") {
+    if lower.contains("entry point") || lower.contains("entrypoint") || lower.contains("main") || lower.contains("start") || lower.contains("init") || lower.contains("bootstrap") || lower.contains("boot") {
         if roles_available {
             let conn = db.conn();
             let mut stmt = conn.prepare(
@@ -1784,7 +1820,7 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
         }
     }
 
-    if lower.contains("error") || lower.contains("fail") || lower.contains("fault") {
+    if lower.contains("error") || lower.contains("fail") || lower.contains("fault") || lower.contains("panic") || lower.contains("crash") || lower.contains("exception") {
         if roles_available {
             let conn = db.conn();
             let mut stmt = conn.prepare(
@@ -1812,7 +1848,7 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
         }
     }
 
-    if lower.contains("boundary") || lower.contains("boundar") || lower.contains("interface") {
+    if lower.contains("boundary") || lower.contains("boundar") || lower.contains("interface") || lower.contains("api") || lower.contains("surface") || lower.contains("contract") {
         if roles_available {
             let conn = db.conn();
             let mut stmt = conn.prepare(
@@ -1941,8 +1977,24 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     }
 
     if lines.len() <= 1 || (lines.len() == 2 && lines[1].is_empty()) {
-        lines.push(format!("No specific structural pattern matched for: {}", question));
-        lines.push("Try: subsystems, entry points, error boundaries, roles, boundary, orchestrators, cohesion, or convention analysis.".into());
+        lines.push(format!("No keyword matched for: \"{}\"", question));
+
+        let active: Vec<_> = subsystems.subsystems.iter()
+            .filter(|s| s.internal_edge_count > 0)
+            .collect();
+        if !active.is_empty() {
+            lines.push("\nTop subsystems by size:".into());
+            for s in active.iter().take(10) {
+                let sample: Vec<String> = s.symbol_names.iter().take(3).cloned().collect();
+                lines.push(format!(
+                    "  {} ({} symbols, cohesion: {:.2}) — {}",
+                    s.name, s.symbol_ids.len(), s.cohesion, sample.join(", ")
+                ));
+            }
+        }
+
+        lines.push("\nTry more specific keywords:".into());
+        lines.push("  subsystems/modules, entry points, error/fault/panic, boundary/API, orchestrators, cohesion/coupling, roles".into());
     }
 
     tool_ok(lines.join("\n"))
@@ -2136,18 +2188,16 @@ fn tool_constants(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
             .as_deref()
             .map(|n| format!(" ({})", n))
             .unwrap_or_default();
-        lines.push(format!(
-            "  {}{} — shared by {} symbols:",
-            entry.literal, named, entry.count
-        ));
-        for sym in &entry.symbols {
+        let sites: Vec<String> = entry.symbols.iter().map(|sym| {
             let file = sym.file.rsplit('/').next().unwrap_or(&sym.file);
-            lines.push(format!(
-                "    {}: {} ({})",
-                file, sym.name, sym.kind
-            ));
-        }
-        lines.push(String::new());
+            let name: String = sym.name.chars().take(40).collect();
+            let trunc = if sym.name.len() > 40 { "..." } else { "" };
+            format!("{}:{}:{}{} ({})", file, sym.line, name, trunc, sym.kind)
+        }).collect();
+        lines.push(format!(
+            "  {}{} — {} symbols: {}",
+            entry.literal, named, entry.count, sites.join(", ")
+        ));
     }
 
     tool_ok(lines.join("\n"))

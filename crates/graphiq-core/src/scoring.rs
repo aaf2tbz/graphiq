@@ -145,7 +145,7 @@ pub fn score_candidates(
                 1.0
             };
 
-            let source_scan_mult = if c.source_scan_hit && c.coverage_count >= 1 {
+            let _source_scan_mult = if c.source_scan_hit && c.coverage_count >= 1 {
                 3.0
             } else {
                 1.0
