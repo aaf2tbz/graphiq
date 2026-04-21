@@ -6,37 +6,46 @@ No embeddings. No LLM. No network. Everything runs in a single SQLite file.
 
 ## How It Compares to Grep
 
-Grep (BM25 `LIKE %term%` over all symbol names and source lines) is a strong baseline for exact lookups. GraphIQ wraps BM25 as layer 1, then adds graph structure on top. Benchmarked on 3 codebases (TypeScript, Rust, Go), 25 queries each for MRR, 20 each for NDCG:
+Grep (BM25 `LIKE %term%` over all symbol names and source lines) is a strong baseline for exact lookups. GraphIQ wraps BM25 as layer 1, then adds graph structure on top. Benchmarked on 3 codebases (TypeScript, Rust, Go), **50 queries each for both MRR and NDCG** (300 total queries), fresh indexes, new query sets:
 
 | Metric | Grep | GraphIQ | Delta |
 |---|---|---|---|
-| MRR@10 | 0.911 | 0.896 | -1.6% |
-| NDCG@10 | 0.291 | 0.319 | +10% |
+| NDCG@10 | 0.181 | 0.296 | **+63%** |
+| MRR@10 | 0.243 | 0.428 | **+76%** |
+
+Per-codebase:
+
+| Codebase | Lang | NDCG GQ/Grep | MRR GQ/Grep |
+|---|---|---|---|
+| signetai | TypeScript | **0.339** / 0.137 (+147%) | **0.437** / 0.168 (+160%) |
+| esbuild | Go | **0.365** / 0.210 (+74%) | **0.498** / 0.256 (+95%) |
+| tokio | Rust | 0.183 / **0.196** (-7%) | **0.348** / 0.306 (+14%) |
 
 Per-category NDCG@10 (3-codebase average):
 
 | Category | Grep | GraphIQ |
 |---|---|---|
-| symbol-exact | 0.953 | 0.845 |
-| symbol-partial | 0.718 | 0.603 |
-| nl-descriptive | 0.061 | 0.137 |
-| nl-abstract | 0.032 | 0.238 |
-| error-debug | 0.158 | 0.171 |
-| file-path | 0.062 | 0.065 |
-| cross-cutting | 0.000 | 0.098 |
+| symbol-exact | **0.733** | 0.721 |
+| relationship | 0.155 | **0.573** (3.7x) |
+| nl-descriptive | 0.112 | **0.327** (2.9x) |
+| error-debug | 0.181 | **0.311** (1.7x) |
+| nl-abstract | 0.047 | **0.049** |
+| cross-cutting | 0.038 | **0.061** |
+| file-path | **0.099** | 0.086 |
 
-GraphIQ wins 5 of 7 categories. Grep retains an edge on exact-name lookups. See [docs/benchmarks.md](docs/benchmarks.md) for per-codebase breakdowns and methodology.
+GraphIQ wins 5 of 7 categories. Grep retains a marginal edge on exact-name lookups. Relationship queries are the strongest structural signal — 3.7x over grep. See [docs/benchmarks.md](docs/benchmarks.md) for full methodology and per-codebase breakdowns.
 
 ## Pipeline
 
 ```
 Query -> Query Family Router (8 families)
-      -> Seed Generation: BM25 FTS5 -> name lookup -> graph walk -> numeric bridges (~100 candidates)
-      -> Scoring: IDF coverage + name match + graph walk evidence
-      -> Confidence Fusion: BM25 lock -> kind boosts -> file diversity -> top_k results
+       -> Seed Generation: BM25 FTS5 -> per-term expansion -> graph walk -> numeric bridges
+       -> Scoring: IDF coverage + gated name overlap + neighbor fingerprints + specificity scaling
+       -> Per-Family Routing: 8 ScoreConfig presets control walk depth, expansion, signal weights
+       -> Confidence Fusion: BM25 lock -> kind boosts -> file diversity -> top_k results
 ```
 
-No spectral diffusion. No holographic matching. No predictive models. BM25 retrieves, graph walk expands, scoring ranks.
+No spectral diffusion. No holographic matching. No predictive models. BM25 retrieves, graph walk expands, gated scoring ranks.
 
 ### Query Families
 

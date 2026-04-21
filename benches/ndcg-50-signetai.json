@@ -1,0 +1,429 @@
+[
+  {
+    "query": "compute the hash of a string using FNV-1a algorithm",
+    "category": "nl-descriptive",
+    "relevance": {
+      "fnv1a_hash": 3
+    }
+  },
+  {
+    "query": "export the entire agent workspace as a downloadable zip archive",
+    "category": "nl-descriptive",
+    "relevance": {
+      "export_agent_zip": 3,
+      "resolveSignetWorkspacePath": 1
+    }
+  },
+  {
+    "query": "check if a given origin is allowed for CORS requests",
+    "category": "nl-descriptive",
+    "relevance": {
+      "isOriginAllowed": 3,
+      "resolveCtx": 1
+    }
+  },
+  {
+    "query": "resolve the correct MCP server configuration for the current signet installation",
+    "category": "nl-descriptive",
+    "relevance": {
+      "resolveSignetMcp": 3,
+      "createMcpServer": 2,
+      "require_scope_guard": 1
+    }
+  },
+  {
+    "query": "find the installation path for a managed forge instance",
+    "category": "nl-descriptive",
+    "relevance": {
+      "signet_managed_forge_path": 3,
+      "managedForgeInstallLockDir": 2
+    }
+  },
+  {
+    "query": "get the schemas for all available MCP tools",
+    "category": "nl-descriptive",
+    "relevance": {
+      "get_tool_schemas": 3,
+      "createMcpServer": 1
+    }
+  },
+  {
+    "query": "check if a given extraction provider is configured as a fallback",
+    "category": "nl-descriptive",
+    "relevance": {
+      "is_extraction_fallback_provider": 3,
+      "find_provider": 2
+    }
+  },
+  {
+    "query": "determine the appropriate openrouter tier for a model",
+    "category": "nl-descriptive",
+    "relevance": {
+      "inferOpenRouterTier": 3,
+      "resolveRegistryOpenRouterBaseUrl": 2
+    }
+  },
+  {
+    "query": "how does the system track which agents are currently present and active",
+    "category": "nl-abstract",
+    "relevance": {
+      "listAgentPresence": 3,
+      "presenceKey": 2
+    }
+  },
+  {
+    "query": "what mechanism prevents stale or dead processes from accumulating",
+    "category": "nl-abstract",
+    "relevance": {
+      "purgeDeadJobs": 3,
+      "deadLetterPendingExtractionJobs": 2,
+      "requeue_dead": 1
+    }
+  },
+  {
+    "query": "how does the compaction system signal completion back to the daemon",
+    "category": "nl-abstract",
+    "relevance": {
+      "buildCompactionCompleteBody": 3,
+      "complete_summary_job": 2
+    }
+  },
+  {
+    "query": "what determines the boundary between a new conversation and a continuation",
+    "category": "nl-abstract",
+    "relevance": {
+      "isContinuationCommand": 3
+    }
+  },
+  {
+    "query": "how does the vector similarity search fall back when embeddings are unavailable",
+    "category": "nl-abstract",
+    "relevance": {
+      "query_memories_fts_only": 3,
+      "isVectorRuntimeUsable": 2,
+      "ensure_vec_table": 1
+    }
+  },
+  {
+    "query": "what strategy merges embeddings from multiple sources without duplication",
+    "category": "nl-abstract",
+    "relevance": {
+      "mergeUniqueEmbeddings": 3,
+      "toEmbeddingRow": 1
+    }
+  },
+  {
+    "query": "how does the retention system decide which memories to prune",
+    "category": "nl-abstract",
+    "relevance": {
+      "retention_sweep": 3,
+      "postApiRepairRetentionSweep": 2
+    }
+  },
+  {
+    "query": "what controls whether a session should create a checkpoint before compaction",
+    "category": "nl-abstract",
+    "relevance": {
+      "should_checkpoint": 3,
+      "listSessionCheckpoints": 2
+    }
+  },
+  {
+    "query": "ollama embedding preflight fails because model is not available locally",
+    "category": "error-debug",
+    "relevance": {
+      "preflightOllamaEmbedding": 3,
+      "compute_query_embedding": 2,
+      "embeddings_stats": 1
+    }
+  },
+  {
+    "query": "dead letter queue overflow from failed extraction jobs",
+    "category": "error-debug",
+    "relevance": {
+      "dead_letter_pending_extraction_jobs": 3,
+      "deadLetterPendingExtractionJobs": 3,
+      "requeue_dead": 2
+    }
+  },
+  {
+    "query": "vector table creation fails during first-time database initialization",
+    "category": "error-debug",
+    "relevance": {
+      "ensure_vec_table": 3,
+      "to_vector": 2,
+      "purge_orphan_embeddings": 1
+    }
+  },
+  {
+    "query": "workspace path validation rejects a valid directory",
+    "category": "error-debug",
+    "relevance": {
+      "validateWorkspacePath": 3,
+      "resolveSignetWorkspacePath": 2
+    }
+  },
+  {
+    "query": "entity name canonicalization produces inconsistent results across sessions",
+    "category": "error-debug",
+    "relevance": {
+      "canonicalEntityName": 3,
+      "sanitizeEntityIds": 2
+    }
+  },
+  {
+    "query": "training pair collection returns empty when conversation history exists",
+    "category": "error-debug",
+    "relevance": {
+      "collectTrainingPairs": 3,
+      "normalizeJsonConversationRecord": 2
+    }
+  },
+  {
+    "query": "scope guard blocks legitimate MCP tool calls from enabled servers",
+    "category": "error-debug",
+    "relevance": {
+      "require_scope_guard": 3,
+      "createMcpServer": 2,
+      "resolveSignetMcp": 1
+    }
+  },
+  {
+    "query": "daemon fails to detect that launchd service is already running",
+    "category": "error-debug",
+    "relevance": {
+      "is_launchd_running": 3,
+      "ensureDaemonRunning": 2
+    }
+  },
+  {
+    "query": "how are purgeDeadJobs and deadLetterPendingExtractionJobs related in pipeline cleanup",
+    "category": "relationship",
+    "relevance": {
+      "purgeDeadJobs": 3,
+      "deadLetterPendingExtractionJobs": 3,
+      "requeue_dead": 2
+    }
+  },
+  {
+    "query": "what connects build_signet_system_prompt to the plugin prompt contribution section",
+    "category": "relationship",
+    "relevance": {
+      "build_signet_system_prompt": 3,
+      "buildPluginPromptContributionSection": 3,
+      "loadIdentityFiles": 1
+    }
+  },
+  {
+    "query": "how does extractStructured relate to validateDecisionOutput in the memory extraction pipeline",
+    "category": "relationship",
+    "relevance": {
+      "extractStructured": 3,
+      "validateDecisionOutput": 3,
+      "extract_memories_local": 2
+    }
+  },
+  {
+    "query": "what is the relationship between entityMass and findNextEntity in entity prioritization",
+    "category": "relationship",
+    "relevance": {
+      "entityMass": 3,
+      "findNextEntity": 3,
+      "canonicalEntityName": 1
+    }
+  },
+  {
+    "query": "how do startDreamingWorker and completeJob interact in the dreaming lifecycle",
+    "category": "relationship",
+    "relevance": {
+      "startDreamingWorker": 3,
+      "completeJob": 2,
+      "updateTask": 1
+    }
+  },
+  {
+    "query": "what connects resolveGitCredentials to syncWorkspaceSourceRepoAsync in repo synchronization",
+    "category": "relationship",
+    "relevance": {
+      "resolveGitCredentials": 3,
+      "syncWorkspaceSourceRepoAsync": 3
+    }
+  },
+  {
+    "query": "how do initContinuity and getLastSessionEndTime work together for session continuity",
+    "category": "relationship",
+    "relevance": {
+      "initContinuity": 3,
+      "getLastSessionEndTime": 3,
+      "parseLastEndTimestamp": 2
+    }
+  },
+  {
+    "query": "all functions involved in embedding creation, storage, and retrieval",
+    "category": "cross-cutting",
+    "relevance": {
+      "compute_query_embedding": 3,
+      "to_vector": 2,
+      "toEmbeddingRow": 2,
+      "ensure_vec_table": 1,
+      "mergeUniqueEmbeddings": 1
+    }
+  },
+  {
+    "query": "all functions that handle file classification and ingestion from workspace sources",
+    "category": "cross-cutting",
+    "relevance": {
+      "classifyFile": 3,
+      "ingestSingleFile": 3,
+      "syncWorkspaceSourceRepoAsync": 2,
+      "sanitizePath": 1
+    }
+  },
+  {
+    "query": "all functions that manage daemon process lifecycle and health monitoring",
+    "category": "cross-cutting",
+    "relevance": {
+      "ensureDaemonRunning": 3,
+      "isAlive": 3,
+      "is_launchd_running": 2,
+      "setShuttingDown": 2,
+      "printProcesses": 1
+    }
+  },
+  {
+    "query": "all functions dealing with memory rendering and markdown output formatting",
+    "category": "cross-cutting",
+    "relevance": {
+      "renderMemories": 3,
+      "render_themed": 3,
+      "renderMarkdown": 2,
+      "title_from_content": 1
+    }
+  },
+  {
+    "query": "all functions responsible for entity naming, sanitization, and identity resolution",
+    "category": "cross-cutting",
+    "relevance": {
+      "canonicalEntityName": 3,
+      "sanitizeEntityIds": 3,
+      "validate_name": 2
+    }
+  },
+  {
+    "query": "all functions that read or modify the session state and checkpoints",
+    "category": "cross-cutting",
+    "relevance": {
+      "listSessionCheckpoints": 3,
+      "list_sessions": 3,
+      "bypassSession": 2,
+      "should_checkpoint": 1,
+      "getApiSessionsByKey": 1
+    }
+  },
+  {
+    "query": "all functions for estimating token counts and managing context window constraints",
+    "category": "cross-cutting",
+    "relevance": {
+      "estimate_tokens": 3,
+      "sentence_word_count": 2,
+      "tokenize": 2,
+      "pruneBuffer": 1
+    }
+  },
+  {
+    "query": "src/common/hash.ts",
+    "category": "file-path",
+    "relevance": {
+      "fnv1a_hash": 3
+    }
+  },
+  {
+    "query": "src/daemon/probe.ts",
+    "category": "file-path",
+    "relevance": {
+      "isAlive": 3,
+      "ensureDaemonRunning": 2
+    }
+  },
+  {
+    "query": "src/pipeline/dreaming/worker.ts",
+    "category": "file-path",
+    "relevance": {
+      "startDreamingWorker": 3,
+      "completeJob": 2
+    }
+  },
+  {
+    "query": "src/mcp/scope.ts",
+    "category": "file-path",
+    "relevance": {
+      "require_scope_guard": 3,
+      "resolveSignetMcp": 2
+    }
+  },
+  {
+    "query": "src/embeddings/ollama-preflight.ts",
+    "category": "file-path",
+    "relevance": {
+      "preflightOllamaEmbedding": 3,
+      "compute_query_embedding": 1
+    }
+  },
+  {
+    "query": "src/workspace/export.ts",
+    "category": "file-path",
+    "relevance": {
+      "export_agent_zip": 3,
+      "resolveSignetWorkspacePath": 1
+    }
+  },
+  {
+    "query": "extractStructured",
+    "category": "symbol-exact",
+    "relevance": {
+      "extractStructured": 3,
+      "validateDecisionOutput": 2,
+      "extract_memories_local": 1
+    }
+  },
+  {
+    "query": "resolveWikilinkTarget",
+    "category": "symbol-exact",
+    "relevance": {
+      "resolveWikilinkTarget": 3,
+      "parseFrontmatter": 1
+    }
+  },
+  {
+    "query": "upsert_relation",
+    "category": "symbol-exact",
+    "relevance": {
+      "upsert_relation": 3,
+      "persistCommunities": 1
+    }
+  },
+  {
+    "query": "build_features",
+    "category": "symbol-exact",
+    "relevance": {
+      "build_features": 3,
+      "build_signet_system_prompt": 1
+    }
+  },
+  {
+    "query": "sanitizePath",
+    "category": "symbol-exact",
+    "relevance": {
+      "sanitizePath": 3,
+      "validateWorkspacePath": 1
+    }
+  },
+  {
+    "query": "recordAgentFeedback",
+    "category": "symbol-exact",
+    "relevance": {
+      "recordAgentFeedback": 3,
+      "updateMemory": 1
+    }
+  }
+]

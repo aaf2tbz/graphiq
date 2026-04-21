@@ -1,0 +1,466 @@
+[
+  {
+    "query": "parse a numeric literal or dot expression during JavaScript tokenization",
+    "category": "nl-descriptive",
+    "relevance": {
+      "parseNumericLiteralOrDot": 3,
+      "convertToToken": 2,
+      "consumeIdentLike": 1
+    }
+  },
+  {
+    "query": "generate a source mapping entry during code printing",
+    "category": "nl-descriptive",
+    "relevance": {
+      "AddSourceMapping": 3,
+      "computeLineAndColumn": 2,
+      "interpolatePositions": 1
+    }
+  },
+  {
+    "query": "print an import call with assert or with attributes",
+    "category": "nl-descriptive",
+    "relevance": {
+      "printImportCallAssertOrWith": 3,
+      "printProperty": 2,
+      "printIf": 1
+    }
+  },
+  {
+    "query": "resolve an ESM package target in reverse for bundling",
+    "category": "nl-descriptive",
+    "relevance": {
+      "esmPackageTargetReverseResolve": 3,
+      "generateResultForGlobResolve": 2,
+      "matchQueryPathToResult": 1
+    }
+  },
+  {
+    "query": "lower and minify a CSS color value during bundling",
+    "category": "nl-descriptive",
+    "relevance": {
+      "lowerAndMinifyColor": 3,
+      "tryToParseColorStops": 2,
+      "generateGradient": 1
+    }
+  },
+  {
+    "query": "mangle statement-level declarations during minification",
+    "category": "nl-descriptive",
+    "relevance": {
+      "mangleStmts": 3,
+      "NewMinifyRenamer": 2,
+      "NextMinifiedName": 1
+    }
+  },
+  {
+    "query": "read and extract files from a ZIP archive during package resolution",
+    "category": "nl-descriptive",
+    "relevance": {
+      "tryToReadZipArchive": 3,
+      "RealFS": 2,
+      "startChildProcess": 1
+    }
+  },
+  {
+    "query": "record an export binding during module linking",
+    "category": "nl-descriptive",
+    "relevance": {
+      "recordExport": 3,
+      "recordUsage": 2,
+      "popScope": 1
+    }
+  },
+  {
+    "query": "control flow graph construction for tree shaking",
+    "category": "nl-abstract",
+    "relevance": {
+      "computeCrossChunkDependencies": 3,
+      "visitStmts": 2,
+      "visitArgs": 1
+    }
+  },
+  {
+    "query": "renaming strategy for identifier compression",
+    "category": "nl-abstract",
+    "relevance": {
+      "NewMinifyRenamer": 3,
+      "NewNumberRenamer": 2,
+      "NewNoOpRenamer": 1
+    }
+  },
+  {
+    "query": "scope management during AST traversal",
+    "category": "nl-abstract",
+    "relevance": {
+      "pushScopeForParsePass": 3,
+      "popScope": 3,
+      "popAndFlattenScope": 2,
+      "popAndDiscardScope": 1
+    }
+  },
+  {
+    "query": "determining whether an expression has no observable side effects",
+    "category": "nl-abstract",
+    "relevance": {
+      "isSideEffectFreeUnboundIdentifierRef": 3,
+      "ToBooleanWithSideEffects": 2,
+      "ToStringWithoutSideEffects": 2
+    }
+  },
+  {
+    "query": "template literal inline optimization during minification",
+    "category": "nl-abstract",
+    "relevance": {
+      "InlinePrimitivesIntoTemplate": 3,
+      "parseTemplateParts": 2,
+      "printWithEscape": 1
+    }
+  },
+  {
+    "query": "plugin lifecycle orchestration during build",
+    "category": "nl-abstract",
+    "relevance": {
+      "RunWithPlugins": 3,
+      "parseOptionsForRun": 2,
+      "ApplyOverrides": 1
+    }
+  },
+  {
+    "query": "identifier binding analysis for tree shaking",
+    "category": "nl-abstract",
+    "relevance": {
+      "ForEachIdentifierBindingInDecls": 3,
+      "canEscapeIdentifier": 2,
+      "tsIsIdentifier": 1
+    }
+  },
+  {
+    "query": "chunk dependency computation for code splitting",
+    "category": "nl-abstract",
+    "relevance": {
+      "computeCrossChunkDependencies": 3,
+      "PeekEntryCount": 2,
+      "MergeContentsWith": 1
+    }
+  },
+  {
+    "query": "syntax error when parsing numeric literal with unexpected characters",
+    "category": "error-debug",
+    "relevance": {
+      "parseNumericLiteralOrDot": 3,
+      "expectParseErrorWithUnsupportedFeatures": 2,
+      "extractNumericValue": 1
+    }
+  },
+  {
+    "query": "illegal use of super property in arrow function setter",
+    "category": "error-debug",
+    "relevance": {
+      "lowerSuperPropertySetBinOp": 3,
+      "captureThis": 2,
+      "willPrintExprCommentsForAnyOf": 1
+    }
+  },
+  {
+    "query": "undefined variable reference after aggressive tree shaking",
+    "category": "error-debug",
+    "relevance": {
+      "isSideEffectFreeUnboundIdentifierRef": 3,
+      "recordUsage": 2,
+      "ignoreUsageOfIdentifierInDotChain": 1
+    }
+  },
+  {
+    "query": "plugin build failure due to invalid binary path override",
+    "category": "error-debug",
+    "relevance": {
+      "applyManualBinaryPathOverride": 3,
+      "RunWithPlugins": 2,
+      "startChildProcess": 1
+    }
+  },
+  {
+    "query": "define replacement produces type mismatch in minified output",
+    "category": "error-debug",
+    "relevance": {
+      "validateDefines": 3,
+      "validateFeatures": 2,
+      "expectPrintedMinify": 1
+    }
+  },
+  {
+    "query": "jsx syntax error when printing transformed output",
+    "category": "error-debug",
+    "relevance": {
+      "expectPrintedJSX": 3,
+      "expectPrintedJSXSideEffects": 2,
+      "printIf": 1
+    }
+  },
+  {
+    "query": "mangled name collision after scope flattening",
+    "category": "error-debug",
+    "relevance": {
+      "mangleStmts": 3,
+      "popAndFlattenScope": 2,
+      "NextMinifiedName": 1
+    }
+  },
+  {
+    "query": "zip archive extraction fails for npm package with symlinks",
+    "category": "error-debug",
+    "relevance": {
+      "tryToReadZipArchive": 3,
+      "Symlink": 2,
+      "RealFS": 1
+    }
+  },
+  {
+    "query": "how does recordExport relate to recordUsage during module linking",
+    "category": "relationship",
+    "relevance": {
+      "recordExport": 3,
+      "recordUsage": 3,
+      "popScope": 1
+    }
+  },
+  {
+    "query": "connection between parseStmtsUpTo and visitStmts for AST processing",
+    "category": "relationship",
+    "relevance": {
+      "parseStmtsUpTo": 3,
+      "visitStmts": 3,
+      "mangleStmts": 1
+    }
+  },
+  {
+    "query": "how computeLineAndColumn feeds into AddSourceMapping",
+    "category": "relationship",
+    "relevance": {
+      "AddSourceMapping": 3,
+      "computeLineAndColumn": 3,
+      "interpolatePositions": 1
+    }
+  },
+  {
+    "query": "relationship between tsLookAheadNextTokenIsOpenParenOrLessThanOrDot and tsIsIdentifier",
+    "category": "relationship",
+    "relevance": {
+      "tsLookAheadNextTokenIsOpenParenOrLessThanOrDot": 3,
+      "tsIsIdentifier": 3,
+      "convertToToken": 1
+    }
+  },
+  {
+    "query": "how NewMinifyRenamer and NextMinifiedName collaborate during renaming",
+    "category": "relationship",
+    "relevance": {
+      "NewMinifyRenamer": 3,
+      "NextMinifiedName": 3,
+      "NewNumberRenamer": 1
+    }
+  },
+  {
+    "query": "connection between lowerInset and lowerAndMinifyColor in CSS processing",
+    "category": "relationship",
+    "relevance": {
+      "lowerInset": 3,
+      "lowerAndMinifyColor": 3,
+      "generateGradient": 1
+    }
+  },
+  {
+    "query": "how popAndFlattenScope differs from popAndDiscardScope in scope management",
+    "category": "relationship",
+    "relevance": {
+      "popAndFlattenScope": 3,
+      "popAndDiscardScope": 3,
+      "popScope": 2,
+      "pushScopeForParsePass": 1
+    }
+  },
+  {
+    "query": "minification pipeline from parsing to printing",
+    "category": "cross-cutting",
+    "relevance": {
+      "parseStmtsUpTo": 3,
+      "mangleStmts": 3,
+      "visitStmts": 2,
+      "printTokens": 2,
+      "expectPrintedMinify": 1
+    }
+  },
+  {
+    "query": "CSS color processing from parsing to lowering",
+    "category": "cross-cutting",
+    "relevance": {
+      "parseNumericLiteralOrDot": 2,
+      "tryToParseColorStops": 3,
+      "lowerAndMinifyColor": 3,
+      "generateGradient": 2,
+      "oklch_to_oklab": 1
+    }
+  },
+  {
+    "query": "module resolution from path matching to file system access",
+    "category": "cross-cutting",
+    "relevance": {
+      "matchQueryPathToResult": 3,
+      "esmPackageTargetReverseResolve": 2,
+      "RealFS": 2,
+      "loadAsMainField": 2,
+      "tryToReadZipArchive": 1
+    }
+  },
+  {
+    "query": "JSX transformation and side effect analysis pipeline",
+    "category": "cross-cutting",
+    "relevance": {
+      "expectPrintedJSX": 3,
+      "expectPrintedJSXSideEffects": 3,
+      "visitArgs": 2,
+      "printProperty": 1
+    }
+  },
+  {
+    "query": "source map generation from positions to final output",
+    "category": "cross-cutting",
+    "relevance": {
+      "interpolatePositions": 3,
+      "AddSourceMapping": 3,
+      "computeLineAndColumn": 2,
+      "removeImpliedPositions": 2,
+      "createTraceFile": 1
+    }
+  },
+  {
+    "query": "identifier analysis across scope boundaries for dead code elimination",
+    "category": "cross-cutting",
+    "relevance": {
+      "ForEachIdentifierBindingInDecls": 3,
+      "isSideEffectFreeUnboundIdentifierRef": 3,
+      "recordUsage": 2,
+      "popAndFlattenScope": 1
+    }
+  },
+  {
+    "query": "template literal handling from parse to print",
+    "category": "cross-cutting",
+    "relevance": {
+      "parseTemplateParts": 3,
+      "InlinePrimitivesIntoTemplate": 3,
+      "printWithEscape": 2,
+      "consumeString": 1
+    }
+  },
+  {
+    "query": "internal/bundler/bundler.go parseFile",
+    "category": "file-path",
+    "relevance": {
+      "parseOptionsForRun": 3,
+      "RunWithPlugins": 2,
+      "validateFeatures": 1
+    }
+  },
+  {
+    "query": "internal/css_parser/css_parser.go color lowering",
+    "category": "file-path",
+    "relevance": {
+      "lowerAndMinifyColor": 3,
+      "tryToParseColorStops": 3,
+      "lowerInset": 2,
+      "generateGradient": 1
+    }
+  },
+  {
+    "query": "internal/js_parser/js_parser.go ts type lookahead",
+    "category": "file-path",
+    "relevance": {
+      "tsLookAheadNextTokenIsOpenParenOrLessThanOrDot": 3,
+      "tsIsIdentifier": 3,
+      "parseSuffix": 1
+    }
+  },
+  {
+    "query": "internal/js_printer/js_printer.go source mapping",
+    "category": "file-path",
+    "relevance": {
+      "AddSourceMapping": 3,
+      "printTokens": 2,
+      "printIdentifierUTF16": 1
+    }
+  },
+  {
+    "query": "internal/resolver/resolver.go yarn pnp virtual path",
+    "category": "file-path",
+    "relevance": {
+      "mangleYarnPnPVirtualPath": 3,
+      "esmPackageTargetReverseResolve": 2,
+      "matchQueryPathToResult": 1
+    }
+  },
+  {
+    "query": "internal/renamer/renamer.go minified name generation",
+    "category": "file-path",
+    "relevance": {
+      "NewMinifyRenamer": 3,
+      "NextMinifiedName": 3,
+      "NewNumberRenamer": 1
+    }
+  },
+  {
+    "query": "AddSourceMapping",
+    "category": "symbol-exact",
+    "relevance": {
+      "AddSourceMapping": 3,
+      "computeLineAndColumn": 2,
+      "interpolatePositions": 1
+    }
+  },
+  {
+    "query": "lowerSuperPropertySetBinOp",
+    "category": "symbol-exact",
+    "relevance": {
+      "lowerSuperPropertySetBinOp": 3,
+      "captureThis": 2,
+      "visitStmts": 1
+    }
+  },
+  {
+    "query": "tryToReadZipArchive",
+    "category": "symbol-exact",
+    "relevance": {
+      "tryToReadZipArchive": 3,
+      "RealFS": 2,
+      "Symlink": 1
+    }
+  },
+  {
+    "query": "computeCrossChunkDependencies",
+    "category": "symbol-exact",
+    "relevance": {
+      "computeCrossChunkDependencies": 3,
+      "PeekEntryCount": 2,
+      "MergeContentsWith": 1
+    }
+  },
+  {
+    "query": "ForEachIdentifierBindingInDecls",
+    "category": "symbol-exact",
+    "relevance": {
+      "ForEachIdentifierBindingInDecls": 3,
+      "recordUsage": 2,
+      "recordExport": 1
+    }
+  },
+  {
+    "query": "InlinePrimitivesIntoTemplate",
+    "category": "symbol-exact",
+    "relevance": {
+      "InlinePrimitivesIntoTemplate": 3,
+      "parseTemplateParts": 2,
+      "printWithEscape": 1
+    }
+  }
+]

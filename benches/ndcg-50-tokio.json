@@ -1,0 +1,510 @@
+[
+  {
+    "query": "How does tokio handle reading from a unix stream asynchronously",
+    "category": "nl-descriptive",
+    "relevance": {
+      "read_inherent": 3,
+      "poll_read": 2,
+      "read_uring": 2,
+      "unix_stream_from_std_panic_caller": 1
+    }
+  },
+  {
+    "query": "Spawning a blocking task on the tokio runtime",
+    "category": "nl-descriptive",
+    "relevance": {
+      "spawn_blocking_on": 3,
+      "quick_job": 2,
+      "on_task_spawn": 2,
+      "num_blocking_threads": 1
+    }
+  },
+  {
+    "query": "Getting the current time inside a tokio future",
+    "category": "nl-descriptive",
+    "relevance": {
+      "instant_now_panics": 3,
+      "resume_lets_time_move_forward_instead_of_resetting_it": 2,
+      "paused_time_is_deterministic": 2,
+      "poll_elapsed": 1
+    }
+  },
+  {
+    "query": "Sending data through an async channel and waiting for reception",
+    "category": "nl-descriptive",
+    "relevance": {
+      "recv": 3,
+      "blocking_recv": 2,
+      "recv_closed": 2,
+      "receiver_changed_is_cooperative": 1,
+      "receiver_is_terminated_send": 1
+    }
+  },
+  {
+    "query": "Acquiring a semaphore permit before performing async work",
+    "category": "nl-descriptive",
+    "relevance": {
+      "acquire": 3,
+      "semaphore": 3,
+      "close_semaphore_notifies_permit2": 2,
+      "has_value": 1
+    }
+  },
+  {
+    "query": "Shutting down the runtime with a timeout to allow graceful cleanup",
+    "category": "nl-descriptive",
+    "relevance": {
+      "shutdown_timeout": 3,
+      "current_thread": 2,
+      "threaded": 2,
+      "default_runtime_name_should_be_none": 1
+    }
+  },
+  {
+    "query": "Reading from a socket into a buffer using vectored I/O",
+    "category": "nl-descriptive",
+    "relevance": {
+      "read_buf": 3,
+      "poll_write_vectored": 2,
+      "recv_buf_from": 2,
+      "in_buffer_size": 1
+    }
+  },
+  {
+    "query": "Registering interest in file descriptor readiness events",
+    "category": "nl-descriptive",
+    "relevance": {
+      "readiness": 3,
+      "register_listener": 3,
+      "try_with_interest": 2,
+      "readable_mut": 1,
+      "writable": 1
+    }
+  },
+  {
+    "query": "Scheduling strategy for cooperative task execution in tokio",
+    "category": "nl-abstract",
+    "relevance": {
+      "schedule": 3,
+      "inject": 2,
+      "inc_remote_schedule_count": 2,
+      "insert_after_ready_poll": 2,
+      "get_scheduler": 1
+    }
+  },
+  {
+    "query": "Lifecycle management of a spawned task from creation to completion",
+    "category": "nl-abstract",
+    "relevance": {
+      "spawned_at": 3,
+      "on_task_spawn": 3,
+      "on_after_task_poll": 2,
+      "task_spawn_creates_span": 2,
+      "task_cancellation_propagates": 1
+    }
+  },
+  {
+    "query": "How the runtime distributes work across multiple worker threads",
+    "category": "nl-abstract",
+    "relevance": {
+      "next_occupied_slot": 3,
+      "dec_num_unparked": 2,
+      "worker_index_outside_runtime": 2,
+      "park_internal": 2,
+      "unparked": 1
+    }
+  },
+  {
+    "query": "Reference counting and weak reference patterns in tokio internals",
+    "category": "nl-abstract",
+    "relevance": {
+      "decrement_weak_count": 3,
+      "deref_mut": 2,
+      "get_mut": 2,
+      "into_inner": 1
+    }
+  },
+  {
+    "query": "Memory model for shared state between async tasks",
+    "category": "nl-abstract",
+    "relevance": {
+      "lock": 3,
+      "fetch_or": 2,
+      "get_shard_size": 2,
+      "require_mutable": 1
+    }
+  },
+  {
+    "query": "Backpressure mechanisms in tokio streaming pipelines",
+    "category": "nl-abstract",
+    "relevance": {
+      "capacity": 3,
+      "size_hint": 2,
+      "has_remaining": 2,
+      "poll_complete": 1
+    }
+  },
+  {
+    "query": "Deterministic timing behavior in tokio's test runtime",
+    "category": "nl-abstract",
+    "relevance": {
+      "paused_time_is_deterministic": 3,
+      "multi_immediate_delays": 3,
+      "multi_rt": 2,
+      "resume_lets_time_move_forward_instead_of_resetting_it": 2
+    }
+  },
+  {
+    "query": "Encoding and framing protocol for tokio's internal message passing",
+    "category": "nl-abstract",
+    "relevance": {
+      "encode": 3,
+      "write_single_frame_little_endian": 3,
+      "write_single_frame_length_adjusted": 3,
+      "header": 2
+    }
+  },
+  {
+    "query": "panic when calling instant::now inside a tokio future that isn't on a runtime thread",
+    "category": "error-debug",
+    "relevance": {
+      "instant_now_panics": 3,
+      "assert_called_from_owner_thread": 3,
+      "worker_index_outside_runtime": 2,
+      "current_thread": 1
+    }
+  },
+  {
+    "query": "read_error after the async stream has been closed unexpectedly",
+    "category": "error-debug",
+    "relevance": {
+      "read_error": 3,
+      "closing_tx": 2,
+      "recv_closed": 2,
+      "close_read": 2,
+      "take_error": 1
+    }
+  },
+  {
+    "query": "Task handle still alive after detach — does it abort the task",
+    "category": "error-debug",
+    "relevance": {
+      "handle_does_not_abort_after_detach": 3,
+      "spawn_local_without_name": 2,
+      "skip_drop": 2,
+      "drop_wakes": 1
+    }
+  },
+  {
+    "query": "Bind before connect error in async TCP socket initialization",
+    "category": "error-debug",
+    "relevance": {
+      "bind_before_connect": 3,
+      "connect_addr_ip_port_tuple": 2,
+      "open": 1,
+      "from": 1
+    }
+  },
+  {
+    "query": "Panic when creating a unix stream from std inside tokio context",
+    "category": "error-debug",
+    "relevance": {
+      "unix_stream_from_std_panic_caller": 3,
+      "open_with_open_options_and_read": 2,
+      "open_options_windows_attributes": 1,
+      "ctrl_logoff": 1
+    }
+  },
+  {
+    "query": "drop during panic causes double panic in channel receiver",
+    "category": "error-debug",
+    "relevance": {
+      "drop_all_elements_during_panic": 3,
+      "drop_cell": 2,
+      "drop_into_inner_new_with": 2,
+      "drop_wakes": 1
+    }
+  },
+  {
+    "query": "sender dropped while receiver still waiting — size_hint behavior",
+    "category": "error-debug",
+    "relevance": {
+      "size_hint_sender_dropped": 3,
+      "recv_closed": 2,
+      "receiver_is_terminated_send": 2,
+      "is_empty": 1
+    }
+  },
+  {
+    "query": "poll_shutdown returns pending indefinitely after close_read",
+    "category": "error-debug",
+    "relevance": {
+      "poll_shutdown": 3,
+      "close_read": 2,
+      "poll_close": 2,
+      "set_closed": 1
+    }
+  },
+  {
+    "query": "Relationship between task spawning and span creation in tracing",
+    "category": "relationship",
+    "relevance": {
+      "task_spawn_creates_span": 3,
+      "on_task_spawn": 2,
+      "on_after_task_poll": 2,
+      "spawned_at": 1
+    }
+  },
+  {
+    "query": "How does poll_read_ready relate to the readiness registration system",
+    "category": "relationship",
+    "relevance": {
+      "poll_read_ready": 3,
+      "readiness": 3,
+      "register_listener": 2,
+      "reset_woken": 1
+    }
+  },
+  {
+    "query": "Connection between acquire on semaphore and the close notification",
+    "category": "relationship",
+    "relevance": {
+      "acquire": 3,
+      "semaphore": 2,
+      "close_semaphore_notifies_permit2": 3,
+      "has_value": 1
+    }
+  },
+  {
+    "query": "How does schedule interact with inject for remote task dispatch",
+    "category": "relationship",
+    "relevance": {
+      "schedule": 3,
+      "inject": 3,
+      "inc_remote_schedule_count": 2,
+      "get_scheduler": 1
+    }
+  },
+  {
+    "query": "Relationship between wake_by_ref and the cooperative yielding mechanism",
+    "category": "relationship",
+    "relevance": {
+      "wake_by_ref": 3,
+      "receiver_changed_is_cooperative": 2,
+      "incr_ready_count_by": 2,
+      "reset_woken": 1
+    }
+  },
+  {
+    "query": "How does finalize connect to the drop path for task cleanup",
+    "category": "relationship",
+    "relevance": {
+      "finalize": 3,
+      "drop_cell": 2,
+      "skip_drop": 2,
+      "drop_wakes": 1
+    }
+  },
+  {
+    "query": "pipe_from_one_command_to_another and its use of async_copy under the hood",
+    "category": "relationship",
+    "relevance": {
+      "pipe_from_one_command_to_another": 3,
+      "poll_copy": 2,
+      "poll_complete": 2,
+      "start_processing_scheduled_tasks": 1
+    }
+  },
+  {
+    "query": "tokio runtime shutdown drop behavior and task cancellation",
+    "category": "cross-cutting",
+    "relevance": {
+      "shutdown_timeout": 3,
+      "task_cancellation_propagates": 3,
+      "drop_wakes": 2,
+      "skip_drop": 2,
+      "current_thread": 1
+    }
+  },
+  {
+    "query": "Thread name configuration across threaded and current_thread runtimes",
+    "category": "cross-cutting",
+    "relevance": {
+      "thread_name": 3,
+      "threaded": 2,
+      "current_thread": 2,
+      "default_runtime_name_should_be_none": 2
+    }
+  },
+  {
+    "query": "Metrics collection spanning task spawning polling and scheduling",
+    "category": "cross-cutting",
+    "relevance": {
+      "metrics_poll_count_histogram_builder": 3,
+      "on_after_task_poll": 2,
+      "on_task_spawn": 2,
+      "inc_remote_schedule_count": 1
+    }
+  },
+  {
+    "query": "Global initialization and thread-local state setup for tokio drivers",
+    "category": "cross-cutting",
+    "relevance": {
+      "global_init": 3,
+      "driver": 3,
+      "async_io": 2,
+      "current_thread": 1
+    }
+  },
+  {
+    "query": "Signal handling across unix platforms using tokio's async signal API",
+    "category": "cross-cutting",
+    "relevance": {
+      "register_signal_receiver": 3,
+      "ctrl_logoff": 2,
+      "readable_mut": 1,
+      "submit": 1
+    }
+  },
+  {
+    "query": "Cooperative behavior across channels timers and task boundaries",
+    "category": "cross-cutting",
+    "relevance": {
+      "receiver_changed_is_cooperative": 3,
+      "poll_elapsed": 2,
+      "insert_after_ready_poll": 2,
+      "start_processing_scheduled_tasks": 1
+    }
+  },
+  {
+    "query": "File at tokio/src/runtime/scheduler/multi_thread/worker.rs",
+    "category": "file-path",
+    "relevance": {
+      "next_occupied_slot": 3,
+      "park_internal": 3,
+      "dec_num_unparked": 2,
+      "unparked": 2,
+      "worker_index_outside_runtime": 2
+    }
+  },
+  {
+    "query": "File at tokio/src/signal/unix.rs",
+    "category": "file-path",
+    "relevance": {
+      "register_signal_receiver": 3,
+      "ctrl_logoff": 2,
+      "register_listener": 2,
+      "readable_mut": 1
+    }
+  },
+  {
+    "query": "File at tokio/src/io/util/read_buf.rs",
+    "category": "file-path",
+    "relevance": {
+      "read_buf": 3,
+      "poll_read": 2,
+      "has_remaining": 2,
+      "in_buffer_size": 1
+    }
+  },
+  {
+    "query": "File at tokio/src/sync/semaphore.rs",
+    "category": "file-path",
+    "relevance": {
+      "semaphore": 3,
+      "acquire": 3,
+      "close_semaphore_notifies_permit2": 2,
+      "has_value": 1
+    }
+  },
+  {
+    "query": "File at tokio/src/util/wake_list.rs",
+    "category": "file-path",
+    "relevance": {
+      "drop_wakes": 3,
+      "wake_by_ref": 3,
+      "incr_ready_count_by": 2,
+      "reset_woken": 2
+    }
+  },
+  {
+    "query": "Non-static type handling across tokio's task and channel boundaries",
+    "category": "cross-cutting",
+    "relevance": {
+      "nonstatic_typeid": 3,
+      "spawn_local_without_name": 2,
+      "new_with": 1,
+      "from_iter": 1
+    }
+  },
+  {
+    "query": "File at tokio/tests/process.rs",
+    "category": "file-path",
+    "relevance": {
+      "pipe_from_one_command_to_another": 3,
+      "open_with_open_options_and_read": 2,
+      "read_inherent": 1,
+      "try_read": 1
+    }
+  },
+  {
+    "query": "poll_close",
+    "category": "symbol-exact",
+    "relevance": {
+      "poll_close": 3,
+      "set_closed": 2,
+      "closing_tx": 1,
+      "shutdown_timeout": 1
+    }
+  },
+  {
+    "query": "write_single_frame_little_endian",
+    "category": "symbol-exact",
+    "relevance": {
+      "write_single_frame_little_endian": 3,
+      "write_single_frame_length_adjusted": 2,
+      "encode": 2,
+      "header": 1
+    }
+  },
+  {
+    "query": "spawn_blocking_on",
+    "category": "symbol-exact",
+    "relevance": {
+      "spawn_blocking_on": 3,
+      "num_blocking_threads": 2,
+      "quick_job": 1,
+      "on_task_spawn": 1
+    }
+  },
+  {
+    "query": "recv_buf_from",
+    "category": "symbol-exact",
+    "relevance": {
+      "recv_buf_from": 3,
+      "read_buf": 2,
+      "recv": 1,
+      "poll_read": 1
+    }
+  },
+  {
+    "query": "reunite",
+    "category": "symbol-exact",
+    "relevance": {
+      "reunite": 3,
+      "into_inner": 2,
+      "receiver_is_terminated_send": 1,
+      "recv_closed": 1
+    }
+  },
+  {
+    "query": "start_seek",
+    "category": "symbol-exact",
+    "relevance": {
+      "start_seek": 3,
+      "poll_complete": 2,
+      "try_write": 1,
+      "writable": 1
+    }
+  }
+]

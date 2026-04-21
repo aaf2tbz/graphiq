@@ -571,3 +571,54 @@ Removed the entire spectral/holographic/predictive artifact pipeline: 5,087 line
 - Warm search: 850ms → ~50ms. Cold search: ~30s → ~5-10s. Disk cache: 75MB → ~6.5MB (cruncher only)
 
 **Key lesson:** 18GB of spectral/holographic/predictive artifacts produced marginal NDCG improvement (+0.02-0.05) while actively hurting on codebases with descriptive names. The graph walk captures most structural signal; BM25 captures lexical signal. The complex math was refinancing a rounding error.
+
+### Phase 29: v3 — Gated Signals + Per-Family Routing
+
+Ported control structures discovered during holographic experimentation (Phases 4-21) into the simplified v2 pipeline without the expensive FFT/holographic infrastructure. The hypothesis: the *pipeline engineering patterns* (confidence gating, specificity scaling, per-family routing) were the real discoveries, not the spectral math.
+
+**6 phases executed (0-5):**
+
+**Phase 0: Baseline capture.** Recorded v2 performance on all 3 codebases before modifications.
+
+**Phase 1: Gated name overlap.** `compute_name_overlap()` in cruncher.rs calculates token overlap between query terms and candidate name terms. The gate: only applied when BM25's top-1 seed has a >1.2x score gap AND the query has specificity > 0.4 (at least one rare term). Below the gate, contribution is exactly 0. This mirrors the holographic cosine gate from Phase 5 (threshold 0.25 + specificity scaling) but uses simple token overlap instead of 1024-dim FFT vectors. Result: neutral to positive on signetai/esbuild, neutral on tokio.
+
+**Phase 2: Specificity-weighted coverage.** Query specificity (ratio of rare terms) now scales the BM25 vs coverage weight balance. High-specificity queries ("resolveWikilinkTarget") get more BM25 weight (the rare terms are discriminative). Low-specificity queries ("how does the pipeline work") get more coverage weight (need structural expansion). Implemented as `specificity^0.5` scaling on bm25_weight and `(1-specificity)^0.3` on coverage_weight.
+
+**Phase 3: Per-family ScoreConfig.** 8 family-specific parameter sets replacing the global scoring config:
+- SymbolExact/FilePath: walk disabled (BM25 is sufficient)
+- SymbolPartial: narrow walk (depth 1, 5 seeds)
+- NaturalDescriptive/Abstract: NL tokenization, per-term expansion
+- ErrorDebug: error-type edge routing + source scan seeds
+- CrossCutting: type/data-shape edge routing
+- Relationship: full walk, broader seed expansion
+
+Each config controls: walk_enabled, walk_depth, walk_top_seeds, per_term_fts, graph_expansion, numeric_bridges.
+
+**Phase 4: Neighborhood term fingerprints.** During cruncher index build, collect the set of unique terms from 1-hop graph neighbors (calls, imports, containment). At query time, `neighbor_match_score()` counts exact overlaps between query terms and neighbor terms. This disambiguates generic names: `poll_close`'s neighbors include "frame", "buffer", "codec" — if the query mentions these, poll_close gets a boost. Exact-match only (no stemming, no fuzzy) to avoid false positives.
+
+**Phase 5: Source scan seeds (ErrorDebug).** Extract error-specific phrases from ErrorDebug queries and scan symbol source code for literal matches. Gated to ErrorDebug family only. Result: neutral — error queries describe *scenarios* rather than containing literal error strings from the source code. Reverted.
+
+**Determinism fixes (cross-cutting):** Discovered that Rust's `HashMap` randomized hashing + SQLite FTS5's tiebreak-free `ORDER BY score` produced ±0.05 variance on NDCG. Fixed by: FTS SQL tiebreaker (`ORDER BY score, sym.id`), sort tiebreakers on every sorted collection, `BTreeMap` for candidates, deterministic seed ordering. Reduced variance to ±0.015.
+
+**Final v3 benchmark (50 queries × 2 metrics × 3 codebases, re-indexed):**
+
+| Codebase | NDCG@10 GraphIQ | NDCG@10 Grep | MRR@10 GraphIQ | MRR@10 Grep |
+|---|---|---|---|---|
+| signetai | **0.339** | 0.137 (+147%) | **0.437** | 0.168 (+160%) |
+| esbuild | **0.365** | 0.210 (+74%) | **0.498** | 0.256 (+95%) |
+| tokio | 0.183 | **0.196** (-7%) | **0.348** | 0.306 (+14%) |
+
+**Key findings:**
+- GraphIQ dominates on descriptive-name codebases: signetai +147-160%, esbuild +74-95%
+- Relationship queries are 3.7x better than grep — the graph walk is the strongest structural signal
+- Tokio remains hard: generic names defeat name overlap, graph walk has weak signal in a runtime library
+- v3's gated signals recover the holographic gating insight without the 42MB FFT cache
+- Per-family routing is the right abstraction — different query types genuinely need different parameters
+- Determinism matters: ±0.05 variance was masking real improvements/regressions in earlier phases
+
+**What didn't work:**
+- Source scan seeds (Phase 5): neutral on ErrorDebug — error queries describe scenarios, not literal strings
+- Neighbor boost parameter tuning: adding per-family `neighbor_gate`/`neighbor_weight` caused regressions. Flat gate (0.1) + weight (0.5) was better.
+- Multiplicative neighbor scoring: exact-match only (additive) was better than partial-match with multiplicative boost
+
+**Key lesson:** The holographic experiments' real contribution was the *pipeline engineering patterns* (confidence gating, per-family routing, specificity scaling), not the spectral math. Implementing these patterns with simple token overlap instead of 1024-dim FFT vectors produced comparable or better results at zero additional memory cost.
