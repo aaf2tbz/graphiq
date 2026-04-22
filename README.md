@@ -43,6 +43,7 @@ cargo build --release
 ```
 
 Installs three binaries: `graphiq` (CLI), `graphiq-mcp` (MCP server), `graphiq-bench` (benchmarking).
+GraphIQ now works with Signet(Local Memory for Agents) to bring together the best of both worlds. 
 
 ## Quick Start
 
