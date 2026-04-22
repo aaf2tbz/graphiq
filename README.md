@@ -4,28 +4,24 @@ GraphIQ is a local code search engine that understands how your code is connecte
 
 Everything runs locally. No embeddings, no LLM, no network requests. A single SQLite file (~6.5MB for 20K symbols). ~18μs query latency from an MCP server.
 
-### What GraphIQ is not
+### Benchmarks (v3.1 — 50 queries per codebase, 3 codebases, 300 total)
 
-Not neural search. No learned weights, no embedding model, no GPU. The retrieval is built on exact term overlap and graph adjacency, weighted by information-theoretic signals (IDF, coverage fraction, specificity). It doesn't do fuzzy matching or typo correction — queries need to share vocabulary with the code. The tradeoff: it's deterministic, auditable (every score has a traceable explanation), and runs in microseconds on a laptop.
-
-### Where it wins
-
-Tested against grep (substring search over symbol names and source code) on 3 codebases, 50 queries each for NDCG and MRR (300 total):
-
-| | Grep | GraphIQ |
-|---|---|---|
-| NDCG@10 | 0.179 | **0.265** (+48%) |
-| MRR@10 | 0.206 | **0.471** (+128%) |
+| Codebase | Grep NDCG@10 | GraphIQ NDCG@10 | Grep MRR@10 | GraphIQ MRR@10 |
+|---|---|---|---|---|
+| signetai (TypeScript, 23K syms) | 0.143 | **0.286** (+100%) | 0.144 | **0.450** (+213%) |
+| esbuild (Go, 12K syms) | 0.200 | **0.318** (+59%) | 0.145 | **0.551** (+280%) |
+| tokio (Rust, 18K syms) | **0.193** | 0.192 (-1%) | 0.330 | **0.411** (+25%) |
+| **Overall** | **0.179** | **0.265** (+48%) | **0.206** | **0.471** (+128%) |
 
 | Query type | vs Grep | Why |
 |---|---|---|
-| **Relationships** ("what calls RateLimiter") | **3.9x** | The graph walk finds structurally connected symbols that no substring search can discover |
+| **Relationships** ("what calls RateLimiter") | **3.9x** | Graph walk finds structurally connected symbols no substring search can discover |
 | **Natural language** ("encode a value in VLQ") | **2.0x** | Identifier decomposition + per-family signal routing |
 | **Error/debug** ("timeout in channel send") | **1.2x** | Error-type edge routing + shared constant discovery |
 | **Symbol exact** ("authenticateUser") | ~tied | BM25 is already excellent for exact name lookups |
 | **Abstract NL** ("how does auth work") | ~tied | Requires semantic understanding beyond structural graph signals |
 
-Codebases with descriptive names (`convertOKLCHToOKLAB`) see the biggest gains. Codebases with generic names (`run`, `handle`, `poll`) see smaller gains — structural aliases (v3.1) disambiguate collision-prone symbols (tokio MRR improved from +14% to +25%) but the terms are still too common for IDF to fully resolve.
+Codebases with descriptive names (`convertOKLCHToOKLAB`) see the biggest gains. Codebases with generic names (`run`, `handle`, `poll`) see smaller gains — structural aliases disambiguate collision-prone symbols but generic terms remain hard for IDF to fully resolve.
 
 Full methodology and per-codebase breakdowns in [docs/benchmarks.md](docs/benchmarks.md).
 

@@ -15,3 +15,5 @@ signetai-wal
 bench
 bench-shm
 bench-wal
+benches/mrr-25-*.json
+benches/ndcg-25-*.json
