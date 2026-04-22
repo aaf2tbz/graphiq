@@ -1,3 +1,12 @@
+//! File discovery, language detection, and content hashing.
+//!
+//! Walks a project directory respecting `.gitignore`, detects languages from
+//! file extensions, and computes SHA-256 content hashes for incremental
+//! reindexing. Supports 36+ languages with full parsing for 16.
+//!
+//! Key functions: [`walk_project`] (file iterator), [`detect_language`]
+//! (extension-based detection), [`content_hash`] (SHA-256).
+
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 

@@ -1,5 +1,22 @@
+//! Edge types, evidence kinds, and blast radius types.
+//!
+//! Defines the vocabulary of relationships between symbols. `EdgeKind` covers
+//! structural edges (Calls, Imports, Contains, Extends, Implements) and
+//! semantic edges (SharesType, SharesConstant, SharesDataShape, etc.).
+//! `EvidenceKind` classifies edge quality (Direct, Structural, Reinforcing,
+//! Boundary, Incidental) for retrieval weight calibration. `BlastDirection`
+//! and `BlastRadius` support change impact analysis.
+
 use serde::{Deserialize, Serialize};
 
+/// Quality classification for an edge, used to weight its contribution
+/// to search scores and evidence profiles.
+///
+/// - Direct: explicit code relationship (calls, imports)
+/// - Structural: type hierarchy or containment
+/// - Reinforcing: same-module or same-motif connection
+/// - Boundary: cross-module, cross-visibility connection (high value)
+/// - Incidental: shared constant or weak similarity (low weight)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EvidenceKind {
     Direct,
@@ -63,6 +80,12 @@ impl EvidenceProfile {
     }
 }
 
+/// Types of structural relationships between symbols.
+///
+/// Structural edges (Calls, Imports, Contains, Extends, Implements) are
+/// extracted from syntax analysis. Semantic edges (SharesType, SharesConstant,
+/// SharesDataShape, SharesErrorType) are computed by deep_graph analysis.
+/// CommentRef edges come from comment cross-references.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum EdgeKind {
     Imports,

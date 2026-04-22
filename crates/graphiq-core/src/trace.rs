@@ -1,3 +1,12 @@
+//! Retrieval trace — diagnostic scoring breakdown.
+//!
+//! Captures the full search pipeline execution for debugging and the
+//! `graphiq_why` tool: seed origins, expansion steps with edge kinds,
+//! evidence contributions, confidence scores, and final rankings.
+//!
+//! Key types: [`RetrievalTrace`] (full trace), [`ConfidenceReport`]
+//! (per-result confidence), [`TraceCollector`] (incremental builder).
+
 use std::collections::HashMap;
 
 use crate::search::SearchMode;

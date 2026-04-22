@@ -1,3 +1,12 @@
+//! Codebase briefing — architecture overview generation.
+//!
+//! Generates a human-readable summary of the codebase: languages, symbol types,
+//! edge types, architecture (subsystems with cohesion scores), public API,
+//! hub symbols, and key concepts. Used by the `briefing` MCP tool.
+//!
+//! Key functions: [`generate_briefing`] (full briefing),
+//! [`generate_briefing_compact`] (top subsystems and API only).
+
 use std::collections::HashMap;
 
 use crate::db::GraphDb;

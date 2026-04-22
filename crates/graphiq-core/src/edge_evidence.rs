@@ -1,3 +1,13 @@
+//! Edge evidence — classify and weight edge quality for retrieval.
+//!
+//! Analyzes each edge in the graph to determine its evidence kind (Direct,
+//! Structural, Reinforcing, Boundary, Incidental) based on cross-module
+//! status, visibility differences, and graph motifs. Evidence weights
+//! calibrate how much each edge contributes to search scores.
+//!
+//! Key function: [`infer_edge_evidence`] — builds an evidence index for all
+//! edges, used by graph walk scoring and the `explain` tool.
+
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use rusqlite::params;

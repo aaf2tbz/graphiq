@@ -1,3 +1,17 @@
+//! Codebase indexing pipeline.
+//!
+//! Walks project files, parses them with Tree-sitter, extracts symbols and
+//! edges, computes deep graph edges (type flow, error surfaces, data shapes),
+//! infers structural roles and motifs, generates search hints, and builds
+//! the CruncherIndex for fast search.
+//!
+//! Entry point: [`Indexer::index_project`] — walks files, calls `index_files`
+//! which parallelizes per-file parsing with rayon.
+//!
+//! After indexing, call `compute_edge_evidence`, `compute_structural_aliases`,
+//! `compute_numeric_bridges`, `compute_deep_graph`, and `generate_search_hints`
+//! to populate all derived data.
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -12,6 +26,11 @@ use crate::motifs::{detect_motifs, motifs_to_hints, MotifEvidence};
 use crate::roles::{infer_roles, roles_to_hints, RoleEvidence};
 use crate::symbol::{SymbolBuilder, SymbolKind};
 
+/// Indexes a codebase into the graph database.
+///
+/// Created per-indexing operation with a reference to the GraphDb.
+/// Call [`index_project`] to walk files, extract symbols/edges, and
+/// compute all derived artifacts.
 pub struct Indexer<'a> {
     db: &'a GraphDb,
 }
@@ -36,6 +55,12 @@ impl<'a> Indexer<'a> {
         Err(())
     }
 
+    /// Index all files in a project directory.
+    ///
+    /// Walks the project with `walk_project`, parallelizes per-file
+    /// symbol/edge extraction with rayon, then computes deep graph
+    /// edges, edge evidence, structural aliases, numeric bridges,
+    /// and search hints.
     pub fn index_project(&self, root: &Path) -> Result<IndexStats, Box<dyn std::error::Error>> {
         let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
         self.db.set_meta("project_root", &canonical.to_string_lossy())?;

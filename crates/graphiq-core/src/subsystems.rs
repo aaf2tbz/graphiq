@@ -1,3 +1,15 @@
+//! Subsystem detection — cluster symbols by file proximity.
+//!
+//! Groups symbols into subsystems based on directory structure and edge
+//! density. Symbols in the same directory with many internal edges form
+//! a subsystem. Computes cohesion scores and boundary edge counts for
+//! architecture overview and the briefing tool.
+//!
+//! Key types: [`Subsystem`] (a detected cluster), [`SubsystemIndex`]
+//! (all subsystems with symbol-to-subsystem mapping).
+//!
+//! Entry point: [`detect_subsystems`] — computes subsystems from the graph.
+
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 

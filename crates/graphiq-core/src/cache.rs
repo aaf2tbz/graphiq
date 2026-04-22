@@ -1,3 +1,13 @@
+//! Hot cache — in-memory caching for search results and context.
+//!
+//! LRU cache for search results, symbol neighborhoods (callers/callees/
+//! members/container/implementors), blast radius computations, assembled
+//! context (source + callers + summary), and source code. Provides
+//! file-level cache invalidation for reindexing.
+//!
+//! Key type: [`HotCache`] — thread-safe cache with prewarm and stats.
+//! Used by the MCP server and CLI to avoid redundant DB queries.
+
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -73,6 +83,11 @@ impl Default for CacheConfig {
     }
 }
 
+/// In-memory LRU cache for search operations.
+///
+/// Caches neighborhoods (callers, callees, members), search results,
+/// blast radius computations, assembled context, and source code.
+/// Thread-safe via DashMap. Used by MCP server and CLI.
 pub struct HotCache {
     neighborhoods: DashMap<i64, Neighborhood>,
     assembled: DashMap<i64, AssembledContext>,

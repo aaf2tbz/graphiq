@@ -1,3 +1,13 @@
+//! Search engine — orchestrates the full search pipeline.
+//!
+//! Routes queries through query family classification, seed generation (BM25
+//! + graph expansion), graph walk, scoring, and post-processing. Supports two
+//! modes: `Fts` (BM25 only) and `GraphWalk` (BM25 + structural expansion).
+//!
+//! Entry point: [`SearchEngine::search`] — classifies the query, generates
+//! seeds, runs graph walk if enabled, scores candidates, and returns ranked
+//! results with optional blast radius and retrieval trace.
+
 use std::collections::HashMap;
 
 use crate::blast;
@@ -11,6 +21,10 @@ use crate::rerank::{Reranker, ScoredSymbol};
 use crate::query_family::{self, QueryFamily};
 use crate::trace::RetrievalTrace;
 
+/// Search mode — determines whether structural graph walking is used.
+///
+/// `Fts`: BM25 full-text search only (used when cruncher is not built).
+/// `GraphWalk`: BM25 + graph walk expansion (used when cruncher is ready).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchMode {
     Fts,
@@ -26,6 +40,10 @@ impl std::fmt::Display for SearchMode {
     }
 }
 
+/// Search query configuration.
+///
+/// Builder-pattern query with options for result count, expansion depth,
+/// file filtering, blast radius, and debug tracing.
 #[derive(Debug, Clone)]
 pub struct SearchQuery {
     pub query: String,

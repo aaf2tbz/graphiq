@@ -1,3 +1,13 @@
+//! Tree-sitter AST parsing framework — symbol extraction.
+//!
+//! Provides the [`LanguageChunker`] trait implemented by per-language parsers
+//! in the `languages` module. Each chunker extracts symbols (functions, types,
+//! etc.), imports, structural relations (extends, implements, contains), and
+//! doc comments from parsed source files.
+//!
+//! Key types: [`LanguageChunker`] (trait), [`ParsedSymbol`] (extracted symbol),
+//! [`ImportInfo`] (import metadata), [`StructuralRelation`] (type hierarchy).
+
 use tree_sitter::{Language, Node, Parser, Tree};
 
 use crate::symbol::{SymbolKind, Visibility};

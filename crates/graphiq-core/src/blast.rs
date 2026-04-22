@@ -1,3 +1,13 @@
+//! Change impact analysis — blast radius computation.
+//!
+//! Traces forward (what a symbol affects) and backward (what depends on a
+//! symbol) through the graph to determine the blast radius of a change.
+//! Used by the `blast` CLI command and MCP tool for pre-refactor impact
+//! assessment.
+//!
+//! Entry point: [`compute_blast_radius`] — BFS from a symbol through
+//! Calls, Imports, References, and Contains edges.
+
 use crate::db::GraphDb;
 use crate::edge::{BlastDirection, BlastEntry, BlastRadius, EdgeKind};
 use crate::graph::{bounded_bfs, TraverseDirection};

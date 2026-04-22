@@ -1,3 +1,17 @@
+//! Structural aliases — disambiguate collision-prone symbol names.
+//!
+//! When multiple symbols share the same name (e.g., `new`, `build`, `process`),
+//! this module builds ambiguity fingerprints from edge mix, signature types,
+//! neighborhood context, container context, and behavioral patterns. Symbols
+//! with identical fingerprints are aliases — searching for one should find all.
+//!
+//! The fingerprint is stored as `alias_text` in the CruncherIndex so that
+//! graph walk scoring can boost alias matches when a generic name appears
+//! in the right structural context.
+//!
+//! Entry point: [`compute_structural_aliases`] — builds collision sets and
+//! writes alias text to the database.
+
 use std::collections::HashMap;
 
 use crate::db::GraphDb;
@@ -415,7 +429,7 @@ pub fn compute_structural_aliases(db: &GraphDb) -> Result<AliasStats, Box<dyn st
     let mut symbol_info: HashMap<i64, SymbolInfo> = HashMap::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT id, name, name_decomposed, kind, signature, source, file_id \
+            "SELECT id, name, name_decomposed, signature, source, file_id \
              FROM symbols"
         )?;
         let rows = stmt.query_map([], |row| {
@@ -423,10 +437,9 @@ pub fn compute_structural_aliases(db: &GraphDb) -> Result<AliasStats, Box<dyn st
                 id: row.get(0)?,
                 name: row.get(1)?,
                 name_decomposed: row.get(2)?,
-                kind: row.get(3)?,
-                signature: row.get::<_, Option<String>>(4)?,
-                source: row.get::<_, Option<String>>(5)?,
-                file_id: row.get(6)?,
+                signature: row.get::<_, Option<String>>(3)?,
+                source: row.get::<_, Option<String>>(4)?,
+                file_id: row.get(5)?,
             })
         })?;
         for row in rows {
@@ -564,7 +577,6 @@ struct SymbolInfo {
     id: i64,
     name: String,
     name_decomposed: String,
-    kind: String,
     signature: Option<String>,
     source: Option<String>,
     file_id: i64,

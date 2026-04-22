@@ -1,3 +1,11 @@
+//! Behavioral descriptors — verb+object phrases from symbol names.
+//!
+//! Infers behavioral descriptions from symbol names, signatures, callee/caller
+//! names, and file paths. Generates phrases like "validates token", "caches
+//! response", "transforms input" that are written into search hints.
+//!
+//! Key function: [`generate_behavioral_descriptors`] — returns phrases
+//! for a symbol's search hints.
 
 pub struct BehavioralDescriptor {
     pub phrases: Vec<String>,

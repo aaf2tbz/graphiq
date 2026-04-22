@@ -1,3 +1,16 @@
+//! In-memory search index — the CruncherIndex.
+//!
+//! Pre-computes adjacency lists, term sets with IDF weights, name indexes,
+//! neighbor term fingerprints, and bridging scores for all symbols. Built
+//! once after indexing and cached to `cruncher.bin.zst` for fast reload.
+//!
+//! The CruncherIndex is the backbone of the GraphWalk search mode. It enables
+//! microsecond graph traversal and term matching without hitting SQLite.
+//!
+//! Key types: [`CruncherIndex`] (main index), [`Edge`] (weighted adjacency
+//! entry), [`TermSet`] (per-symbol term dictionary), [`QueryTerm`] (parsed
+//! query token).
+
 use std::collections::{HashMap, HashSet};
 
 use crate::db::GraphDb;
@@ -25,6 +38,10 @@ const EDGE_WEIGHT_EXTENDS: f64 = 0.9;
 const EDGE_WEIGHT_IMPLEMENTS: f64 = 0.9;
 const EDGE_WEIGHT_TESTS: f64 = 0.3;
 
+/// Weighted edge in the CruncherIndex adjacency lists.
+///
+/// Each edge has a target symbol index, a combined weight, and a
+/// separate weight for the edge kind (used by kind_boost scoring).
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Edge {
     pub target: usize,
@@ -32,6 +49,15 @@ pub struct Edge {
     pub kind_weight: f64,
 }
 
+/// In-memory search index built after SQLite indexing.
+///
+/// Contains adjacency lists (outgoing/incoming edges per symbol),
+/// per-symbol term sets with IDF weights, global IDF dictionary,
+/// file path mapping, name index, neighbor term fingerprints,
+/// bridging scores, and structural degree values.
+///
+/// Serialized to `cruncher.bin.zst` for fast reload between sessions.
+/// Used by the pipeline and scoring modules for microsecond search.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct CruncherIndex {
     pub n: usize,

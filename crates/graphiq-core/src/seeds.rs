@@ -1,3 +1,14 @@
+//! Seed generation — initial candidate retrieval for the search pipeline.
+//!
+//! Generates seed candidates through multiple strategies, gated per query
+//! family: BM25 full-text search, per-term FTS expansion (with stemming and
+//! synonyms), graph-aware expansion (following SharesType/SharesErrorType
+//! edges), numeric bridge seeds (matching literal constants), and source
+//! scan seeds (substring matching for error/debug queries).
+//!
+//! Key function: [`generate_seeds`] — combines all strategies into a unified
+//! seed set with deduplication.
+
 use std::collections::{HashMap, HashSet};
 
 use crate::db::GraphDb;

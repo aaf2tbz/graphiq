@@ -1,3 +1,12 @@
+//! Call site extraction — function call detection across languages.
+//!
+//! Walks Tree-sitter ASTs to find function call expressions, method calls,
+//! and import references. Returns [`CallSite`] records with callee name,
+//! optional receiver (for method calls), and source location.
+//!
+//! Key function: [`extract_calls`] — dispatches to language-specific
+//! extraction with fallback regex for unsupported languages.
+
 use tree_sitter::Tree;
 
 #[derive(Debug, Clone)]

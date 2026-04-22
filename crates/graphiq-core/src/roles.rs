@@ -1,3 +1,15 @@
+//! Structural roles — infer what a symbol does from its name and context.
+//!
+//! Assigns role tags (Validator, Cache, Handler, EntryPoint, etc.) to symbols
+//! based on naming patterns, call patterns, and file paths. These tags are
+//! written into the FTS search hints column so BM25 can match role vocabulary.
+//!
+//! A function named `ensureFreshness` that checks cache validity gets hints
+//! like "cache validate check verify" — so the query "validate cache entry"
+//! finds it even though the name doesn't contain those words.
+//!
+//! Key function: [`infer_roles`] — returns role tags for a symbol.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RoleTag {
     Validator,

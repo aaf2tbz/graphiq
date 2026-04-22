@@ -1,6 +1,21 @@
+//! Symbol types — the core data model for code entities.
+//!
+//! Defines [`SymbolKind`] (function, method, class, struct, etc.),
+//! [`Visibility`] (public, private, protected), [`Symbol`] (the main
+//! symbol record with name, location, source, signature), [`SourceFile`]
+//! (file metadata), and [`SymbolBuilder`] (fluent constructor with
+//! sensible defaults).
+//!
+//! Symbols are the nodes in the code intelligence graph. Each symbol
+//! represents a single code entity extracted by Tree-sitter parsing.
+
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+/// Classification of a code entity's type.
+///
+/// Maps to Tree-sitter node types: Function, Method, Class, Struct, Enum,
+/// Interface, Trait, Module, Constant, Field, Import, etc.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SymbolKind {
     Function,
@@ -135,6 +150,11 @@ impl Visibility {
     }
 }
 
+/// A single code entity extracted from the codebase.
+///
+/// Represents a function, type, variable, import, or other symbol with
+/// its name, location (file + line range), source code, signature,
+/// visibility, doc comment, and search hints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Symbol {
     pub id: i64,

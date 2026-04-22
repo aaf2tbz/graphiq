@@ -1,3 +1,14 @@
+//! Result reranking — heuristic adjustments and evidence-based promotion.
+//!
+//! Applies post-scoring adjustments: entry point boost, test penalty, density
+//! bonus, export bias, importance weighting, diversity dampening, and
+//! BM25 confidence lock. Tracks evidence through multiple channels (lexical,
+//! structural, test proximity, path, hints) for explainable rankings.
+//!
+//! Key types: [`Reranker`] (main reranker), [`ScoredSymbol`] (ranked result),
+//! [`HeuristicConfig`] (toggle individual heuristics), [`EvidenceChannels`]
+//! (track which signals contributed).
+
 use std::collections::HashMap;
 
 use crate::db::GraphDb;

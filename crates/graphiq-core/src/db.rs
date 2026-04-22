@@ -1,3 +1,15 @@
+//! SQLite storage layer for the code intelligence graph.
+//!
+//! Stores symbols, edges, files, and an FTS5 full-text index in a single
+//! `.graphiq/graphiq.db` file. Provides CRUD operations for all core entities
+//! plus metadata (key-value), importance scoring, and search hints.
+//!
+//! Core tables: `symbols` (with FTS5 trigger), `edges`, `files`, `meta`.
+//!
+//! The FTS5 virtual table (`symbols_fts`) indexes name, decomposed name,
+//! qualified name, signature, source, doc comments, file path, kind,
+//! language, and search hints — enabling BM25 full-text search.
+
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::path::Path;
 

@@ -1,3 +1,12 @@
+//! Graph motifs — detect structural patterns in the symbol graph.
+//!
+//! Classifies symbols into 8 motifs based on their connectivity patterns:
+//! Connector, Orchestrator, Guard, Transform, Sink, Source, Hub, Leaf.
+//! Motifs contribute to search hints and evidence classification.
+//!
+//! Key function: [`detect_motifs`] — classifies a symbol based on its
+//! incoming/outgoing edge patterns.
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Motif {
     Connector,

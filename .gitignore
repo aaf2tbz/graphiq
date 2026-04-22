@@ -12,3 +12,6 @@ signetai-shm
 signetai-wal
 *.csv
 *-stderr.log
+bench
+bench-shm
+bench-wal

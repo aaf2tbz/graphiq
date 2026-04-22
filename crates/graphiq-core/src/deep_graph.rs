@@ -1,3 +1,14 @@
+//! Semantic edge computation — type flow, error surfaces, data shapes.
+//!
+//! Builds edges that go beyond syntax: `shares_type` links functions sharing
+//! type tokens in signatures, `shares_error_type` connects error handlers,
+//! `shares_data_shape` links functions accessing the same struct fields,
+//! `comment_ref` extracts cross-references from comments, and string literal
+//! edges link symbols sharing string constants.
+//!
+//! These edges are computed after structural indexing and stored in the edges
+//! table with appropriate `EdgeKind` values.
+
 use crate::db::GraphDb;
 use rusqlite::params;
 use std::collections::{HashMap, HashSet};

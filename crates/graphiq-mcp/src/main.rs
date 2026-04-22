@@ -1,3 +1,14 @@
+//! GraphIQ MCP server — Model Context Protocol interface for code intelligence.
+//!
+//! Exposes graphiq's search, blast, context, explain, topology, interrogate,
+//! and indexing capabilities as MCP tools. Communicates over stdin/stdout
+//! using the JSON-RPC MCP protocol. Runs as a long-lived process with
+//! background index warming and in-memory caching.
+//!
+//! Lifecycle: startup (resolve project root, open DB, read stored project_root)
+//! → background_warm (full index if empty, else prewarm cache + build cruncher)
+//! → handle JSON-RPC messages (tool calls, initialize, shutdown).
+
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -9,12 +20,21 @@ const SERVER_NAME: &str = "graphiq";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
+/// Mutable state for the MCP server, shared across tool calls.
+/// Holds the project root, database connection, search cache, and
+/// optional CruncherIndex for GraphWalk mode.
 struct ServerState {
+    /// Canonical path to the project root directory.
     project_root: PathBuf,
+    /// Path to the SQLite database file.
     db_path: PathBuf,
+    /// SQLite database connection for symbol/edge storage and FTS.
     db: graphiq_core::db::GraphDb,
+    /// In-memory LRU cache for search results, neighborhoods, and context.
     cache: graphiq_core::cache::HotCache,
+    /// Pre-built CruncherIndex for fast GraphWalk search (None = FTS-only mode).
     cruncher_index: Option<graphiq_core::cruncher::CruncherIndex>,
+    /// Whether a full index is currently in progress.
     indexing: bool,
 }
 

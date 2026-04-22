@@ -1,3 +1,12 @@
+//! Identifier decomposition and term extraction.
+//!
+//! Splits camelCase, snake_case, PascalCase identifiers into individual
+//! terms, extracts meaningful words from source text (filtering keywords,
+//! primitives, and short tokens), and stems words for fuzzy matching.
+//!
+//! Key functions: [`decompose_identifier`] (split names into terms),
+//! [`extract_terms`] (extract meaningful words from text).
+
 pub fn decompose_identifier(name: &str) -> String {
     if name.is_empty() {
         return String::new();

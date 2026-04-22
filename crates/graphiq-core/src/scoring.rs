@@ -1,3 +1,13 @@
+//! Candidate scoring — composite ranking from multiple signals.
+//!
+//! Combines BM25 score, term coverage, name matching, walk evidence, name
+//! overlap, and neighbor fingerprints into a single score. Weights differ
+//! between seed candidates and walk discoveries, and are configured per
+//! query family via `ScoreConfig`.
+//!
+//! Key function: [`score_candidates`] — scores all candidates and applies
+//! BM25 confidence lock, file diversity cap, and exact match promotion.
+
 use std::collections::HashSet;
 
 use crate::cruncher::{CruncherIndex, QueryTerm};

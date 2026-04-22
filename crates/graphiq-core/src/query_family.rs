@@ -1,5 +1,21 @@
+//! Query classification — maps user queries to search strategies.
+//!
+//! Every query is classified into one of 8 families (SymbolExact, SymbolPartial,
+//! FilePath, ErrorDebug, NaturalDescriptive, NaturalAbstract, CrossCuttingSet,
+//! Relationship). Each family produces a `RetrievalPolicy` (BM25 lock strength,
+//! diversity boost) and `ScoreConfig` (scoring weights).
+//!
+//! The classifier uses a priority cascade to prevent misclassification.
+//! The key insight: the classifier doesn't return "intent" — it returns
+//! permission boundaries for downstream signals.
+
 use std::fmt;
 
+/// Query classification — determines search strategy and scoring weights.
+///
+/// Each family maps to a different RetrievalPolicy (which seed strategies
+/// to activate, BM25 lock strength) and ScoreConfig (scoring weights).
+/// The classifier uses a priority cascade to prevent misclassification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryFamily {
     SymbolExact,

@@ -1,3 +1,13 @@
+//! BM25 full-text search over the FTS5 virtual table.
+//!
+//! Searches the `symbols_fts` table with weighted columns (name, decomposed
+//! name, qualified name, signature, source, doc comments, file path, kind,
+//! language, search hints). Supports configurable column weights and two
+//! presets: default (symbol-focused) and natural language (broader matching).
+//!
+//! Key types: [`FtsSearch`] (search executor), [`FtsConfig`] (column weights),
+//! [`FtsResult`] (symbol + BM25 score).
+
 use rusqlite::params;
 
 use crate::db::GraphDb;

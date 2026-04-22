@@ -1,3 +1,13 @@
+//! Graph traversal — bounded BFS and structural expansion.
+//!
+//! Provides breadth-first search over the symbol graph with depth limits,
+//! direction control (outgoing/incoming), edge filtering, and score decay.
+//! Used by the search pipeline's graph walk stage and by the blast radius
+//! analysis for change impact tracing.
+//!
+//! Key functions: [`bounded_bfs`] (core traversal), [`StructuralExpander`]
+//! (high-level BFS with evidence tracking and decay).
+
 use rusqlite::params;
 
 use crate::db::GraphDb;

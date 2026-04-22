@@ -1,3 +1,13 @@
+//! Numeric bridge detection — trace shared constants across symbols.
+//!
+//! Finds symbols that share numeric literals (magic numbers) and connects
+//! them with `shares_constant` edges. Used by seed generation to discover
+//! symbols through constant references (e.g., query "timeout after 30
+//! seconds" finds symbols sharing the constant 30).
+//!
+//! Also provides [`query_constants`] for the `constants` MCP tool — finds
+//! all shared numeric literals and their named constant definitions.
+
 use std::collections::HashMap;
 
 use rusqlite::params;

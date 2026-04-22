@@ -1,3 +1,14 @@
+//! Unified search pipeline — seed→walk→score on the CruncherIndex.
+//!
+//! Orchestrates the in-process search path: builds query terms from the
+//! CruncherIndex's IDF dictionary, performs graph walk expansion from BM25
+//! seeds, computes per-candidate scores with coverage, name overlap, and
+//! neighbor fingerprint signals, and returns ranked symbol IDs.
+//!
+//! This is the fast path used by the MCP server (~18μs per query).
+//! The CLI uses the full `SearchEngine` in `search.rs` which adds DB
+//! lookups and post-processing.
+
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use crate::cruncher::{

@@ -1,3 +1,13 @@
+//! Artifact manifest — track cruncher and FTS index freshness.
+//!
+//! Stores a JSON manifest alongside the SQLite database recording artifact
+//! build times and content hashes. On startup, compares current state against
+//! the manifest to determine if artifacts need rebuilding. Drives the
+//! active search mode: `GraphWalk` when cruncher is ready, `Fts` otherwise.
+//!
+//! Key functions: [`write_manifest`] (save), [`read_manifest`] (load),
+//! [`build_manifest`] (compute from current DB state).
+
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};

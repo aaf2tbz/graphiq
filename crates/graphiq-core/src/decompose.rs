@@ -1,3 +1,13 @@
+//! Query decomposition — split multi-concept queries into subqueries.
+//!
+//! Detects compound queries (e.g., "authentication and authorization flow")
+//! and splits them into individual subqueries that are searched independently,
+//! then merged with evidence-weighted aggregation. Helps cross-cutting queries
+//! find symbols across different parts of the codebase.
+//!
+//! Key function: [`decomposed_search`] — decomposes, searches each subquery,
+//! and merges results with evidence counts.
+
 use crate::db::GraphDb;
 use crate::fts::FtsSearch;
 pub struct HrrIndex;
