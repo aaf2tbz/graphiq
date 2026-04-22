@@ -192,6 +192,8 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
     );
     log_err(&msg);
 
+    sync_project_root_from_db(state);
+
     let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
     let manifest = graphiq_core::manifest::build_manifest_all_ready(&state.db);
     if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
@@ -383,6 +385,20 @@ fn main() {
     }
 }
 
+fn sync_project_root_from_db(state: &mut ServerState) {
+    if let Ok(Some(stored)) = state.db.get_meta("project_root") {
+        let stored_path = PathBuf::from(&stored);
+        if stored_path != state.project_root && stored_path.exists() {
+            log_err(&format!(
+                "DB project_root changed from {} to {}, updating state",
+                state.project_root.display(),
+                stored_path.display()
+            ));
+            state.project_root = stored_path;
+        }
+    }
+}
+
 fn background_warm(state: &Arc<Mutex<ServerState>>) {
     let needs_full_index = {
         match state.lock() {
@@ -416,6 +432,8 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
             return;
         }
     };
+
+    sync_project_root_from_db(&mut s);
 
     s.cache.prewarm(&s.db, 200);
 
