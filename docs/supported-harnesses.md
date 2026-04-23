@@ -1,40 +1,36 @@
 # Supported Harnesses
 
-GraphIQ integrates with AI coding assistants ("harnesses") through the Signet MCP server. Any harness that supports MCP over stdio can use GraphIQ's code retrieval tools.
+GraphIQ integrates with AI coding assistants through two independent surfaces: its own MCP server and the Signet MCP proxy. Each supports a different set of harnesses.
 
-## How it works
+## GraphIQ (native)
 
-Signet spawns an MCP stdio server (`signet-mcp`) that exposes GraphIQ tools to connected harnesses. The harness calls tool names like `signet_code_search`, `signet_code_context`, etc., and Signet routes them to the `graphiq` binary installed via Homebrew.
+GraphIQ ships a standalone MCP server (`graphiq-mcp`) that can be configured directly in harness configs without Signet.
 
-## Supported harnesses
-
-| Harness | Integration | Notes |
+| Harness | Status | Notes |
 |---|---|---|
-| **Claude Code** | MCP stdio via `claude_desktop_config.json` or `settings.json` | Full support |
-| **OpenCode** | MCP stdio via config | Full support |
-| **Codex CLI** | MCP stdio via config | Full support |
-| **Gemini CLI** | MCP stdio via config | Full support |
-| **OpenClaw** | MCP stdio via config | Full support |
-| **Forge** | MCP stdio via config | Full support |
-| **Hermes Agent** | MCP stdio via config | Full support |
-| **Oh My Pi** | MCP stdio via config | Full support |
-| **Pi** | MCP stdio via config | Full support |
+| **Claude Code** | Supported | Configure in `claude_desktop_config.json` |
+| **Codex CLI** | Supported | MCP stdio via config |
+| **OpenClaw** | Supported | MCP stdio via config |
+| **Hermes Agent** | Supported | MCP stdio via config |
 
-## Adding a new harness
+## Signet (proxy)
 
-1. Ensure the harness supports MCP over stdio.
-2. Add a `connectorCapability` entry to `signet-plugin/manifest.json` with the harness ID, title, and summary.
-3. Add the corresponding connector package in Signet (`packages/connector-<name>/`) if install-time setup is needed.
+Signet wraps GraphIQ through its own MCP stdio server (`signet-mcp`), exposing GraphIQ tools with the `signet_code_*` prefix alongside its memory and knowledge tools. Any harness connected to Signet gets GraphIQ access automatically.
+
+| Harness | Status | Notes |
+|---|---|---|
+| **Claude Code** | Supported | MCP stdio via Signet connector |
+| **OpenCode** | Supported | MCP stdio via Signet connector |
+| **Codex CLI** | Supported | MCP stdio via Signet connector |
+| **Gemini CLI** | Supported | MCP stdio via Signet connector |
+| **OpenClaw** | Supported | MCP stdio via Signet connector |
+| **Forge** | Supported | MCP stdio via Signet connector |
+| **Hermes Agent** | Supported | MCP stdio via Signet connector |
+| **Oh My Pi** | Supported | MCP stdio via Signet connector |
+| **Pi** | Supported | MCP stdio via Signet connector |
 
 ## Tool names
 
-All GraphIQ MCP tools use the `signet_code_*` prefix:
+When using GraphIQ natively, tool names are unprefixed (`code_search`, `code_context`, etc.).
 
-- `signet_code_search` — Search indexed code
-- `signet_code_context` — Read symbol context
-- `signet_code_blast` — Analyze impact radius
-- `signet_code_status` — Check index status
-- `signet_code_doctor` — Diagnose index health
-- `signet_code_constants` — Find shared constants
-
-Backward-compat aliases (`code_search`, `code_context`, etc.) are registered as deprecated names that delegate to the canonical tools.
+When using GraphIQ through Signet, tool names use the `signet_code_*` prefix (`signet_code_search`, `signet_code_context`, etc.). Signet also registers backward-compat aliases for the unprefixed names.
