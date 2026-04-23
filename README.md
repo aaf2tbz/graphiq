@@ -1,10 +1,81 @@
-# GraphIQ
+<div align="center">
 
-GraphIQ is a local code search engine that understands how your code is connected. It indexes your codebase into a structural graph — calls, imports, type flow, error surfaces, shared constants — then searches that graph with ranked retrieval instead of plain substring matching. You ask "rate limit middleware" and it finds `rateLimitMiddleware` through name decomposition, then walks the graph to discover `TokenBucket`, `ThrottleConfig`, and `checkRateLimit` even though none of those names contain "middleware."
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/graphiq-logo-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="docs/assets/graphiq-logo-light.png">
+  <img src="docs/assets/graphiq-logo-light.png" alt="GraphIQ" width="120">
+</picture>
 
-Everything runs locally. No embeddings, no LLM, no network requests. A single SQLite file (~6.5MB for 20K symbols). ~18μs query latency from an MCP server.
+# G R A P H I Q
 
-### Benchmarks (v3.1 — 50 queries per codebase, 3 codebases, 300 total)
+**Local code search that understands how your code is connected**
+
+<a href="https://github.com/aaf2tbz/graphiq/actions"><img src="https://img.shields.io/github/actions/workflow/status/aaf2tbz/graphiq/ci.yml?branch=main&style=for-the-badge" alt="CI status"></a>
+<a href="https://github.com/aaf2tbz/graphiq/releases"><img src="https://img.shields.io/github/v/release/aaf2tbz/graphiq?include_prereleases&style=for-the-badge" alt="GitHub release"></a>
+<a href="https://crates.io/crates/graphiq"><img src="https://img.shields.io/crates/v/graphiq?style=for-the-badge" alt="crates.io"></a>
+<a href="https://github.com/aaf2tbz/graphiq/discussions"><img src="https://img.shields.io/github/discussions/aaf2tbz/graphiq?style=for-the-badge" alt="Discussions"></a>
+<a href="https://github.com/aaf2tbz/graphiq/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
+<a href="https://github.com/aaf2tbz/homebrew-graphiq"><img src="https://img.shields.io/badge/Homebrew-Install-green?style=for-the-badge&logo=homebrew" alt="Homebrew"></a>
+<a href="docs/benchmarks.md"><img src="https://img.shields.io/badge/NDCG%4010-%2B48%25%20vs%20grep-black?style=for-the-badge" alt="NDCG@10 +48% vs grep"></a>
+
+**+48% NDCG@10, +128% MRR@10 vs grep across 300 benchmark queries**<br />
+Structural graph indexing · zero network · single SQLite file · ~18μs query latency
+
+[Docs](docs/how-graphiq-works.md) · [Benchmarks](docs/benchmarks.md) · [Research](docs/research.md) · [Discussions](https://github.com/aaf2tbz/graphiq/discussions)
+
+</div>
+
+---
+
+**Substring search finds what you typed. Graph search finds what you meant.**
+
+GraphIQ is a local code search engine that indexes your codebase into a
+structural graph — calls, imports, type flow, error surfaces, shared
+constants — then searches that graph with ranked retrieval instead of
+plain substring matching.
+
+You ask "rate limit middleware" and it finds `rateLimitMiddleware`
+through name decomposition, then walks the graph to discover
+`TokenBucket`, `ThrottleConfig`, and `checkRateLimit` even though none
+of those names contain "middleware."
+
+Everything runs locally. No embeddings, no LLM, no network requests. A
+single SQLite file (~6.5MB for 20K symbols). ~18μs query latency from an
+MCP server.
+
+## Quick start
+
+```bash
+brew tap aaf2tbz/graphiq
+brew install graphiq
+graphiq index /path/to/project
+graphiq search "rate limit middleware"
+```
+
+**From source:**
+
+```bash
+git clone https://github.com/aaf2tbz/graphiq.git
+cd graphiq
+cargo build --release
+```
+
+Installs three binaries: `graphiq` (CLI), `graphiq-mcp` (MCP server), `graphiq-bench` (benchmarking).
+
+### First proof of value
+
+Index a project, then try a natural language search:
+
+```bash
+graphiq index /path/to/project
+graphiq search "encode a value in VLQ"
+```
+
+Compare with grep — GraphIQ finds `encodeVLQ` through identifier
+decomposition and graph expansion, even if the exact term "VLQ" doesn't
+appear in the function name.
+
+## Benchmarks (v3.1 — 300 queries, 3 codebases)
 
 | Codebase | Grep NDCG@10 | GraphIQ NDCG@10 | Grep MRR@10 | GraphIQ MRR@10 |
 |---|---|---|---|---|
@@ -21,54 +92,19 @@ Everything runs locally. No embeddings, no LLM, no network requests. A single SQ
 | **Symbol exact** ("authenticateUser") | ~tied | BM25 is already excellent for exact name lookups |
 | **Abstract NL** ("how does auth work") | ~tied | Requires semantic understanding beyond structural graph signals |
 
-Codebases with descriptive names (`convertOKLCHToOKLAB`) see the biggest gains. Codebases with generic names (`run`, `handle`, `poll`) see smaller gains — structural aliases disambiguate collision-prone symbols but generic terms remain hard for IDF to fully resolve.
-
 Full methodology and per-codebase breakdowns in [docs/benchmarks.md](docs/benchmarks.md).
 
-## Install
+## Core capabilities
 
-**Homebrew (macOS, Linux)**
-
-```bash
-brew tap aaf2tbz/graphiq
-brew install graphiq
-```
-
-**From source**
-
-```bash
-git clone https://github.com/aaf2tbz/graphiq.git
-cd graphiq
-cargo build --release
-```
-
-Installs three binaries: `graphiq` (CLI), `graphiq-mcp` (MCP server), `graphiq-bench` (benchmarking).
-GraphIQ now works with Signet(Local Memory for Agents) to bring together the best of both worlds. 
-
-## Quick Start
-
-```bash
-# Index a project
-graphiq index /path/to/project
-
-# Search
-graphiq search "rate limit middleware"
-graphiq search "authenticateUser"
-graphiq search "how does the auth flow work" --debug
-
-# Blast radius — what does this symbol touch?
-graphiq blast RateLimiter
-graphiq blast RateLimiter --depth 5 --direction forward
-
-# Diagnostics
-graphiq status
-graphiq doctor
-
-# Set up MCP integration for your editor/agent
-graphiq setup --project /path/to/project
-```
-
-`--debug` prints per-result score breakdowns. `GRAPHIQ_DB` overrides the database path.
+| Core | What it does |
+|---|---|
+| **Structural graph indexing** | Calls, imports, type flow, error surfaces, shared constants, comment references |
+| **8-family query routing** | Symbol lookup, NL description, error debug, relationship, etc. — each with its own scoring profile |
+| **Graph walk expansion** | Seed results expand through structural edges to discover related symbols grep cannot reach |
+| **Blast radius analysis** | Forward/backward impact tracing with configurable depth (1–10) |
+| **Zero network** | No embeddings, no LLM, no API calls. Everything runs in a single SQLite file |
+| **13 MCP tools** | Full editor/agent integration — search, blast, context, interrogate, topology, explain, and more |
+| **Signet integration** | Works with Signet (local memory for agents) to combine graph-aware code search with persistent agent context |
 
 ## MCP Server
 
@@ -78,7 +114,7 @@ graphiq setup --project /path/to/project
 |---|---|
 | `briefing` | Project overview — start here |
 | `search` | Ranked symbol search with file filter and top_k |
-| `blast` | Change impact analysis (forward/backward/both, depth 1-10) |
+| `blast` | Change impact analysis (forward/backward/both, depth 1–10) |
 | `context` | Full source + structural neighborhood |
 | `why` | Explain why a result ranked where it did |
 | `interrogate` | Deep structural interrogation of a symbol |
@@ -106,7 +142,7 @@ The server lazily builds its index on first search (~1s from SQLite). Corrupted 
 
 ## How It Works
 
-```
+```text
 Query
   → Query Family Router (8 families)
   → Seed Generation (BM25 FTS5 → per-term expansion → graph walk → numeric bridges)
@@ -128,7 +164,7 @@ Graph edges capture calls, imports, type flow, shared error types, shared consta
 
 | Mode | Latency |
 |---|---|
-| Cold CLI (first run) | ~5-10s |
+| Cold CLI (first run) | ~5–10s |
 | Warm CLI (cached) | ~50ms |
 | In-process (MCP) | ~18μs |
 
@@ -140,6 +176,31 @@ Index size for a ~20K symbol codebase: ~6.5MB.
 - [Benchmarks](docs/benchmarks.md) — methodology and results
 - [Research notes](docs/research.md) — experimental history
 
+## Development
+
+```bash
+git clone https://github.com/aaf2tbz/graphiq.git
+cd graphiq
+cargo build --release
+cargo test
+```
+
+```bash
+cargo bench          # Run benchmarks
+graphiq index .      # Index GraphIQ on itself
+graphiq search "query family router"
+```
+
+Requirements: Rust 1.75+, macOS or Linux.
+
 ## License
 
-MIT
+MIT.
+
+---
+
+[GitHub](https://github.com/aaf2tbz/graphiq) ·
+[Homebrew](https://github.com/aaf2tbz/homebrew-graphiq) ·
+[crates.io](https://crates.io/crates/graphiq) ·
+[discussions](https://github.com/aaf2tbz/graphiq/discussions) ·
+[issues](https://github.com/aaf2tbz/graphiq/issues)
