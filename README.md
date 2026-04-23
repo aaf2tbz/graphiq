@@ -15,6 +15,7 @@
 <a href="https://github.com/aaf2tbz/graphiq/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 <a href="https://github.com/aaf2tbz/homebrew-graphiq"><img src="https://img.shields.io/badge/Homebrew-Install-green?style=for-the-badge&logo=homebrew" alt="Homebrew"></a>
 <a href="docs/benchmarks.md"><img src="https://img.shields.io/badge/NDCG%4010-%2B48%25%20vs%20grep-black?style=for-the-badge" alt="NDCG@10 +48% vs grep"></a>
+<a href="docs/benchmarks.md"><img src="https://img.shields.io/badge/MRR%4010-%2B128%25%20vs%20grep-black?style=for-the-badge" alt="MRR@10 +128% vs grep"></a>
 
 **+48% NDCG@10, +128% MRR@10 vs grep across 300 benchmark queries**<br />
 Structural graph indexing · zero network · single SQLite file · ~18μs query latency
