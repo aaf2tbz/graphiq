@@ -11,7 +11,6 @@
 **Local code search that understands how your code is connected**
 
 <a href="https://github.com/aaf2tbz/graphiq/releases"><img src="https://img.shields.io/github/v/release/aaf2tbz/graphiq?include_prereleases&style=for-the-badge" alt="GitHub release"></a>
-<a href="https://github.com/aaf2tbz/graphiq/discussions"><img src="https://img.shields.io/github/discussions/aaf2tbz/graphiq?style=for-the-badge" alt="Discussions"></a>
 <a href="https://github.com/aaf2tbz/graphiq/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
 <a href="https://github.com/aaf2tbz/homebrew-graphiq"><img src="https://img.shields.io/badge/Homebrew-Install-green?style=for-the-badge&logo=homebrew" alt="Homebrew"></a>
 <a href="docs/benchmarks.md"><img src="https://img.shields.io/badge/NDCG%4010-%2B48%25%20vs%20grep-black?style=for-the-badge" alt="NDCG@10 +48% vs grep"></a>
