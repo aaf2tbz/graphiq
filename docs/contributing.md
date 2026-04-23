@@ -61,6 +61,10 @@ Results are saved to `benchmarks/`.
 
 ## Release
 
+**Releases are managed exclusively by Alex Mondello (`@aaf2tbz`).** Do not tag releases, bump versions, or publish formula updates on your own. If you believe a release is needed, open an issue or comment on an existing PR.
+
+The release process (for maintainers):
+
 1. Bump versions in `Cargo.toml` files and `signet-plugin/manifest.json`.
 2. Tag with `vX.Y.Z`.
 3. Push tag — CI builds and publishes the Homebrew formula.
