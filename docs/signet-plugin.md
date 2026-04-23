@@ -76,16 +76,12 @@ Indexed project databases live in each project:
 <project>/.graphiq/graphiq.db
 ```
 
-## Updating the manifest
+## Updating the plugin
 
-After changing `signet-plugin/manifest.json`:
+After a new version of GraphIQ is released to the Homebrew tap:
 
-1. Rebuild the Signet daemon: `bun run build` in the signetai repo
-2. Restart the daemon: `signet dev` or `bun packages/daemon/src/daemon.ts`
-3. The plugin host re-reads bundled manifests on startup
+1. Open the Signet dashboard > Skills > Plugins > GraphIQ.
+2. Click **Update** to pull the latest version via Homebrew.
+3. Or restart the Signet daemon (`signet dev`) — it picks up the updated binary automatically.
 
-If testing with an existing daemon, delete the cached registry to force re-discovery:
-
-```bash
-rm $SIGNET_WORKSPACE/.daemon/plugins/registry-v1.json
-```
+If the tool list or capabilities changed, click **Refresh** in the plugins panel to re-sync the manifest.
