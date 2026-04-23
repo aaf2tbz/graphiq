@@ -136,6 +136,7 @@ The server lazily builds its index on first search (~1s from SQLite). Corrupted 
 | opencode | `~/.config/opencode/opencode.json` | `graphiq setup` |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `graphiq setup` |
 | Codex | `~/.codex/config.toml` | `graphiq setup` |
+| Hermes Agent | `~/.hermes/config.toml` | `graphiq setup` |
 
 ## How It Works
 
