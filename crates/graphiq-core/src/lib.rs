@@ -60,6 +60,7 @@ pub mod cache;
 pub mod calls;
 pub mod chunker;
 pub mod db;
+pub mod dead_code;
 pub mod decompose;
 pub mod deep_graph;
 pub mod edge;

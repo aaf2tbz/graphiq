@@ -78,6 +78,8 @@ enum Commands {
         skip_index: bool,
         #[arg(long)]
         ephemeral: bool,
+        #[arg(long)]
+        harness: Option<String>,
     },
     Doctor {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
@@ -106,6 +108,10 @@ enum Commands {
     },
     Context {
         symbol: String,
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+    },
+    DeadCode {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
@@ -149,13 +155,15 @@ fn main() {
             project,
             skip_index,
             ephemeral,
-        } => cmd_setup(project.as_deref(), skip_index, ephemeral),
+            harness,
+        } => cmd_setup(project.as_deref(), skip_index, ephemeral, harness.as_deref()),
         Commands::Doctor { db } => cmd_doctor(&db),
         Commands::UpgradeIndex { db } => cmd_upgrade_index(&db),
         Commands::Constants { db, query, top } => cmd_constants(&db, query.as_deref(), top),
         Commands::DeepGraph { db } => cmd_deep_graph(&db),
         Commands::Briefing { db, compact } => cmd_briefing(&db, compact),
         Commands::Context { symbol, db } => cmd_context(&symbol, &db),
+        Commands::DeadCode { db } => cmd_dead_code(&db),
         #[cfg(feature = "embed")]
         Commands::EmbedTest { text } => cmd_embed_test(text.as_deref().unwrap_or("hello world")),
     }
@@ -835,7 +843,7 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
     }
 }
 
- fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool, ephemeral: bool) {
+ fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool, ephemeral: bool, harness_filter: Option<&str>) {
     use serde_json::{json, Value};
 
     fn pretty(v: &Value) -> String {
@@ -886,8 +894,28 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
     println!();
 
     let mut configured: Vec<String> = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
     let graphiq_bin = which_graphiq();
 
+    let harness_filter_lower = harness_filter.map(|h| h.to_lowercase());
+
+    let should_configure = |name: &str| -> bool {
+        match &harness_filter_lower {
+            Some(f) => name.to_lowercase().contains(f),
+            None => true,
+        }
+    };
+
+    let _binary_on_path = |name: &str| -> bool {
+        std::process::Command::new("which")
+            .arg(name)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+    };
+
+    // Claude Desktop
+    if should_configure("claude-desktop") {
     let claude_config =
         dirs::config_dir().map(|d| d.join("Claude").join("claude_desktop_config.json"));
 
@@ -954,7 +982,70 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
             }
         }
     }
+    } else {
+        skipped.push("Claude Desktop".to_string());
+    }
 
+    // Claude Code
+    if should_configure("claude-code") {
+    let claude_code_config = project_path.join(".claude").join(".mcp.json");
+    {
+        let project_str = project_path.display().to_string();
+        let mut args = vec![project_str.clone()];
+        if ephemeral {
+            args.push("--ephemeral".to_string());
+        }
+        let entry = json!({
+            "command": "graphiq-mcp",
+            "args": args
+        });
+
+        if let Some(parent) = claude_code_config.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let (config, written) = if claude_code_config.exists() {
+            match std::fs::read_to_string(&claude_code_config) {
+                Ok(content) => {
+                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+                    let servers = parsed
+                        .as_object_mut()
+                        .unwrap()
+                        .entry("mcpServers")
+                        .or_insert_with(|| json!({}))
+                        .as_object_mut()
+                        .unwrap();
+                    let already = servers.contains_key("graphiq");
+                    servers.insert("graphiq".into(), entry);
+                    (pretty(&parsed), !already)
+                }
+                Err(_) => {
+                    let obj = json!({"mcpServers": {"graphiq": entry}});
+                    (pretty(&obj), true)
+                }
+            }
+        } else {
+            let obj = json!({"mcpServers": {"graphiq": entry}});
+            (pretty(&obj), true)
+        };
+
+        match std::fs::write(&claude_code_config, &config) {
+            Ok(()) => {
+                let status = if written { "configured" } else { "updated" };
+                println!("  Claude Code:   {} {}", status, claude_code_config.display());
+                configured.push("Claude Code".to_string());
+            }
+            Err(e) => {
+                eprintln!("  Claude Code:   failed to write config: {e}");
+            }
+        }
+    }
+    } else {
+        skipped.push("Claude Code".to_string());
+    }
+
+    // OpenCode
+    if should_configure("opencode") {
     let opencode_config =
         dirs::home_dir().map(|d| d.join(".config").join("opencode").join("opencode.json"));
 
@@ -1015,7 +1106,12 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
             }
         }
     }
+    } else {
+        skipped.push("opencode".to_string());
+    }
 
+    // Codex CLI
+    if should_configure("codex") {
     let codex_config = dirs::home_dir().map(|d| d.join(".codex").join("config.toml"));
 
     if let Some(ref config_path) = codex_config {
@@ -1063,7 +1159,12 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
             }
         }
     }
+    } else {
+        skipped.push("Codex".to_string());
+    }
 
+    // Hermes
+    if should_configure("hermes") {
     let hermes_config = dirs::home_dir().map(|d| d.join(".hermes").join("config.yaml"));
 
     if let Some(ref config_path) = hermes_config {
@@ -1123,8 +1224,207 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
             }
         }
     }
+    } else {
+        skipped.push("Hermes".to_string());
+    }
 
-    if configured.is_empty() {
+    // Cursor
+    if should_configure("cursor") {
+        let cursor_config = project_path.join(".cursor").join("mcp.json");
+        let project_str = project_path.display().to_string();
+        let mut args = vec![project_str.clone()];
+        if ephemeral {
+            args.push("--ephemeral".to_string());
+        }
+        let entry = json!({
+            "command": "graphiq-mcp",
+            "args": args
+        });
+
+        if let Some(parent) = cursor_config.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let (config, written) = if cursor_config.exists() {
+            match std::fs::read_to_string(&cursor_config) {
+                Ok(content) => {
+                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+                    let servers = parsed
+                        .as_object_mut()
+                        .unwrap()
+                        .entry("mcpServers")
+                        .or_insert_with(|| json!({}))
+                        .as_object_mut()
+                        .unwrap();
+                    let already = servers.contains_key("graphiq");
+                    servers.insert("graphiq".into(), entry);
+                    (pretty(&parsed), !already)
+                }
+                Err(_) => {
+                    let obj = json!({"mcpServers": {"graphiq": entry}});
+                    (pretty(&obj), true)
+                }
+            }
+        } else {
+            let obj = json!({"mcpServers": {"graphiq": entry}});
+            (pretty(&obj), true)
+        };
+
+        match std::fs::write(&cursor_config, &config) {
+            Ok(()) => {
+                let status = if written { "configured" } else { "updated" };
+                println!("  Cursor:        {} {}", status, cursor_config.display());
+                configured.push("Cursor".to_string());
+            }
+            Err(e) => {
+                eprintln!("  Cursor:        failed to write config: {e}");
+            }
+        }
+    } else {
+        skipped.push("Cursor".to_string());
+    }
+
+    // Windsurf
+    if should_configure("windsurf") {
+        let windsurf_config = project_path.join(".windsurf").join("mcp.json");
+        let project_str = project_path.display().to_string();
+        let mut args = vec![project_str.clone()];
+        if ephemeral {
+            args.push("--ephemeral".to_string());
+        }
+        let entry = json!({
+            "command": "graphiq-mcp",
+            "args": args
+        });
+
+        if let Some(parent) = windsurf_config.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+
+        let (config, written) = if windsurf_config.exists() {
+            match std::fs::read_to_string(&windsurf_config) {
+                Ok(content) => {
+                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+                    let servers = parsed
+                        .as_object_mut()
+                        .unwrap()
+                        .entry("mcpServers")
+                        .or_insert_with(|| json!({}))
+                        .as_object_mut()
+                        .unwrap();
+                    let already = servers.contains_key("graphiq");
+                    servers.insert("graphiq".into(), entry);
+                    (pretty(&parsed), !already)
+                }
+                Err(_) => {
+                    let obj = json!({"mcpServers": {"graphiq": entry}});
+                    (pretty(&obj), true)
+                }
+            }
+        } else {
+            let obj = json!({"mcpServers": {"graphiq": entry}});
+            (pretty(&obj), true)
+        };
+
+        match std::fs::write(&windsurf_config, &config) {
+            Ok(()) => {
+                let status = if written { "configured" } else { "updated" };
+                println!("  Windsurf:      {} {}", status, windsurf_config.display());
+                configured.push("Windsurf".to_string());
+            }
+            Err(e) => {
+                eprintln!("  Windsurf:      failed to write config: {e}");
+            }
+        }
+    } else {
+        skipped.push("Windsurf".to_string());
+    }
+
+    // Gemini CLI
+    if should_configure("gemini") {
+        let gemini_config = dirs::home_dir().map(|d| d.join(".gemini").join("settings.json"));
+        if let Some(ref config_path) = gemini_config {
+            let project_str = project_path.display().to_string();
+            let mut cmd = vec!["graphiq-mcp".to_string(), project_str.clone()];
+            if ephemeral {
+                cmd.push("--ephemeral".to_string());
+            }
+            let entry = json!({
+                "mcpServers": {
+                    "graphiq": {
+                        "command": cmd[0],
+                        "args": cmd[1..].to_vec()
+                    }
+                }
+            });
+
+            if let Some(parent) = config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            let (config, written) = if config_path.exists() {
+                match std::fs::read_to_string(config_path) {
+                    Ok(content) => {
+                        let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+                        let servers = parsed
+                            .as_object_mut()
+                            .unwrap()
+                            .entry("mcpServers")
+                            .or_insert_with(|| json!({}))
+                            .as_object_mut()
+                            .unwrap();
+                        let already = servers.contains_key("graphiq");
+                        servers.insert("graphiq".into(), entry["mcpServers"]["graphiq"].clone());
+                        (pretty(&parsed), !already)
+                    }
+                    Err(_) => (pretty(&entry), true)
+                }
+            } else {
+                (pretty(&entry), true)
+            };
+
+            match std::fs::write(config_path, &config) {
+                Ok(()) => {
+                    let status = if written { "configured" } else { "updated" };
+                    println!("  Gemini CLI:    {} {}", status, config_path.display());
+                    configured.push("Gemini CLI".to_string());
+                }
+                Err(e) => {
+                    eprintln!("  Gemini CLI:    failed to write config: {e}");
+                }
+            }
+        }
+    } else {
+        skipped.push("Gemini CLI".to_string());
+    }
+
+    // Aider
+    if should_configure("aider") {
+        let aider_config = project_path.join(".aider.conf.yml");
+        let instructions = format!(
+            "# GraphIQ MCP server is available at: graphiq-mcp {}\n# Add to your MCP configuration to enable code intelligence.\n",
+            project_path.display()
+        );
+
+        if !aider_config.exists() {
+            match std::fs::write(&aider_config, &instructions) {
+                Ok(()) => {
+                    println!("  Aider:         wrote {}", aider_config.display());
+                    configured.push("Aider".to_string());
+                }
+                Err(e) => {
+                    eprintln!("  Aider:         failed to write config: {e}");
+                }
+            }
+        } else {
+            println!("  Aider:         already configured ({})", aider_config.display());
+            configured.push("Aider".to_string());
+        }
+    } else {
+        skipped.push("Aider".to_string());
+    }
+
+    if configured.is_empty() && skipped.is_empty() {
         println!("  No harness configs found to update.");
         println!("  You can manually configure graphiq-mcp as an MCP server:");
         println!("    graphiq-mcp {}", project_path.display());
@@ -1173,6 +1473,9 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
     if !configured.is_empty() {
         println!("  GraphIQ is configured for: {}", configured.join(", "));
         println!("  Restart your harness(es) to pick up the new MCP server.");
+    }
+    if !skipped.is_empty() {
+        println!("  Skipped (use --harness <name>): {}", skipped.join(", "));
     }
 
     println!();
@@ -1309,6 +1612,45 @@ fn cmd_context(symbol_name: &str, db_path: &std::path::Path) {
             for test in &n.tests {
                 println!("  - {}", test.name);
             }
+        }
+    }
+}
+
+fn cmd_dead_code(db_path: &std::path::Path) {
+    if !db_path.exists() {
+        eprintln!("database not found: {}", db_path.display());
+        eprintln!("run `graphiq index <path>` first");
+        std::process::exit(1);
+    }
+
+    let db = open_db_or_exit(db_path);
+
+    match graphiq_core::dead_code::detect_dead_code(&db) {
+        Ok(result) => {
+            if result.files.is_empty() {
+                println!("No dead code detected.");
+                return;
+            }
+            println!(
+                "Dead Code: {} symbols, ~{} LOC",
+                result.total_dead_symbols, result.estimated_dead_loc
+            );
+            println!();
+            for file in &result.files {
+                println!(
+                    "  {} ({} dead, ~{} LOC)",
+                    file.path,
+                    file.dead_symbols.len(),
+                    file.dead_loc
+                );
+                for name in &file.dead_symbols {
+                    println!("    - {}", name);
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
         }
     }
 }

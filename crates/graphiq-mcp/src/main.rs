@@ -24,18 +24,13 @@ const PROTOCOL_VERSION: &str = "2024-11-05";
 /// Holds the project root, database connection, search cache, and
 /// optional CruncherIndex for GraphWalk mode.
 struct ServerState {
-    /// Canonical path to the project root directory.
     project_root: PathBuf,
-    /// Path to the SQLite database file.
     db_path: PathBuf,
-    /// SQLite database connection for symbol/edge storage and FTS.
     db: graphiq_core::db::GraphDb,
-    /// In-memory LRU cache for search results, neighborhoods, and context.
     cache: graphiq_core::cache::HotCache,
-    /// Pre-built CruncherIndex for fast GraphWalk search (None = FTS-only mode).
     cruncher_index: Option<graphiq_core::cruncher::CruncherIndex>,
-    /// Whether a full index is currently in progress.
     indexing: bool,
+    watching: bool,
 }
 
 fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
@@ -112,11 +107,12 @@ fn resolve_db_path(project_root: &Path) -> PathBuf {
     project_root.join(".graphiq").join("graphiq.db")
 }
 
-fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool) {
+fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool, bool) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut db_override: Option<PathBuf> = None;
     let mut project_arg: Option<PathBuf> = None;
     let mut ephemeral = false;
+    let mut watch = false;
 
     if let Ok(val) = std::env::var("GRAPHIQ_DB") {
         if !val.is_empty() {
@@ -141,6 +137,10 @@ fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool) {
                 ephemeral = true;
                 i += 1;
             }
+            "--watch" => {
+                watch = true;
+                i += 1;
+            }
             arg => {
                 if !arg.starts_with('-') && project_arg.is_none() {
                     project_arg = Some(PathBuf::from(arg));
@@ -150,7 +150,7 @@ fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool) {
         }
     }
 
-    (project_arg, db_override, ephemeral)
+    (project_arg, db_override, ephemeral, watch)
 }
 
 fn db_is_empty(db: &graphiq_core::db::GraphDb) -> bool {
@@ -224,7 +224,7 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
 }
 
 fn main() {
-    let (project_arg, db_override, ephemeral) = parse_args();
+    let (project_arg, db_override, ephemeral, watch) = parse_args();
 
     let explicit = project_arg.is_some();
     let raw_arg = project_arg
@@ -337,6 +337,7 @@ fn main() {
         cache: graphiq_core::cache::HotCache::with_defaults(),
         cruncher_index: None,
         indexing: false,
+        watching: watch,
     }));
 
     let running = Arc::new(AtomicBool::new(true));
@@ -363,6 +364,15 @@ fn main() {
     }
 
     log_err("ready");
+
+    if watch {
+        let watch_root = project_root.clone();
+        let watch_state = Arc::clone(&state);
+        std::thread::spawn(move || {
+            run_watcher(&watch_root, &watch_state);
+        });
+        log_err("watcher started");
+    }
 
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -402,6 +412,121 @@ fn main() {
     if let Some(ref edir) = ephemeral_dir {
         log_err(&format!("ephemeral cleanup: {}", edir.display()));
         let _ = std::fs::remove_dir_all(edir);
+    }
+}
+
+fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>) {
+    use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+
+    let (tx, rx) = std::sync::mpsc::channel::<Result<Event, notify::Error>>();
+
+    let mut watcher = match RecommendedWatcher::new(
+        move |res| {
+            let _ = tx.send(res);
+        },
+        Config::default(),
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            log_err(&format!("watcher: failed to create: {e}"));
+            return;
+        }
+    };
+
+    if let Err(e) = watcher.watch(project_root, RecursiveMode::Recursive) {
+        log_err(&format!("watcher: failed to start: {e}"));
+        return;
+    }
+
+    log_err(&format!("watcher: watching {}", project_root.display()));
+
+    let ignore_dirs: &[&str] = &[
+        ".git", "node_modules", "target", "build", "dist", ".graphiq",
+        "__pycache__", ".next", "vendor", ".cargo", "bun.lock",
+    ];
+
+    let debounce = std::time::Duration::from_secs(2);
+    let mut last_event = std::time::Instant::now()
+        .checked_sub(debounce)
+        .unwrap_or(std::time::Instant::now());
+
+    loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok(Ok(event)) => {
+                if event.kind.is_access() {
+                    continue;
+                }
+
+                let relevant = event.paths.iter().any(|p| {
+                    let path_str = p.to_string_lossy();
+                    let path_lower = path_str.to_lowercase();
+
+                    let has_ignored_dir = ignore_dirs.iter().any(|dir| {
+                        path_str.contains(&format!("/{}/", dir))
+                            || path_str.contains(&format!("\\{}\\", dir))
+                    });
+
+                    if has_ignored_dir {
+                        return false;
+                    }
+
+                    path_lower.ends_with(".rs")
+                        || path_lower.ends_with(".ts")
+                        || path_lower.ends_with(".tsx")
+                        || path_lower.ends_with(".js")
+                        || path_lower.ends_with(".jsx")
+                        || path_lower.ends_with(".py")
+                        || path_lower.ends_with(".go")
+                        || path_lower.ends_with(".java")
+                        || path_lower.ends_with(".c")
+                        || path_lower.ends_with(".cpp")
+                        || path_lower.ends_with(".h")
+                        || path_lower.ends_with(".rb")
+                        || path_lower.ends_with(".swift")
+                        || path_lower.ends_with(".kt")
+                });
+
+                if !relevant {
+                    continue;
+                }
+
+                let now = std::time::Instant::now();
+                if now.duration_since(last_event) < debounce {
+                    continue;
+                }
+                last_event = now;
+
+                log_err("watcher: file change detected, reindexing...");
+                let mut s = match state.lock() {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log_err(&format!("watcher: lock failed: {e}"));
+                        continue;
+                    }
+                };
+
+                if s.indexing {
+                    log_err("watcher: index already in progress, skipping");
+                    continue;
+                }
+
+                s.indexing = true;
+                if let Err(e) = do_index(&mut s) {
+                    log_err(&format!("watcher: reindex failed: {e}"));
+                } else {
+                    log_err("watcher: reindex complete");
+                }
+                s.indexing = false;
+            }
+            Ok(Err(e)) => {
+                log_err(&format!("watcher: error: {e}"));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                log_err("watcher: channel disconnected, stopping");
+                break;
+            }
+        }
     }
 }
 
@@ -740,6 +865,15 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "dead_code",
+                "description": "Find unreachable code — symbols with zero incoming calls that are not entry points, exported API, trait definitions, or test subjects. Returns results grouped by file with dead symbol count and estimated dead LOC.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
                 "name": "constants",
                 "description": "Find numeric literals and named constants shared across symbols — error codes, port numbers, thresholds. Use to trace how magic numbers connect code across files, or to find all symbols that share a specific constant value.",
                 "inputSchema": {
@@ -927,6 +1061,13 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
                 Err(e) => return tool_error(&format!("lock error: {e}")),
             };
             tool_constants(&s.db, arguments)
+        }
+        "dead_code" => {
+            let s = match state.lock() {
+                Ok(s) => s,
+                Err(e) => return tool_error(&format!("lock error: {e}")),
+            };
+            tool_dead_code(&s.db)
         }
         "briefing" => {
             let s = match state.lock() {
@@ -1237,6 +1378,9 @@ fn tool_status(state: &ServerState) -> Value {
 
             let mut artifacts = Vec::new();
             artifacts.push(format!("cruncher: {}", if state.cruncher_index.is_some() { "ready" } else { "missing" }));
+            if state.watching {
+                artifacts.push("watcher: active".to_string());
+            }
 
             let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
             let manifest_section = match graphiq_core::manifest::read_manifest(db_dir) {
@@ -2036,6 +2180,22 @@ fn tool_constants(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     }
 
     tool_ok(lines.join("\n"))
+}
+
+fn tool_dead_code(db: &graphiq_core::db::GraphDb) -> Value {
+    match graphiq_core::dead_code::detect_dead_code(db) {
+        Ok(result) => {
+            let json = serde_json::to_value(&result).unwrap_or_else(|_| json!({"error": "serialization failed"}));
+            let mut lines = Vec::new();
+            lines.push(serde_json::to_string_pretty(&json).unwrap_or_default());
+
+            lines.push(String::new());
+            lines.push(graphiq_core::dead_code::format_dead_code_report(&result));
+
+            tool_ok(lines.join("\n"))
+        }
+        Err(e) => tool_error(&format!("dead code detection failed: {e}")),
+    }
 }
 
 fn tool_briefing(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
