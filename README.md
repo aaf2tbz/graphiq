@@ -24,115 +24,181 @@
 
 ---
 
-> **Substring search finds what you typed. <span style="color:#f0883e">Graph search finds what you meant.</span>**
+<br>
 
-GraphIQ is a local code search engine that indexes your codebase into a
-structural graph — calls, imports, type flow, error surfaces, shared
-constants — then searches that graph with ranked retrieval instead of
-plain substring matching.
+<table>
+<tr>
+<td width="54%" valign="top">
 
-You ask <strong style="color:#a5d6ff">"rate limit middleware"</strong> and it finds `rateLimitMiddleware`
-through name decomposition, then walks the graph to discover
-`TokenBucket`, `ThrottleConfig`, and `checkRateLimit` even though none
-of those names contain "middleware."
+<h2>Local code search with structural memory</h2>
 
-Everything runs <strong style="color:#3fb950">locally</strong>. No embeddings, no LLM, no network requests. A
-single SQLite file (~6.5MB for 20K symbols). <strong style="color:#3fb950">~18μs query latency</strong> from an
-MCP server.
+GraphIQ turns a repository into a searchable code graph: symbols, files,
+calls, imports, type flow, error surfaces, comments, constants, and the
+relationships between them.
 
-## Quick start
+Substring search finds what you typed. GraphIQ finds what the code is
+connected to.
+
+Ask for `"rate limit middleware"` and GraphIQ can land on
+<code>rateLimitMiddleware</code>, then follow the graph to
+<code>TokenBucket</code>, <code>ThrottleConfig</code>, and
+<code>checkRateLimit</code> even when those names do not
+share the same words.
+
+</td>
+<td width="46%" valign="top">
+
+<pre>
+       query
+         |
+   lexical seeds
+         |
+   structural graph
+    /    |     \
+ calls imports constants
+    \    |     /
+   ranked symbols
+</pre>
+
+<code>zero network</code> · <code>single SQLite file</code> · <code>no LLM required</code>
+
+</td>
+</tr>
+</table>
+
+## Start in 20 seconds
 
 ```bash
 graphiq index /path/to/project
 graphiq search "rate limit middleware"
 ```
 
-### First proof of value
-
-Index a project, then try a natural language search:
-
-```bash
-graphiq index /path/to/project
-graphiq search "encode a value in VLQ"
-```
-
-Compare with grep — GraphIQ finds `encodeVLQ` through identifier
-decomposition and graph expansion, even if the exact term "VLQ" doesn't
-appear in the function name.
-
-### Multi-agent setup
-
-Configure GraphIQ for your editor or agent in one command:
+Or wire it into an editor/agent harness:
 
 ```bash
 graphiq setup --project /path/to/project
 ```
 
-Use `graphiq setup --harness cursor` to configure a specific harness only.
+Use `graphiq setup --harness cursor` or any supported harness name to
+target one integration.
 
-## Benchmarks (v3.1 — 300 queries, 3 codebases)
+## Install
 
-| Codebase | Grep NDCG@10 | <span style="color:#58a6ff">GraphIQ NDCG@10</span> | Grep MRR@10 | <span style="color:#58a6ff">GraphIQ MRR@10</span> |
-|---|---|---|---|---|
-| signetai (TypeScript, 23K syms) | 0.143 | **<span style="color:#3fb950">0.286</span> (+100%)** | 0.144 | **<span style="color:#3fb950">0.450</span> (+213%)** |
-| esbuild (Go, 12K syms) | 0.200 | **<span style="color:#3fb950">0.318</span> (+59%)** | 0.145 | **<span style="color:#3fb950">0.551</span> (+280%)** |
-| tokio (Rust, 18K syms) | **0.193** | 0.192 (-1%) | 0.330 | **<span style="color:#3fb950">0.411</span> (+25%)** |
-| **Overall** | **0.179** | **<span style="color:#58a6ff">0.265</span> (+48%)** | **0.206** | **<span style="color:#58a6ff">0.471</span> (+128%)** |
+**Homebrew**
 
-| Query type | vs Grep | Why |
-|---|---|---|
-| <span style="color:#f0883e">**Relationships**</span> ("what calls RateLimiter") | **<span style="color:#3fb950">3.9x</span>** | Graph walk finds structurally connected symbols no substring search can discover |
-| <span style="color:#f0883e">**Natural language**</span> ("encode a value in VLQ") | **<span style="color:#3fb950">2.0x</span>** | Identifier decomposition + per-family signal routing |
-| <span style="color:#f0883e">**Error/debug**</span> ("timeout in channel send") | **<span style="color:#3fb950">1.2x</span>** | Error-type edge routing + shared constant discovery |
-| **Symbol exact** ("authenticateUser") | ~tied | BM25 is already excellent for exact name lookups |
-| **Abstract NL** ("how does auth work") | ~tied | Requires semantic understanding beyond structural graph signals |
+```bash
+brew tap aaf2tbz/graphiq
+brew install graphiq
+```
 
-Full methodology and per-codebase breakdowns in [docs/benchmarks.md](docs/benchmarks.md).
+**Install script**
 
-## Core capabilities
+```bash
+curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash
+```
 
-| Core | What it does |
+**From source**
+
+```bash
+git clone https://github.com/aaf2tbz/graphiq.git
+cd graphiq
+cargo build --release
+```
+
+Installs `graphiq`, `graphiq-mcp`, and `graphiq-bench`.
+
+## Why it works
+
+<table>
+<tr>
+<td width="33%" valign="top">
+
+<h3>01. Lexical precision</h3>
+
+BM25 FTS5 handles exact symbol names, identifiers, file paths, and
+decomposed camelCase/snake_case terms.
+
+</td>
+<td width="33%" valign="top">
+
+<h3>02. Graph recall</h3>
+
+Seed results expand through calls, imports, constants, type edges, error
+surfaces, and local neighborhoods.
+
+</td>
+<td width="33%" valign="top">
+
+<h3>03. Query routing</h3>
+
+Eight query families tune scoring for symbols, natural language,
+relationships, errors, files, constants, and architecture questions.
+
+</td>
+</tr>
+</table>
+
+```text
+BM25 name match  +  graph walk  +  structural aliases  +  family weights
+       |                |                  |                    |
+       +----------------+------------------+--------------------+
+                                |
+                         stable ranked results
+```
+
+The result is a compact local index with the codebase's structure baked
+in, so agents can search by intent without shipping your source to a
+remote embedding service.
+
+## Benchmark Signal
+
+Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and
+tokio. Full methodology lives in [docs/benchmarks.md](docs/benchmarks.md).
+
+| Codebase | Grep NDCG@10 | GraphIQ NDCG@10 | Grep MRR@10 | GraphIQ MRR@10 |
+|---|---:|---:|---:|---:|
+| signetai | 0.143 | **0.286** (+100%) | 0.144 | **0.450** (+213%) |
+| esbuild | 0.200 | **0.318** (+59%) | 0.145 | **0.551** (+280%) |
+| tokio | **0.193** | 0.192 (-1%) | 0.330 | **0.411** (+25%) |
+| **Overall** | **0.179** | **0.265** (+48%) | **0.206** | **0.471** (+128%) |
+
+| Query shape | Result vs grep | Signal |
+|---|---:|---|
+| Relationship queries | **3.9x** | Graph traversal finds connected symbols substring search misses |
+| Natural language queries | **2.0x** | Identifier decomposition plus family-aware scoring |
+| Error/debug queries | **1.2x** | Error surfaces and shared constants become searchable structure |
+| Exact symbol queries | tied | BM25 is already excellent when names are known |
+
+## Agent Tools
+
+`graphiq-mcp` exposes 14 JSON-RPC tools over stdio:
+
+| Tool | Use it for |
 |---|---|
-| <strong style="color:#f0883e">Structural graph indexing</strong> | Calls, imports, type flow, error surfaces, shared constants, comment references |
-| <strong style="color:#58a6ff">8-family query routing</strong> | Symbol lookup, NL description, error debug, relationship, etc. — each with its own scoring profile |
-| <strong style="color:#58a6ff">Graph walk expansion</strong> | Seed results expand through structural edges to discover related symbols grep cannot reach |
-| <strong style="color:#f0883e">Blast radius analysis</strong> | Forward/backward impact tracing with configurable depth (1–10) |
-| <strong style="color:#3fb950">Zero network</strong> | No embeddings, no LLM, no API calls. Everything runs in a single SQLite file |
-| <strong style="color:#3fb950">14 MCP tools</strong> | Full editor/agent integration — search, blast, context, interrogate, topology, explain, and more |
-| <strong style="color:#f0883e">Dead code detection</strong> | Find unreachable symbols with zero-caller analysis and 8 exemption rules |
-| <strong style="color:#f0883e">File watcher</strong> | Auto-reindex on file changes with `--watch` flag on MCP server |
-| <strong style="color:#3fb950">Multi-agent setup</strong> | One-command config for Claude Code, Cursor, Windsurf, Codex, Gemini CLI, and more |
-| <strong style="color:#3fb950">Signet integration</strong> | Works with Signet (local memory for agents) to combine graph-aware code search with persistent agent context |
-
-## MCP Server
-
-`graphiq-mcp` exposes <strong style="color:#58a6ff">14 tools</strong> over JSON-RPC 2.0 (stdio) for editor and agent integration:
-
-| Tool | Purpose |
-|---|---|
-| <span style="color:#58a6ff">`briefing`</span> | Project overview — start here |
-| <span style="color:#58a6ff">`search`</span> | Ranked symbol search with file filter and top_k |
-| <span style="color:#f0883e">`blast`</span> | Change impact analysis (forward/backward/both, depth 1–10) |
-| <span style="color:#58a6ff">`context`</span> | Full source + structural neighborhood |
-| `why` | Explain why a result ranked where it did |
-| `interrogate` | Deep structural interrogation of a symbol |
-| `topology` | Code topology around a symbol |
-| `explain` | Natural language symbol explanation |
-| `status` | Index stats and health |
-| <span style="color:#3fb950">`index`</span> | (Re)index the project |
-| `doctor` | Artifact health check |
-| `upgrade_index` | Rebuild stale artifacts |
+| `briefing` | Project overview and starting context |
+| `search` | Ranked symbol search with filters |
+| `context` | Source plus structural neighborhood |
+| `blast` | Forward/backward impact analysis |
+| `interrogate` | Deep symbol inspection |
+| `topology` | Local code topology |
+| `why` | Ranking explanation |
+| `explain` | Natural-language symbol explanation |
+| `dead_code` | Unreachable symbols grouped by file |
 | `constants` | Numeric/string constant lookup |
-| <span style="color:#f0883e">`dead_code`</span> | Find unreachable symbols grouped by file |
+| `status` | Index stats and health |
+| `doctor` | Artifact validation |
+| `index` | Manual reindex |
+| `upgrade_index` | Rebuild stale artifacts |
 
 ```bash
 graphiq-mcp /path/to/project
 graphiq-mcp /path/to/project --watch   # auto-reindex on file changes
 ```
 
-The server lazily builds its index on first search (~1s from SQLite). Corrupted databases are detected and recreated automatically.
+The MCP server lazily builds its in-memory index on first search and
+detects/recreates corrupted databases automatically.
 
-### Supported Harnesses
+### Harnesses
 
 | Harness | Config | Setup |
 |---|---|---|
@@ -148,7 +214,16 @@ The server lazily builds its index on first search (~1s from SQLite). Corrupted 
 
 Use `graphiq setup --harness <name>` to configure a specific harness only.
 
-## How It Works
+## What gets indexed
+
+| Layer | Examples |
+|---|---|
+| Symbols | functions, methods, classes, interfaces, traits, structs, enums, modules |
+| Structure | calls, imports, type flow, references, constants, containment |
+| Context | comments, signatures, file paths, sibling symbols, error surfaces |
+| Maintenance | dead code, blast radius, topology, index health |
+
+## System Shape
 
 ```text
 Query
@@ -158,15 +233,17 @@ Query
   → Ranked results
 ```
 
-The pipeline classifies every query into one of <strong style="color:#58a6ff">8 families</strong> (symbol lookup, NL description, error debug, relationship, etc.), then routes it through family-specific scoring parameters. Symbol lookups trust BM25. NL queries expand through the graph. Relationship queries lean into structural adjacency. Each family gets its own walk depth, expansion strategy, and signal weights.
-
-Graph edges capture calls, imports, type flow, shared error types, shared constants, and comment references. The full architecture is documented in [How GraphIQ works](docs/how-graphiq-works.md).
+The full architecture is documented in
+[How GraphIQ works](docs/how-graphiq-works.md).
 
 ## Languages
 
-<strong style="color:#3fb950">**Full parsing (16 variants):**</strong> TypeScript, TSX, JavaScript, JSX, Rust, Python, Go, Java, C, C++, Ruby, YAML, TOML, JSON, HTML, CSS
+**Full parsing:** TypeScript, TSX, JavaScript, JSX, Rust, Python, Go, Java,
+C, C++, Ruby, YAML, TOML, JSON, HTML, CSS
 
-**File tracking (20+):** Kotlin, Swift, C#, PHP, Lua, Dart, Scala, Haskell, Elixir, Zig, GraphQL, Protobuf, Shell, SQL, Markdown, XML, SCSS, CMake, Dockerfile, Makefile, Meson
+**File tracking:** Kotlin, Swift, C#, PHP, Lua, Dart, Scala, Haskell,
+Elixir, Zig, GraphQL, Protobuf, Shell, SQL, Markdown, XML, SCSS, CMake,
+Dockerfile, Makefile, Meson
 
 ## Performance
 
@@ -178,42 +255,11 @@ Graph edges capture calls, imports, type flow, shared error types, shared consta
 
 Index size for a ~20K symbol codebase: ~6.5MB.
 
-## Documentation
+## Docs
 
 - [How GraphIQ works](docs/how-graphiq-works.md) — full system explanation
 - [Benchmarks](docs/benchmarks.md) — methodology and results
 - [Research notes](docs/research.md) — experimental history
-
-## Install
-
-**Homebrew (macOS & Linux):**
-
-```bash
-brew tap aaf2tbz/graphiq
-brew install graphiq
-```
-
-**One-line install script (macOS & Linux):**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash
-```
-
-**Uninstall:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash -s -- uninstall
-```
-
-**From source:**
-
-```bash
-git clone https://github.com/aaf2tbz/graphiq.git
-cd graphiq
-cargo build --release
-```
-
-Installs three binaries: `graphiq` (CLI), `graphiq-mcp` (MCP server), `graphiq-bench` (benchmarking).
 
 ## Development
 
@@ -225,12 +271,18 @@ cargo test
 ```
 
 ```bash
-cargo bench          # Run benchmarks
-graphiq index .      # Index GraphIQ on itself
+cargo bench
+graphiq index .
 graphiq search "query family router"
 ```
 
 Requirements: Rust 1.75+, macOS or Linux.
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash -s -- uninstall
+```
 
 ## License
 
