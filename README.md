@@ -40,37 +40,6 @@ Everything runs <strong style="color:#3fb950">locally</strong>. No embeddings, n
 single SQLite file (~6.5MB for 20K symbols). <strong style="color:#3fb950">~18μs query latency</strong> from an
 MCP server.
 
-## Install
-
-**Homebrew (macOS & Linux):**
-
-```bash
-brew tap aaf2tbz/graphiq
-brew install graphiq
-```
-
-**One-line install script (macOS & Linux):**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash
-```
-
-**Uninstall:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash -s -- uninstall
-```
-
-**From source:**
-
-```bash
-git clone https://github.com/aaf2tbz/graphiq.git
-cd graphiq
-cargo build --release
-```
-
-Installs three binaries: `graphiq` (CLI), `graphiq-mcp` (MCP server), `graphiq-bench` (benchmarking).
-
 ## Quick start
 
 ```bash
@@ -214,6 +183,37 @@ Index size for a ~20K symbol codebase: ~6.5MB.
 - [How GraphIQ works](docs/how-graphiq-works.md) — full system explanation
 - [Benchmarks](docs/benchmarks.md) — methodology and results
 - [Research notes](docs/research.md) — experimental history
+
+## Install
+
+**Homebrew (macOS & Linux):**
+
+```bash
+brew tap aaf2tbz/graphiq
+brew install graphiq
+```
+
+**One-line install script (macOS & Linux):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash
+```
+
+**Uninstall:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash -s -- uninstall
+```
+
+**From source:**
+
+```bash
+git clone https://github.com/aaf2tbz/graphiq.git
+cd graphiq
+cargo build --release
+```
+
+Installs three binaries: `graphiq` (CLI), `graphiq-mcp` (MCP server), `graphiq-bench` (benchmarking).
 
 ## Development
 
