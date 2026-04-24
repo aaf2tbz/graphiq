@@ -175,27 +175,28 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 
 <p align="center"><code>graphiq-mcp</code> exposes 14 JSON-RPC tools over stdio:</p>
 
-| Tool | Use it for |
-|:---:|:---:|
-| `briefing` | Project overview and starting context |
-| `search` | Ranked symbol search with filters |
-| `context` | Source plus structural neighborhood |
-| `blast` | Forward/backward impact analysis |
-| `interrogate` | Deep symbol inspection |
-| `topology` | Local code topology |
-| `why` | Ranking explanation |
-| `explain` | Natural-language symbol explanation |
-| `dead_code` | Unreachable symbols grouped by file |
-| `constants` | Numeric/string constant lookup |
-| `status` | Index stats and health |
-| `doctor` | Artifact validation |
-| `index` | Manual reindex |
-| `upgrade_index` | Rebuild stale artifacts |
+<table align="center">
+<tr><th align="center">Tool</th><th align="center">Use it for</th></tr>
+<tr><td align="center"><code>briefing</code></td><td align="center">Project overview and starting context</td></tr>
+<tr><td align="center"><code>search</code></td><td align="center">Ranked symbol search with filters</td></tr>
+<tr><td align="center"><code>context</code></td><td align="center">Source plus structural neighborhood</td></tr>
+<tr><td align="center"><code>blast</code></td><td align="center">Forward/backward impact analysis</td></tr>
+<tr><td align="center"><code>interrogate</code></td><td align="center">Deep symbol inspection</td></tr>
+<tr><td align="center"><code>topology</code></td><td align="center">Local code topology</td></tr>
+<tr><td align="center"><code>why</code></td><td align="center">Ranking explanation</td></tr>
+<tr><td align="center"><code>explain</code></td><td align="center">Natural-language symbol explanation</td></tr>
+<tr><td align="center"><code>dead_code</code></td><td align="center">Unreachable symbols grouped by file</td></tr>
+<tr><td align="center"><code>constants</code></td><td align="center">Numeric/string constant lookup</td></tr>
+<tr><td align="center"><code>status</code></td><td align="center">Index stats and health</td></tr>
+<tr><td align="center"><code>doctor</code></td><td align="center">Artifact validation</td></tr>
+<tr><td align="center"><code>index</code></td><td align="center">Manual reindex</td></tr>
+<tr><td align="center"><code>upgrade_index</code></td><td align="center">Rebuild stale artifacts</td></tr>
+</table>
 
-```bash
-graphiq-mcp /path/to/project
-graphiq-mcp /path/to/project --watch   # auto-reindex on file changes
-```
+<p align="center">
+<code>graphiq-mcp /path/to/project</code><br>
+<code>graphiq-mcp /path/to/project --watch</code>
+</p>
 
 <p align="center">
 The MCP server lazily builds its in-memory index on first search and detects/recreates corrupted databases automatically.
@@ -203,28 +204,30 @@ The MCP server lazily builds its in-memory index on first search and detects/rec
 
 <h3 align="center">Harnesses</h3>
 
-| Harness | Config | Setup |
-|:---:|:---:|:---:|
-| Claude Code | `.claude/.mcp.json` | `graphiq setup` |
-| Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `graphiq setup` |
-| OpenCode | `~/.config/opencode/opencode.json` | `graphiq setup` |
-| Codex CLI | `~/.codex/config.toml` | `graphiq setup` |
-| Cursor | `.cursor/mcp.json` | `graphiq setup` |
-| Windsurf | `.windsurf/mcp.json` | `graphiq setup` |
-| Gemini CLI | `~/.gemini/settings.json` | `graphiq setup` |
-| Hermes Agent | `~/.hermes/config.yaml` | `graphiq setup` |
-| Aider | `.aider.conf.yml` | `graphiq setup` |
+<table align="center">
+<tr><th align="center">Harness</th><th align="center">Config</th><th align="center">Setup</th></tr>
+<tr><td align="center">Claude Code</td><td align="center"><code>.claude/.mcp.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
+<tr><td align="center">Claude Desktop</td><td align="center"><code>~/Library/Application Support/Claude/claude_desktop_config.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
+<tr><td align="center">OpenCode</td><td align="center"><code>~/.config/opencode/opencode.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
+<tr><td align="center">Codex CLI</td><td align="center"><code>~/.codex/config.toml</code></td><td align="center"><code>graphiq setup</code></td></tr>
+<tr><td align="center">Cursor</td><td align="center"><code>.cursor/mcp.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
+<tr><td align="center">Windsurf</td><td align="center"><code>.windsurf/mcp.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
+<tr><td align="center">Gemini CLI</td><td align="center"><code>~/.gemini/settings.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
+<tr><td align="center">Hermes Agent</td><td align="center"><code>~/.hermes/config.yaml</code></td><td align="center"><code>graphiq setup</code></td></tr>
+<tr><td align="center">Aider</td><td align="center"><code>.aider.conf.yml</code></td><td align="center"><code>graphiq setup</code></td></tr>
+</table>
 
 <p align="center">Use <code>graphiq setup --harness &lt;name&gt;</code> to configure a specific harness only.</p>
 
 <h2 align="center">🗂️ What gets indexed</h2>
 
-| Layer | Examples |
-|:---:|:---:|
-| Symbols | functions, methods, classes, interfaces, traits, structs, enums, modules |
-| Structure | calls, imports, type flow, references, constants, containment |
-| Context | comments, signatures, file paths, sibling symbols, error surfaces |
-| Maintenance | dead code, blast radius, topology, index health |
+<table align="center">
+<tr><th align="center">Layer</th><th align="center">Examples</th></tr>
+<tr><td align="center">Symbols</td><td align="center">functions, methods, classes, interfaces, traits, structs, enums, modules</td></tr>
+<tr><td align="center">Structure</td><td align="center">calls, imports, type flow, references, constants, containment</td></tr>
+<tr><td align="center">Context</td><td align="center">comments, signatures, file paths, sibling symbols, error surfaces</td></tr>
+<tr><td align="center">Maintenance</td><td align="center">dead code, blast radius, topology, index health</td></tr>
+</table>
 
 <h2 align="center">🧩 System Shape</h2>
 
@@ -252,11 +255,12 @@ The full architecture is documented in <a href="docs/how-graphiq-works.md">How G
 
 <h2 align="center">⚙️ Performance</h2>
 
-| Mode | Latency |
-|:---:|:---:|
-| Cold CLI (first run) | ~5–10s |
-| Warm CLI (cached) | ~50ms |
-| In-process (MCP) | <strong style="color:#3fb950">~18μs</strong> |
+<table align="center">
+<tr><th align="center">Mode</th><th align="center">Latency</th></tr>
+<tr><td align="center">Cold CLI (first run)</td><td align="center">~5–10s</td></tr>
+<tr><td align="center">Warm CLI (cached)</td><td align="center">~50ms</td></tr>
+<tr><td align="center">In-process (MCP)</td><td align="center"><strong style="color:#3fb950">~18μs</strong></td></tr>
+</table>
 
 <p align="center">Index size for a ~20K symbol codebase: ~6.5MB.</p>
 
