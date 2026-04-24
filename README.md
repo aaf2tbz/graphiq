@@ -195,7 +195,7 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 
 <table align="center" width="100%">
 <tr>
-<td width="68%" valign="top" align="center">
+<td width="52%" valign="top" align="center">
 
 <h3 align="center">Tools</h3>
 
@@ -218,7 +218,7 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 </table>
 
 </td>
-<td width="32%" valign="top" align="center">
+<td width="24%" valign="top" align="center">
 
 <h3 align="center">Supported Harnesses</h3>
 
@@ -233,6 +233,18 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 <tr><td align="center">Gemini CLI</td></tr>
 <tr><td align="center">Hermes Agent</td></tr>
 <tr><td align="center">Aider</td></tr>
+</table>
+
+</td>
+<td width="24%" valign="top" align="center">
+
+<h3 align="center">Config / Setup</h3>
+
+<table align="center">
+<tr><th align="center">Command</th><th align="center">Use it for</th></tr>
+<tr><td align="center"><code>graphiq setup --project /path/to/project</code></td><td align="center">Configure all supported harnesses</td></tr>
+<tr><td align="center"><code>graphiq setup --harness &lt;name&gt;</code></td><td align="center">Configure one harness only</td></tr>
+<tr><td align="center"><code>graphiq-mcp /path/to/project --watch</code></td><td align="center">Auto-reindex while agents work</td></tr>
 </table>
 
 </td>
@@ -284,33 +296,11 @@ The full architecture is documented in <a href="docs/how-graphiq-works.md">How G
 
 <h2 align="center">⚙️ Performance</h2>
 
-<table align="center" width="100%">
-<tr>
-<td width="50%" valign="top" align="center">
-
-<h3 align="center">Latency</h3>
-
 <table align="center">
 <tr><th align="center">Mode</th><th align="center">Latency</th></tr>
 <tr><td align="center">Cold CLI (first run)</td><td align="center">~5–10s</td></tr>
 <tr><td align="center">Warm CLI (cached)</td><td align="center">~50ms</td></tr>
 <tr><td align="center">In-process (MCP)</td><td align="center"><strong style="color:#3fb950">~18μs</strong></td></tr>
-</table>
-
-</td>
-<td width="50%" valign="top" align="center">
-
-<h3 align="center">Config / Setup</h3>
-
-<table align="center">
-<tr><th align="center">Command</th><th align="center">Use it for</th></tr>
-<tr><td align="center"><code>graphiq setup --project /path/to/project</code></td><td align="center">Configure all supported harnesses</td></tr>
-<tr><td align="center"><code>graphiq setup --harness &lt;name&gt;</code></td><td align="center">Configure one harness only</td></tr>
-<tr><td align="center"><code>graphiq-mcp /path/to/project --watch</code></td><td align="center">Auto-reindex while agents work</td></tr>
-</table>
-
-</td>
-</tr>
 </table>
 
 <p align="center">Index size for a ~20K symbol codebase: ~6.5MB.</p>
