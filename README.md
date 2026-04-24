@@ -213,42 +213,31 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 <tr><td align="center"><code>upgrade_index</code></td><td align="center">Rebuild stale artifacts</td></tr>
 </table>
 
-<table align="center" width="100%">
-<tr>
-<td width="50%" valign="top" align="center">
-
 <h3 align="center">Supported Harnesses</h3>
 
-<table align="center">
-<tr><th align="center">Harness</th></tr>
-<tr><td align="center">Claude Code</td></tr>
-<tr><td align="center">Claude Desktop</td></tr>
-<tr><td align="center">OpenCode</td></tr>
-<tr><td align="center">Codex CLI</td></tr>
-<tr><td align="center">Cursor</td></tr>
-<tr><td align="center">Windsurf</td></tr>
-<tr><td align="center">Gemini CLI</td></tr>
-<tr><td align="center">Hermes Agent</td></tr>
-<tr><td align="center">Aider</td></tr>
-</table>
-
-</td>
-<td width="50%" valign="top" align="center">
+<p align="center">
+<code>Claude Code</code> · <code>Claude Desktop</code> · <code>OpenCode</code> · <code>Codex CLI</code> · <code>Cursor</code> · <code>Windsurf</code> · <code>Gemini CLI</code> · <code>Hermes Agent</code> · <code>Aider</code>
+</p>
 
 <h3 align="center">Config / Setup</h3>
 
-<p align="center"><code>graphiq setup</code><br>Configure all supported harnesses</p>
-<p align="center"><code>graphiq setup --harness &lt;name&gt;</code><br>Configure one harness only</p>
-<p align="center"><code>graphiq-mcp --watch</code><br>Auto-reindex while agents work</p>
+<p><strong>Configure all supported harnesses</strong></p>
 
-</td>
-</tr>
-</table>
+```bash
+graphiq setup --project /path/to/project
+```
 
-<p align="center">
-<code>graphiq-mcp /path/to/project</code><br>
-<code>graphiq-mcp /path/to/project --watch</code>
-</p>
+<p><strong>Configure one harness only</strong></p>
+
+```bash
+graphiq setup --harness cursor
+```
+
+<p><strong>Run the MCP server with file watching</strong></p>
+
+```bash
+graphiq-mcp /path/to/project --watch
+```
 
 <p align="center">
 The MCP server lazily builds its in-memory index on first search and detects/recreates corrupted databases automatically.
