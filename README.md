@@ -66,7 +66,7 @@ share the same words.
 </tr>
 </table>
 
-## Start in 20 seconds
+## ⚡ Start in 20 seconds
 
 ```bash
 graphiq index /path/to/project
@@ -82,7 +82,7 @@ graphiq setup --project /path/to/project
 Use `graphiq setup --harness cursor` or any supported harness name to
 target one integration.
 
-## Install
+## 📦 Install
 
 **Homebrew**
 
@@ -107,7 +107,7 @@ cargo build --release
 
 Installs `graphiq`, `graphiq-mcp`, and `graphiq-bench`.
 
-## Why it works
+## 🧠 Why it works
 
 <table>
 <tr>
@@ -150,7 +150,7 @@ The result is a compact local index with the codebase's structure baked
 in, so agents can search by intent without shipping your source to a
 remote embedding service.
 
-## Benchmark Signal
+## 📈 Benchmark Signal
 
 Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and
 tokio. Full methodology lives in [docs/benchmarks.md](docs/benchmarks.md).
@@ -169,7 +169,7 @@ tokio. Full methodology lives in [docs/benchmarks.md](docs/benchmarks.md).
 | Error/debug queries | **1.2x** | Error surfaces and shared constants become searchable structure |
 | Exact symbol queries | tied | BM25 is already excellent when names are known |
 
-## Agent Tools
+## 🛠️ Agent Tools
 
 `graphiq-mcp` exposes 14 JSON-RPC tools over stdio:
 
@@ -214,7 +214,7 @@ detects/recreates corrupted databases automatically.
 
 Use `graphiq setup --harness <name>` to configure a specific harness only.
 
-## What gets indexed
+## 🗂️ What gets indexed
 
 | Layer | Examples |
 |---|---|
@@ -223,7 +223,7 @@ Use `graphiq setup --harness <name>` to configure a specific harness only.
 | Context | comments, signatures, file paths, sibling symbols, error surfaces |
 | Maintenance | dead code, blast radius, topology, index health |
 
-## System Shape
+## 🧩 System Shape
 
 ```text
 Query
@@ -236,7 +236,7 @@ Query
 The full architecture is documented in
 [How GraphIQ works](docs/how-graphiq-works.md).
 
-## Languages
+## 🌐 Languages
 
 **Full parsing:** TypeScript, TSX, JavaScript, JSX, Rust, Python, Go, Java,
 C, C++, Ruby, YAML, TOML, JSON, HTML, CSS
@@ -245,7 +245,7 @@ C, C++, Ruby, YAML, TOML, JSON, HTML, CSS
 Elixir, Zig, GraphQL, Protobuf, Shell, SQL, Markdown, XML, SCSS, CMake,
 Dockerfile, Makefile, Meson
 
-## Performance
+## ⚙️ Performance
 
 | Mode | Latency |
 |---|---|
@@ -255,13 +255,13 @@ Dockerfile, Makefile, Meson
 
 Index size for a ~20K symbol codebase: ~6.5MB.
 
-## Docs
+## 📚 Docs
 
 - [How GraphIQ works](docs/how-graphiq-works.md) — full system explanation
 - [Benchmarks](docs/benchmarks.md) — methodology and results
 - [Research notes](docs/research.md) — experimental history
 
-## Development
+## 🧪 Development
 
 ```bash
 git clone https://github.com/aaf2tbz/graphiq.git
@@ -278,7 +278,7 @@ graphiq search "query family router"
 
 Requirements: Rust 1.75+, macOS or Linux.
 
-## Uninstall
+## 🧼 Uninstall
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash -s -- uninstall
