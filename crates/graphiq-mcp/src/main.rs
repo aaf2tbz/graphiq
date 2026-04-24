@@ -416,15 +416,24 @@ fn main() {
 }
 
 fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>) {
-    use notify::{Config, Event, RecommendedWatcher, RecursiveMode, Watcher};
+    use notify::{Config, Event, PollWatcher, RecursiveMode, Watcher};
+
+    let watch_path = match std::fs::canonicalize(project_root) {
+        Ok(p) => p,
+        Err(e) => {
+            log_err(&format!("watcher: cannot canonicalize {}: {e}", project_root.display()));
+            return;
+        }
+    };
 
     let (tx, rx) = std::sync::mpsc::channel::<Result<Event, notify::Error>>();
 
-    let mut watcher = match RecommendedWatcher::new(
+    let poll_interval = std::time::Duration::from_secs(2);
+    let mut watcher = match PollWatcher::new(
         move |res| {
             let _ = tx.send(res);
         },
-        Config::default(),
+        Config::default().with_poll_interval(poll_interval),
     ) {
         Ok(w) => w,
         Err(e) => {
@@ -433,12 +442,12 @@ fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>) {
         }
     };
 
-    if let Err(e) = watcher.watch(project_root, RecursiveMode::Recursive) {
+    if let Err(e) = watcher.watch(&watch_path, RecursiveMode::Recursive) {
         log_err(&format!("watcher: failed to start: {e}"));
         return;
     }
 
-    log_err(&format!("watcher: watching {}", project_root.display()));
+    log_err(&format!("watcher: watching {}", watch_path.display()));
 
     let ignore_dirs: &[&str] = &[
         ".git", "node_modules", "target", "build", "dist", ".graphiq",

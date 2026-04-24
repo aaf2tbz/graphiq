@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "graphiq-bench"
-version = "3.1.1"
+version = "3.2.0"
 dependencies = [
  "graphiq-core",
  "serde",
@@ -1202,7 +1202,7 @@ dependencies = [
 
 [[package]]
 name = "graphiq-cli"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "clap",
  "dirs",
@@ -1213,7 +1213,7 @@ dependencies = [
 
 [[package]]
 name = "graphiq-core"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "bincode",
  "candle-core",
@@ -1254,7 +1254,7 @@ dependencies = [
 
 [[package]]
 name = "graphiq-mcp"
-version = "3.2.0"
+version = "3.2.1"
 dependencies = [
  "graphiq-core",
  "notify",
