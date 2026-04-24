@@ -193,6 +193,12 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 
 <p align="center"><code>graphiq-mcp</code> exposes 14 JSON-RPC tools over stdio:</p>
 
+<table align="center" width="100%">
+<tr>
+<td width="68%" valign="top" align="center">
+
+<h3 align="center">Tools</h3>
+
 <table align="center">
 <tr><th align="center">Tool</th><th align="center">Use it for</th></tr>
 <tr><td align="center"><code>briefing</code></td><td align="center">Project overview and starting context</td></tr>
@@ -211,6 +217,28 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 <tr><td align="center"><code>upgrade_index</code></td><td align="center">Rebuild stale artifacts</td></tr>
 </table>
 
+</td>
+<td width="32%" valign="top" align="center">
+
+<h3 align="center">Supported Harnesses</h3>
+
+<table align="center">
+<tr><th align="center">Harness</th></tr>
+<tr><td align="center">Claude Code</td></tr>
+<tr><td align="center">Claude Desktop</td></tr>
+<tr><td align="center">OpenCode</td></tr>
+<tr><td align="center">Codex CLI</td></tr>
+<tr><td align="center">Cursor</td></tr>
+<tr><td align="center">Windsurf</td></tr>
+<tr><td align="center">Gemini CLI</td></tr>
+<tr><td align="center">Hermes Agent</td></tr>
+<tr><td align="center">Aider</td></tr>
+</table>
+
+</td>
+</tr>
+</table>
+
 <p align="center">
 <code>graphiq-mcp /path/to/project</code><br>
 <code>graphiq-mcp /path/to/project --watch</code>
@@ -219,23 +247,6 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 <p align="center">
 The MCP server lazily builds its in-memory index on first search and detects/recreates corrupted databases automatically.
 </p>
-
-<h3 align="center">Harnesses</h3>
-
-<table align="center">
-<tr><th align="center">Harness</th><th align="center">Config</th><th align="center">Setup</th></tr>
-<tr><td align="center">Claude Code</td><td align="center"><code>.claude/.mcp.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
-<tr><td align="center">Claude Desktop</td><td align="center"><code>~/Library/Application Support/Claude/claude_desktop_config.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
-<tr><td align="center">OpenCode</td><td align="center"><code>~/.config/opencode/opencode.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
-<tr><td align="center">Codex CLI</td><td align="center"><code>~/.codex/config.toml</code></td><td align="center"><code>graphiq setup</code></td></tr>
-<tr><td align="center">Cursor</td><td align="center"><code>.cursor/mcp.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
-<tr><td align="center">Windsurf</td><td align="center"><code>.windsurf/mcp.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
-<tr><td align="center">Gemini CLI</td><td align="center"><code>~/.gemini/settings.json</code></td><td align="center"><code>graphiq setup</code></td></tr>
-<tr><td align="center">Hermes Agent</td><td align="center"><code>~/.hermes/config.yaml</code></td><td align="center"><code>graphiq setup</code></td></tr>
-<tr><td align="center">Aider</td><td align="center"><code>.aider.conf.yml</code></td><td align="center"><code>graphiq setup</code></td></tr>
-</table>
-
-<p align="center">Use <code>graphiq setup --harness &lt;name&gt;</code> to configure a specific harness only.</p>
 
 <h2 align="center">🗂️ What gets indexed</h2>
 
@@ -273,11 +284,33 @@ The full architecture is documented in <a href="docs/how-graphiq-works.md">How G
 
 <h2 align="center">⚙️ Performance</h2>
 
+<table align="center" width="100%">
+<tr>
+<td width="50%" valign="top" align="center">
+
+<h3 align="center">Latency</h3>
+
 <table align="center">
 <tr><th align="center">Mode</th><th align="center">Latency</th></tr>
 <tr><td align="center">Cold CLI (first run)</td><td align="center">~5–10s</td></tr>
 <tr><td align="center">Warm CLI (cached)</td><td align="center">~50ms</td></tr>
 <tr><td align="center">In-process (MCP)</td><td align="center"><strong style="color:#3fb950">~18μs</strong></td></tr>
+</table>
+
+</td>
+<td width="50%" valign="top" align="center">
+
+<h3 align="center">Config / Setup</h3>
+
+<table align="center">
+<tr><th align="center">Command</th><th align="center">Use it for</th></tr>
+<tr><td align="center"><code>graphiq setup --project /path/to/project</code></td><td align="center">Configure all supported harnesses</td></tr>
+<tr><td align="center"><code>graphiq setup --harness &lt;name&gt;</code></td><td align="center">Configure one harness only</td></tr>
+<tr><td align="center"><code>graphiq-mcp /path/to/project --watch</code></td><td align="center">Auto-reindex while agents work</td></tr>
+</table>
+
+</td>
+</tr>
 </table>
 
 <p align="center">Index size for a ~20K symbol codebase: ~6.5MB.</p>
