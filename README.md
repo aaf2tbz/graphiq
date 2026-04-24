@@ -101,11 +101,13 @@ Full methodology and per-codebase breakdowns in [docs/benchmarks.md](docs/benchm
 | **Blast radius analysis** | Forward/backward impact tracing with configurable depth (1–10) |
 | **Zero network** | No embeddings, no LLM, no API calls. Everything runs in a single SQLite file |
 | **13 MCP tools** | Full editor/agent integration — search, blast, context, interrogate, topology, explain, and more |
+| **Dead code detection** | Find unreachable symbols with zero-caller analysis and 8 exemption rules |
+| **File watcher** | Auto-reindex on file changes with `--watch` flag on MCP server |
 | **Signet integration** | Works with Signet (local memory for agents) to combine graph-aware code search with persistent agent context |
 
 ## MCP Server
 
-`graphiq-mcp` exposes 13 tools over JSON-RPC 2.0 (stdio) for editor and agent integration:
+`graphiq-mcp` exposes 14 tools over JSON-RPC 2.0 (stdio) for editor and agent integration:
 
 | Tool | Purpose |
 |---|---|
@@ -122,9 +124,11 @@ Full methodology and per-codebase breakdowns in [docs/benchmarks.md](docs/benchm
 | `doctor` | Artifact health check |
 | `upgrade_index` | Rebuild stale artifacts |
 | `constants` | Numeric/string constant lookup |
+| `dead_code` | Find unreachable symbols grouped by file |
 
 ```bash
 graphiq-mcp /path/to/project
+graphiq-mcp /path/to/project --watch   # auto-reindex on file changes
 ```
 
 The server lazily builds its index on first search (~1s from SQLite). Corrupted databases are detected and recreated automatically.
@@ -133,10 +137,17 @@ The server lazily builds its index on first search (~1s from SQLite). Corrupted 
 
 | Harness | Config | Setup |
 |---|---|---|
-| opencode | `~/.config/opencode/opencode.json` | `graphiq setup` |
+| Claude Code | `.claude/.mcp.json` | `graphiq setup` |
 | Claude Desktop | `~/Library/Application Support/Claude/claude_desktop_config.json` | `graphiq setup` |
-| Codex | `~/.codex/config.toml` | `graphiq setup` |
-| Hermes Agent | `~/.hermes/config.toml` | `graphiq setup` |
+| OpenCode | `~/.config/opencode/opencode.json` | `graphiq setup` |
+| Codex CLI | `~/.codex/config.toml` | `graphiq setup` |
+| Cursor | `.cursor/mcp.json` | `graphiq setup` |
+| Windsurf | `.windsurf/mcp.json` | `graphiq setup` |
+| Gemini CLI | `~/.gemini/settings.json` | `graphiq setup` |
+| Hermes Agent | `~/.hermes/config.yaml` | `graphiq setup` |
+| Aider | `.aider.conf.yml` | `graphiq setup` |
+
+Use `graphiq setup --harness <name>` to configure a specific harness only.
 
 ## How It Works
 
