@@ -193,13 +193,9 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 
 <p align="center"><code>graphiq-mcp</code> exposes 14 JSON-RPC tools over stdio:</p>
 
-<table align="center" width="100%">
-<tr>
-<td width="68%" valign="top" align="center">
-
 <h3 align="center">Tools</h3>
 
-<table align="center">
+<table align="center" width="100%">
 <tr><th align="center">Tool</th><th align="center">Use it for</th></tr>
 <tr><td align="center"><code>briefing</code></td><td align="center">Project overview and starting context</td></tr>
 <tr><td align="center"><code>search</code></td><td align="center">Ranked symbol search with filters</td></tr>
@@ -217,8 +213,9 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 <tr><td align="center"><code>upgrade_index</code></td><td align="center">Rebuild stale artifacts</td></tr>
 </table>
 
-</td>
-<td width="32%" valign="top" align="center">
+<table align="center" width="100%">
+<tr>
+<td width="50%" valign="top" align="center">
 
 <h3 align="center">Supported Harnesses</h3>
 
@@ -235,14 +232,14 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 <tr><td align="center">Aider</td></tr>
 </table>
 
+</td>
+<td width="50%" valign="top" align="center">
+
 <h3 align="center">Config / Setup</h3>
 
-<table align="center">
-<tr><th align="center">Command</th><th align="center">Use it for</th></tr>
-<tr><td align="center"><code>graphiq setup</code></td><td align="center">Configure all supported harnesses</td></tr>
-<tr><td align="center"><code>graphiq setup --harness &lt;name&gt;</code></td><td align="center">Configure one harness only</td></tr>
-<tr><td align="center"><code>graphiq-mcp --watch</code></td><td align="center">Auto-reindex while agents work</td></tr>
-</table>
+<p align="center"><code>graphiq setup</code><br>Configure all supported harnesses</p>
+<p align="center"><code>graphiq setup --harness &lt;name&gt;</code><br>Configure one harness only</p>
+<p align="center"><code>graphiq-mcp --watch</code><br>Auto-reindex while agents work</p>
 
 </td>
 </tr>
