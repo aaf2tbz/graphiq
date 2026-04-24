@@ -209,6 +209,7 @@ impl<'a> Indexer<'a> {
                     pending_calls.push(PendingCallEdge {
                         caller_id,
                         callee_name: cs.callee.clone(),
+                        file_name_to_id: file_name_to_id.clone(),
                     });
                 }
             }
@@ -262,7 +263,11 @@ impl<'a> Indexer<'a> {
 
         let mut call_edges_inserted = 0;
         for pc in &pending_calls {
-            let target_id = resolve_symbol(&global_name_to_ids, &pc.callee_name);
+            let target_id = pc
+                .file_name_to_id
+                .get(&pc.callee_name)
+                .copied()
+                .or_else(|| resolve_symbol(&global_name_to_ids, &pc.callee_name));
             if let (Some(caller_id), Some(tid)) = (pc.caller_id, target_id) {
                 if caller_id != tid {
                     let _ = self.db.insert_edge(
@@ -1079,6 +1084,7 @@ struct PendingEdge {
 struct PendingCallEdge {
     caller_id: Option<i64>,
     callee_name: String,
+    file_name_to_id: HashMap<String, i64>,
 }
 
 struct PendingImportEdge {
@@ -1693,6 +1699,84 @@ function orchestrator(): string {
         assert!(
             core_importance > 0.3,
             "core should have importance > baseline 0.3"
+        );
+    }
+
+    #[test]
+    fn test_intra_file_call_with_duplicate_names() {
+        let tmp = TempDir::new().unwrap();
+        let a_file = tmp.path().join("a.ts");
+        std::fs::write(
+            &a_file,
+            r#"
+function helper(): string { return "a"; }
+function consume(): string { return helper(); }
+"#,
+        )
+        .unwrap();
+
+        let b_file = tmp.path().join("b.ts");
+        std::fs::write(
+            &b_file,
+            r#"
+function helper(): string { return "b"; }
+function run(): string { return helper(); }
+"#,
+        )
+        .unwrap();
+
+        let db = GraphDb::open_in_memory().unwrap();
+        let indexer = Indexer::new(&db);
+        indexer.index_project(tmp.path()).unwrap();
+
+        let all_calls: Vec<_> = db
+            .edges_by_kind(EdgeKind::Calls, 100)
+            .unwrap()
+            .into_iter()
+            .collect();
+
+        let resolve_name = |id: i64| -> String {
+            db.get_symbol(id).unwrap().unwrap().name.clone()
+        };
+        let resolve_file = |id: i64| -> String {
+            let sym = db.get_symbol(id).unwrap().unwrap();
+            db.file_path_for_id(sym.file_id).unwrap().unwrap()
+        };
+
+        let a_helpers: Vec<_> = all_calls
+            .iter()
+            .filter(|e| {
+                let src = resolve_name(e.source_id);
+                let tgt = resolve_name(e.target_id);
+                src == "consume" && tgt == "helper"
+            })
+            .collect();
+        assert_eq!(
+            a_helpers.len(),
+            1,
+            "consume should call helper in same file"
+        );
+        assert!(
+            resolve_file(a_helpers[0].source_id).contains("a.ts"),
+            "consume→helper edge should be within a.ts"
+        );
+        assert!(
+            resolve_file(a_helpers[0].target_id).contains("a.ts"),
+            "consume→helper target should be a.ts helper, not b.ts helper"
+        );
+
+        let b_helpers: Vec<_> = all_calls
+            .iter()
+            .filter(|e| {
+                let src = resolve_name(e.source_id);
+                let tgt = resolve_name(e.target_id);
+                src == "run" && tgt == "helper"
+            })
+            .collect();
+        assert_eq!(b_helpers.len(), 1, "run should call helper in same file");
+        assert!(
+            resolve_file(b_helpers[0].target_id).contains("b.ts"),
+            "run→helper target should be b.ts helper, not a.ts helper"
         );
     }
 }
