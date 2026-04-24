@@ -85,20 +85,20 @@ Use <code>graphiq setup --harness cursor</code> or any supported harness name to
 
 <h2 align="center">📦 Install</h2>
 
-<p align="center"><strong>Homebrew</strong></p>
+<p><strong>Homebrew</strong></p>
 
 ```bash
 brew tap aaf2tbz/graphiq
 brew install graphiq
 ```
 
-<p align="center"><strong>Install script</strong></p>
+<p><strong>Install script</strong></p>
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash
 ```
 
-<p align="center"><strong>From source</strong></p>
+<p><strong>From source</strong></p>
 
 ```bash
 git clone https://github.com/aaf2tbz/graphiq.git
@@ -108,13 +108,13 @@ cargo build --release
 
 <p align="center">Installs <code>graphiq</code>, <code>graphiq-mcp</code>, and <code>graphiq-bench</code>.</p>
 
-<h2 align="center">🧠 Why it works</h2>
+<h2 align="center">Why it works</h2>
 
 <table align="center">
 <tr>
 <td width="33%" valign="top" align="center">
 
-<h3>01. Lexical precision</h3>
+<h3><small>🎯 [01]</small><br>Lexical precision</h3>
 
 BM25 FTS5 handles exact symbol names, identifiers, file paths, and
 decomposed camelCase/snake_case terms.
@@ -122,7 +122,7 @@ decomposed camelCase/snake_case terms.
 </td>
 <td width="33%" valign="top" align="center">
 
-<h3>02. Graph recall</h3>
+<h3><small>🕸️ [02]</small><br>Graph recall</h3>
 
 Seed results expand through calls, imports, constants, type edges, error
 surfaces, and local neighborhoods.
@@ -130,7 +130,7 @@ surfaces, and local neighborhoods.
 </td>
 <td width="33%" valign="top" align="center">
 
-<h3>03. Query routing</h3>
+<h3><small>🧭 [03]</small><br>Query routing</h3>
 
 Eight query families tune scoring for symbols, natural language,
 relationships, errors, files, constants, and architecture questions.
@@ -139,13 +139,19 @@ relationships, errors, files, constants, and architecture questions.
 </tr>
 </table>
 
-```text
+<table align="center">
+<tr>
+<td align="left">
+<pre>
 BM25 name match  +  graph walk  +  structural aliases  +  family weights
        |                |                  |                    |
        +----------------+------------------+--------------------+
                                 |
                          stable ranked results
-```
+</pre>
+</td>
+</tr>
+</table>
 
 <p align="center">
 The result is a compact local index with the codebase's structure baked in, so agents can search by intent without shipping your source to a remote embedding service.
@@ -157,19 +163,31 @@ The result is a compact local index with the codebase's structure baked in, so a
 Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. Full methodology lives in <a href="docs/benchmarks.md">docs/benchmarks.md</a>.
 </p>
 
-| Codebase | Grep NDCG@10 | GraphIQ NDCG@10 | Grep MRR@10 | GraphIQ MRR@10 |
-|:---:|---:|---:|---:|---:|
-| signetai | 0.143 | **0.286** (+100%) | 0.144 | **0.450** (+213%) |
-| esbuild | 0.200 | **0.318** (+59%) | 0.145 | **0.551** (+280%) |
-| tokio | **0.193** | 0.192 (-1%) | 0.330 | **0.411** (+25%) |
-| **Overall** | **0.179** | **0.265** (+48%) | **0.206** | **0.471** (+128%) |
+<table align="center" width="100%">
+<tr>
+<th align="center">Codebase</th>
+<th align="center">Grep NDCG@10</th>
+<th align="center">GraphIQ NDCG@10</th>
+<th align="center">Grep MRR@10</th>
+<th align="center">GraphIQ MRR@10</th>
+</tr>
+<tr><td align="center">signetai</td><td align="center">0.143</td><td align="center"><strong>0.286</strong> (+100%)</td><td align="center">0.144</td><td align="center"><strong>0.450</strong> (+213%)</td></tr>
+<tr><td align="center">esbuild</td><td align="center">0.200</td><td align="center"><strong>0.318</strong> (+59%)</td><td align="center">0.145</td><td align="center"><strong>0.551</strong> (+280%)</td></tr>
+<tr><td align="center">tokio</td><td align="center"><strong>0.193</strong></td><td align="center">0.192 (-1%)</td><td align="center">0.330</td><td align="center"><strong>0.411</strong> (+25%)</td></tr>
+<tr><td align="center"><strong>Overall</strong></td><td align="center"><strong>0.179</strong></td><td align="center"><strong>0.265</strong> (+48%)</td><td align="center"><strong>0.206</strong></td><td align="center"><strong>0.471</strong> (+128%)</td></tr>
+</table>
 
-| Query shape | Result vs grep | Signal |
-|:---:|---:|:---:|
-| Relationship queries | **3.9x** | Graph traversal finds connected symbols substring search misses |
-| Natural language queries | **2.0x** | Identifier decomposition plus family-aware scoring |
-| Error/debug queries | **1.2x** | Error surfaces and shared constants become searchable structure |
-| Exact symbol queries | tied | BM25 is already excellent when names are known |
+<table align="center" width="100%">
+<tr>
+<th align="center">Query shape</th>
+<th align="center">Result vs grep</th>
+<th align="center">Signal</th>
+</tr>
+<tr><td align="center">Relationship queries</td><td align="center"><strong>3.9x</strong></td><td align="center">Graph traversal finds connected symbols substring search misses</td></tr>
+<tr><td align="center">Natural language queries</td><td align="center"><strong>2.0x</strong></td><td align="center">Identifier decomposition plus family-aware scoring</td></tr>
+<tr><td align="center">Error/debug queries</td><td align="center"><strong>1.2x</strong></td><td align="center">Error surfaces and shared constants become searchable structure</td></tr>
+<tr><td align="center">Exact symbol queries</td><td align="center">tied</td><td align="center">BM25 is already excellent when names are known</td></tr>
+</table>
 
 <h2 align="center">🛠️ Agent Tools</h2>
 
