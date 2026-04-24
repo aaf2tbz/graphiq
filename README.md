@@ -195,7 +195,7 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 
 <table align="center" width="100%">
 <tr>
-<td width="52%" valign="top" align="center">
+<td width="68%" valign="top" align="center">
 
 <h3 align="center">Tools</h3>
 
@@ -218,7 +218,7 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 </table>
 
 </td>
-<td width="24%" valign="top" align="center">
+<td width="32%" valign="top" align="center">
 
 <h3 align="center">Supported Harnesses</h3>
 
@@ -235,16 +235,13 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 <tr><td align="center">Aider</td></tr>
 </table>
 
-</td>
-<td width="24%" valign="top" align="center">
-
 <h3 align="center">Config / Setup</h3>
 
 <table align="center">
 <tr><th align="center">Command</th><th align="center">Use it for</th></tr>
-<tr><td align="center"><code>graphiq setup --project /path/to/project</code></td><td align="center">Configure all supported harnesses</td></tr>
+<tr><td align="center"><code>graphiq setup</code></td><td align="center">Configure all supported harnesses</td></tr>
 <tr><td align="center"><code>graphiq setup --harness &lt;name&gt;</code></td><td align="center">Configure one harness only</td></tr>
-<tr><td align="center"><code>graphiq-mcp /path/to/project --watch</code></td><td align="center">Auto-reindex while agents work</td></tr>
+<tr><td align="center"><code>graphiq-mcp --watch</code></td><td align="center">Auto-reindex while agents work</td></tr>
 </table>
 
 </td>
