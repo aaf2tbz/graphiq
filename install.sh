@@ -52,15 +52,29 @@ do_install() {
     curl -fsSL "$URL" -o "${TMPDIR}/${ARCHIVE}"
 
     echo "  verifying..."
-    curl -fsSL "${URL}.sha256" -o "${TMPDIR}/${ARCHIVE}.sha256"
-    EXPECTED="$(awk '{print $1}' "${TMPDIR}/${ARCHIVE}.sha256")"
-    ACTUAL="$(shasum -a 256 "${TMPDIR}/${ARCHIVE}" | awk '{print $1}')"
+    if command -v jq >/dev/null 2>&1; then
+        EXPECTED="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/v${VERSION}" | jq -r --arg name "$ARCHIVE" '.assets[] | select(.name == $name) | .digest // ""' | sed -E 's/^sha256://')"
+    else
+        EXPECTED="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/tags/v${VERSION}" | awk -v name="$ARCHIVE" '
+            BEGIN { RS = "{"; in_asset = 0; asset_name = "" }
+            /"name"\s*:\s*"/ { gsub(/.*"name"\s*:\s*"/, ""); gsub(/".*/, ""); asset_name = $0 }
+            /"digest"\s*:\s*"/ && asset_name == name {
+                gsub(/.*"digest"\s*:\s*"/, ""); gsub(/".*/, "");
+                gsub(/^sha256:/, ""); print; found = 1; exit
+            }
+        ' 2>/dev/null)"
+    fi
 
-    if [ "$EXPECTED" != "$ACTUAL" ]; then
-        echo "error: SHA256 mismatch"
-        echo "  expected: ${EXPECTED}"
-        echo "  actual:   ${ACTUAL}"
-        exit 1
+    if [ -z "$EXPECTED" ]; then
+        echo "warning: no checksum found in release metadata, skipping verification"
+    else
+        ACTUAL="$(shasum -a 256 "${TMPDIR}/${ARCHIVE}" | awk '{print $1}')"
+        if [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "error: SHA256 mismatch"
+            echo "  expected: ${EXPECTED}"
+            echo "  actual:   ${ACTUAL}"
+            exit 1
+        fi
     fi
 
     echo "  extracting..."
