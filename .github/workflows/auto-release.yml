@@ -1,0 +1,64 @@
+name: Auto Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  auto-release:
+    if: "!startsWith(github.event.head_commit.message, 'chore: release v')"
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Read current version
+        id: current
+        run: |
+          CURRENT=$(grep '^version = "' crates/graphiq-core/Cargo.toml | head -1 | sed 's/version = "//;s/"//')
+          echo "version=$CURRENT" >> "$GITHUB_OUTPUT"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          echo "major=$MAJOR" >> "$GITHUB_OUTPUT"
+          echo "minor=$MINOR" >> "$GITHUB_OUTPUT"
+          echo "patch=$PATCH" >> "$GITHUB_OUTPUT"
+
+      - name: Bump patch version
+        id: bumped
+        run: |
+          NEW_PATCH=$((${{ steps.current.outputs.patch }} + 1))
+          NEW_VERSION="${{ steps.current.outputs.major }}.${{ steps.current.outputs.minor }}.$NEW_PATCH"
+          OLD_VERSION="${{ steps.current.outputs.version }}"
+          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+
+          for f in crates/*/Cargo.toml; do
+            sed -i "s/version = \"$OLD_VERSION\"/version = \"$NEW_VERSION\"/" "$f"
+          done
+
+          sed -i "s/\"version\": \"$OLD_VERSION\"/\"version\": \"$NEW_VERSION\"/" signet-plugin/manifest.json
+          sed -i "s/\"graphiqVersion\": \"$OLD_VERSION\"/\"graphiqVersion\": \"$NEW_VERSION\"/" signet-plugin/integration.json
+
+          cargo generate-lockfile
+
+      - name: Commit and tag
+        run: |
+          NEW_VERSION="${{ steps.bumped.outputs.version }}"
+          git add -A
+          git commit -m "chore: release v${NEW_VERSION}"
+          git tag "v${NEW_VERSION}"
+          git push origin main
+          git push origin "v${NEW_VERSION}"
