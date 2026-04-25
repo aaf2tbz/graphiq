@@ -1,6 +1,6 @@
 [package]
 name = "graphiq-mcp"
-version = "3.2.2"
+version = "3.3.0"
 edition = "2021"
 
 [[bin]]
