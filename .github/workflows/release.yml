@@ -90,7 +90,6 @@ jobs:
 
   release:
     needs: [build, desktop-macos]
-    if: always() && needs.build.result == 'success'
     runs-on: macos-14
 
     steps:
