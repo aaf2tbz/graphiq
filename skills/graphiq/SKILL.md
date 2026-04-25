@@ -1,6 +1,14 @@
 ---
 name: graphiq
-description: Local-first code intelligence — structural search, symbol context, impact analysis, and dead code detection via typed graph traversal. Use this skill when you need to search a codebase by intent (not just substring), understand how symbols connect, trace change impact before refactoring, find dead code, or get an architecture briefing. Triggers on: "search codebase", "find symbol", "who calls", "blast radius", "impact analysis", "dead code", "code graph", "structural search", "architecture overview", "codebase orientation", "understand connections", "what depends on", "find where".
+description: >
+  Local-first code intelligence — structural search, symbol context, impact
+  analysis, and dead code detection via typed graph traversal. Use this skill
+  when you need to search a codebase by intent (not just substring), understand
+  how symbols connect, trace change impact before refactoring, find dead code,
+  or get an architecture briefing. Triggers on: search codebase, find symbol,
+  who calls, blast radius, impact analysis, dead code, code graph, structural
+  search, architecture overview, codebase orientation, understand connections,
+  what depends on, find where.
 ---
 
 # GraphIQ
