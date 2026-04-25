@@ -1,4 +1,11 @@
 /target
+node_modules
+dist
+out
+apps/desktop/node_modules
+apps/desktop/dist
+apps/desktop/out
+apps/desktop/release
 .graphiq/
 *.db
 *.db-wal

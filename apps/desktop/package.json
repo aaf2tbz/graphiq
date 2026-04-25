@@ -1,0 +1,64 @@
+{
+  "name": "graphiq-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GraphIQ desktop application",
+  "author": "Alex Mondello",
+  "main": "out/main/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "postinstall": "electron-builder install-app-deps",
+    "preview": "electron-vite preview",
+    "package": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "fast-glob": "^3.3.3",
+    "lucide-react": "^0.511.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^24.0.1",
+    "@types/react": "^19.1.4",
+    "@types/react-dom": "^19.1.5",
+    "@vitejs/plugin-react": "^4.5.2",
+    "electron": "^35.1.5",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^3.1.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5"
+  },
+  "build": {
+    "appId": "ai.graphiq.desktop",
+    "productName": "GraphIQ Desktop",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "build/**/*",
+      "package.json"
+    ],
+    "icon": "build/icon.png",
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    }
+  }
+}

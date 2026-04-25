@@ -305,6 +305,23 @@ cargo build --release
 cargo test
 ```
 
+<h3 align="center">Desktop App</h3>
+
+```bash
+cd apps/desktop
+npm install
+npm run dev
+```
+
+<p align="center">Build an installable desktop package with:</p>
+
+```bash
+cd apps/desktop
+npm run package
+```
+
+<p align="center">The packaged app is written to <code>apps/desktop/release/</code>.</p>
+
 ```bash
 cargo bench
 graphiq index .

@@ -8,6 +8,23 @@ cd graphiq
 cargo build --release
 ```
 
+## Desktop app
+
+```bash
+cd apps/desktop
+npm install
+npm run dev
+```
+
+Package installers locally with:
+
+```bash
+cd apps/desktop
+npm run package
+```
+
+Artifacts are written to `apps/desktop/release/`.
+
 ## Architecture
 
 GraphIQ is a Rust workspace with these crates:
@@ -16,6 +33,7 @@ GraphIQ is a Rust workspace with these crates:
 - `graphiq-cli` — Command-line interface
 - `graphiq-mcp` — MCP server (experimental)
 - `graphiq-bench` — Benchmarks
+- `apps/desktop` — Electron desktop shell for browsing local indexes
 
 ## Development workflow
 
