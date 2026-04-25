@@ -6,7 +6,7 @@
   <img src="docs/assets/graphiq-logo-light.png" alt="GraphIQ" width="120">
 </picture>
 
-# G R A P H I Q
+# GRAPHIQ
 
 **Local code search that understands how your code is connected**
 
@@ -49,8 +49,8 @@ share the same words.
 <td width="46%" valign="top" align="center">
 
 <pre>
-       query
-         |
+      query
+        |
    lexical seeds
          |
    structural graph
@@ -92,7 +92,7 @@ brew tap aaf2tbz/graphiq
 brew install graphiq
 ```
 
-<p><strong>Install script</strong></p>
+<p><strong>Install script (Recommended Method</strong></p>
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash
