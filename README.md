@@ -330,6 +330,20 @@ graphiq search "query family router"
 
 <p align="center">Requirements: Rust 1.75+, macOS or Linux.</p>
 
+<h2 align="center">🔌 Agent Skill</h2>
+
+<p align="center">
+GraphIQ is available as an installable agent skill on <a href="https://skills.sh/aaf2tbz/graphiq/graphiq"><strong>skills.sh</strong></a>.
+</p>
+
+```bash
+npx skills add aaf2tbz/graphiq
+```
+
+<p align="center">
+Installs the GraphIQ skill into Claude Code, Cursor, OpenCode, Codex, Windsurf, and <a href="https://github.com/vercel-labs/skills#supported-agents">40+ other agents</a>.
+</p>
+
 <h2 align="center">🧼 Uninstall</h2>
 
 ```bash
@@ -345,6 +359,7 @@ curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | b
 <p align="center">
 [GitHub](https://github.com/aaf2tbz/graphiq) ·
 [Homebrew](https://github.com/aaf2tbz/homebrew-graphiq) ·
+[skills.sh](https://skills.sh/aaf2tbz/graphiq/graphiq) ·
 [crates.io](https://crates.io/crates/graphiq) ·
 [discussions](https://github.com/aaf2tbz/graphiq/discussions) ·
 [issues](https://github.com/aaf2tbz/graphiq/issues)
