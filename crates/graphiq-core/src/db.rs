@@ -172,6 +172,27 @@ impl GraphDb {
         &self.conn
     }
 
+    /// Start a bulk write transaction for indexing.
+    ///
+    /// SQLite is very fast when index writes are committed in batches, but
+    /// extremely expensive when every insert/update pays its own sync and lock
+    /// overhead. The indexer keeps a single writer and wraps its write-heavy
+    /// phases in this transaction instead of introducing concurrent DB writes.
+    pub fn begin_bulk_index(&self) -> Result<(), DbError> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        Ok(())
+    }
+
+    pub fn commit_bulk_index(&self) -> Result<(), DbError> {
+        self.conn.execute_batch("COMMIT")?;
+        Ok(())
+    }
+
+    pub fn rollback_bulk_index(&self) -> Result<(), DbError> {
+        self.conn.execute_batch("ROLLBACK")?;
+        Ok(())
+    }
+
     fn init_schema(&self) -> Result<(), DbError> {
         self.conn.execute_batch(SCHEMA_V1)?;
         Ok(())
@@ -595,8 +616,14 @@ impl GraphDb {
             .query_map([], |row| {
                 Ok((
                     row.get(0)?,
-                    row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
                 ))
             })?
             .collect::<SqlResult<Vec<_>>>()
@@ -627,7 +654,8 @@ impl GraphDb {
                     };
                     let impls_score = 0.15 * (im as f64) / max_im;
                     let bridge_score = if ci > 0 && co > 0 { 0.10 } else { 0.0 };
-                    (call_in_score + call_out_score + contains_score + impls_score + bridge_score).min(1.0)
+                    (call_in_score + call_out_score + contains_score + impls_score + bridge_score)
+                        .min(1.0)
                 };
                 (id, imp)
             })
@@ -897,6 +925,17 @@ mod tests {
 
         db.delete_file("src/main.ts").unwrap();
         assert!(db.get_symbol(sid).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_bulk_index_transaction_rolls_back() {
+        let db = GraphDb::open_in_memory().unwrap();
+        db.begin_bulk_index().unwrap();
+        db.upsert_file("src/transient.ts", "typescript", "abc", 1000, 10)
+            .unwrap();
+        db.rollback_bulk_index().unwrap();
+
+        assert!(db.get_file_by_path("src/transient.ts").unwrap().is_none());
     }
 
     #[test]
