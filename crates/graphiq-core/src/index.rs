@@ -63,7 +63,8 @@ impl<'a> Indexer<'a> {
     /// and search hints.
     pub fn index_project(&self, root: &Path) -> Result<IndexStats, Box<dyn std::error::Error>> {
         let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-        self.db.set_meta("project_root", &canonical.to_string_lossy())?;
+        self.db
+            .set_meta("project_root", &canonical.to_string_lossy())?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
@@ -79,6 +80,29 @@ impl<'a> Indexer<'a> {
         root: &Path,
         files: &[PathBuf],
     ) -> Result<IndexStats, Box<dyn std::error::Error>> {
+        self.db.begin_bulk_index()?;
+        let result = self.index_files_in_transaction(root, files);
+        match result {
+            Ok(stats) => {
+                self.db.commit_bulk_index()?;
+                Ok(stats)
+            }
+            Err(err) => {
+                let _ = self.db.rollback_bulk_index();
+                Err(err)
+            }
+        }
+    }
+
+    fn index_files_in_transaction(
+        &self,
+        root: &Path,
+        files: &[PathBuf],
+    ) -> Result<IndexStats, Box<dyn std::error::Error>> {
+        use std::time::Instant;
+
+        let total_start = Instant::now();
+        let mut phase_start = Instant::now();
         let mut stats = IndexStats::default();
 
         let file_data: Vec<_> = files
@@ -101,6 +125,12 @@ impl<'a> Indexer<'a> {
                 Some((rel.to_path_buf(), text, lang, hash, mtime, line_count))
             })
             .collect();
+        eprintln!(
+            "  phase file scan/read/hash: {} files in {:.2}s",
+            file_data.len(),
+            phase_start.elapsed().as_secs_f64()
+        );
+        phase_start = Instant::now();
 
         let mut global_name_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
         let mut pending_rels: Vec<PendingEdge> = Vec::new();
@@ -228,6 +258,13 @@ impl<'a> Indexer<'a> {
             stats.imports_extracted += result.imports.len();
             stats.rels_extracted += result.structural_rels.len();
         }
+        eprintln!(
+            "  phase parse/symbol extraction: {} changed files, {} symbols in {:.2}s",
+            stats.files_indexed,
+            stats.symbols_indexed,
+            phase_start.elapsed().as_secs_f64()
+        );
+        phase_start = Instant::now();
 
         for (container_id, member_id) in &pending_contains {
             let _ = self.db.insert_edge(
@@ -337,18 +374,68 @@ impl<'a> Indexer<'a> {
             }
         }
         stats.edges_inserted += import_edges_inserted;
+        eprintln!(
+            "  phase primary edge writes: {} edges in {:.2}s",
+            stats.edges_inserted,
+            phase_start.elapsed().as_secs_f64()
+        );
+        phase_start = Instant::now();
 
         let importance_scores = self.db.compute_importance_scores()?;
         for (symbol_id, importance) in &importance_scores {
             let _ = self.db.update_importance(*symbol_id, *importance);
         }
+        eprintln!(
+            "  phase importance scores: {} symbols in {:.2}s",
+            importance_scores.len(),
+            phase_start.elapsed().as_secs_f64()
+        );
+        phase_start = Instant::now();
 
         self.compute_edge_evidence()?;
+        eprintln!(
+            "  phase edge evidence: {:.2}s",
+            phase_start.elapsed().as_secs_f64()
+        );
+        phase_start = Instant::now();
+
         self.generate_search_hints()?;
+        eprintln!(
+            "  phase search hints: {:.2}s",
+            phase_start.elapsed().as_secs_f64()
+        );
+        phase_start = Instant::now();
+
         self.compute_structural_aliases()?;
+        eprintln!(
+            "  phase structural aliases: {:.2}s",
+            phase_start.elapsed().as_secs_f64()
+        );
+        phase_start = Instant::now();
+
         self.compute_numeric_bridges()?;
+        eprintln!(
+            "  phase numeric bridges: {:.2}s",
+            phase_start.elapsed().as_secs_f64()
+        );
+        phase_start = Instant::now();
+
         self.compute_deep_graph()?;
+        eprintln!(
+            "  phase deep/source graph: {:.2}s",
+            phase_start.elapsed().as_secs_f64()
+        );
+        phase_start = Instant::now();
+
         self.build_neighbor_hints()?;
+        eprintln!(
+            "  phase neighbor hints: {:.2}s",
+            phase_start.elapsed().as_secs_f64()
+        );
+        eprintln!(
+            "  total index pipeline: {:.2}s",
+            total_start.elapsed().as_secs_f64()
+        );
 
         Ok(stats)
     }
@@ -737,13 +824,13 @@ impl<'a> Indexer<'a> {
     fn build_neighbor_hints(&self) -> Result<(), Box<dyn std::error::Error>> {
         let conn = self.db.conn();
 
-        let total_symbols: i64 = conn.query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))?;
+        let total_symbols: i64 =
+            conn.query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))?;
 
         let mut symbols: Vec<(i64, String, String, Option<String>)> = Vec::new();
         {
-            let mut stmt = conn.prepare(
-                "SELECT s.id, s.name, s.name_decomposed, s.search_hints FROM symbols s"
-            )?;
+            let mut stmt = conn
+                .prepare("SELECT s.id, s.name, s.name_decomposed, s.search_hints FROM symbols s")?;
             let rows = stmt.query_map([], |row| {
                 Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })?;
@@ -764,34 +851,46 @@ impl<'a> Indexer<'a> {
 
         let mut out_by_id: HashMap<i64, Vec<(String, String)>> = HashMap::new();
         for (source_id, kind, target_name) in self.db.outgoing_edges_grouped()? {
-            out_by_id.entry(source_id).or_default().push((kind, target_name));
+            out_by_id
+                .entry(source_id)
+                .or_default()
+                .push((kind, target_name));
         }
 
         let mut in_by_id: HashMap<i64, Vec<(String, String)>> = HashMap::new();
         for (target_id, kind, source_name) in self.db.incoming_edges_grouped()? {
-            in_by_id.entry(target_id).or_default().push((kind, source_name));
+            in_by_id
+                .entry(target_id)
+                .or_default()
+                .push((kind, source_name));
         }
 
         let mut file_groups: HashMap<i64, Vec<(i64, String, String)>> = HashMap::new();
         {
-            let mut stmt = conn.prepare(
-                "SELECT s.id, s.name, s.name_decomposed, s.file_id FROM symbols s"
-            )?;
+            let mut stmt =
+                conn.prepare("SELECT s.id, s.name, s.name_decomposed, s.file_id FROM symbols s")?;
             let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
             })?;
             for row in rows {
                 let (id, name, decomp, file_id) = row?;
-                file_groups.entry(file_id).or_default().push((id, name, decomp));
+                file_groups
+                    .entry(file_id)
+                    .or_default()
+                    .push((id, name, decomp));
             }
         }
 
         let mut symbol_file_ids: HashMap<i64, i64> = HashMap::new();
         {
             let mut stmt = conn.prepare("SELECT id, file_id FROM symbols")?;
-            let rows = stmt.query_map([], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
-            })?;
+            let rows =
+                stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
             for row in rows {
                 let (id, fid) = row?;
                 symbol_file_ids.insert(id, fid);
@@ -799,14 +898,72 @@ impl<'a> Indexer<'a> {
         }
 
         const GENERIC: &[&str] = &[
-            "get", "set", "push", "pop", "remove", "add", "delete", "update", "create",
-            "new", "init", "start", "stop", "run", "execute", "process", "handle",
-            "parse", "format", "to_string", "from", "into", "default", "clone", "eq",
-            "drop", "send", "sync", "copy", "main", "test", "iter", "next", "len",
-            "is_empty", "as_ref", "as_mut", "deref", "index", "call", "read", "write",
-            "open", "close", "check", "make", "build", "apply", "return", "result",
-            "value", "data", "self", "some", "none", "true", "false", "ok", "err",
-            "poll", "task", "spawn", "block", "async", "await", "future",
+            "get",
+            "set",
+            "push",
+            "pop",
+            "remove",
+            "add",
+            "delete",
+            "update",
+            "create",
+            "new",
+            "init",
+            "start",
+            "stop",
+            "run",
+            "execute",
+            "process",
+            "handle",
+            "parse",
+            "format",
+            "to_string",
+            "from",
+            "into",
+            "default",
+            "clone",
+            "eq",
+            "drop",
+            "send",
+            "sync",
+            "copy",
+            "main",
+            "test",
+            "iter",
+            "next",
+            "len",
+            "is_empty",
+            "as_ref",
+            "as_mut",
+            "deref",
+            "index",
+            "call",
+            "read",
+            "write",
+            "open",
+            "close",
+            "check",
+            "make",
+            "build",
+            "apply",
+            "return",
+            "result",
+            "value",
+            "data",
+            "self",
+            "some",
+            "none",
+            "true",
+            "false",
+            "ok",
+            "err",
+            "poll",
+            "task",
+            "spawn",
+            "block",
+            "async",
+            "await",
+            "future",
         ];
 
         let mut global_term_doc_freq: HashMap<String, usize> = HashMap::new();
@@ -841,7 +998,10 @@ impl<'a> Indexer<'a> {
                     if let Some(decomp) = name_to_decomposed.get(target_name) {
                         for word in decomp.split_whitespace() {
                             let wl = word.to_lowercase();
-                            if wl.len() >= 3 && !own_terms.contains(&wl) && !GENERIC.contains(&wl.as_str()) {
+                            if wl.len() >= 3
+                                && !own_terms.contains(&wl)
+                                && !GENERIC.contains(&wl.as_str())
+                            {
                                 *neighbor_terms.entry(wl).or_insert(0) += 1;
                             }
                         }
@@ -857,7 +1017,10 @@ impl<'a> Indexer<'a> {
                     if let Some(decomp) = name_to_decomposed.get(source_name) {
                         for word in decomp.split_whitespace() {
                             let wl = word.to_lowercase();
-                            if wl.len() >= 3 && !own_terms.contains(&wl) && !GENERIC.contains(&wl.as_str()) {
+                            if wl.len() >= 3
+                                && !own_terms.contains(&wl)
+                                && !GENERIC.contains(&wl.as_str())
+                            {
                                 *neighbor_terms.entry(wl).or_insert(0) += 1;
                             }
                         }
@@ -874,14 +1037,20 @@ impl<'a> Indexer<'a> {
                         if let Some(decomp) = name_to_decomposed.get(sib_name) {
                             for word in decomp.split_whitespace() {
                                 let wl = word.to_lowercase();
-                                if wl.len() >= 3 && !own_terms.contains(&wl) && !GENERIC.contains(&wl.as_str()) {
+                                if wl.len() >= 3
+                                    && !own_terms.contains(&wl)
+                                    && !GENERIC.contains(&wl.as_str())
+                                {
                                     *neighbor_terms.entry(wl).or_insert(0) += 1;
                                 }
                             }
                         }
                         for word in sib_decomp.split_whitespace() {
                             let wl = word.to_lowercase();
-                            if wl.len() >= 3 && !own_terms.contains(&wl) && !GENERIC.contains(&wl.as_str()) {
+                            if wl.len() >= 3
+                                && !own_terms.contains(&wl)
+                                && !GENERIC.contains(&wl.as_str())
+                            {
                                 *neighbor_terms.entry(wl).or_insert(0) += 1;
                             }
                         }
@@ -892,7 +1061,8 @@ impl<'a> Indexer<'a> {
             let mut distinctive: Vec<(String, usize)> = neighbor_terms
                 .into_iter()
                 .filter(|(term, count)| {
-                    *count >= 2 && !own_terms.contains(term.as_str())
+                    *count >= 2
+                        && !own_terms.contains(term.as_str())
                         && global_term_doc_freq.get(term).copied().unwrap_or(0) < df_threshold
                 })
                 .collect();
@@ -904,7 +1074,14 @@ impl<'a> Indexer<'a> {
                 continue;
             }
 
-            let neighbor_hint = format!("neighbor {}", distinctive.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>().join(" "));
+            let neighbor_hint = format!(
+                "neighbor {}",
+                distinctive
+                    .iter()
+                    .map(|(t, _)| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
 
             let updated_hints = match existing_hints {
                 Some(h) if !h.is_empty() => format!("{}. {}", h, neighbor_hint),
@@ -1735,9 +1912,7 @@ function run(): string { return helper(); }
             .into_iter()
             .collect();
 
-        let resolve_name = |id: i64| -> String {
-            db.get_symbol(id).unwrap().unwrap().name.clone()
-        };
+        let resolve_name = |id: i64| -> String { db.get_symbol(id).unwrap().unwrap().name.clone() };
         let resolve_file = |id: i64| -> String {
             let sym = db.get_symbol(id).unwrap().unwrap();
             db.file_path_for_id(sym.file_id).unwrap().unwrap()
