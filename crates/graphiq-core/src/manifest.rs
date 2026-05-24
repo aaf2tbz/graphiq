@@ -75,12 +75,18 @@ impl FreshnessHash {
             schema_version: "0".into(),
         });
         let content_hash = db.all_content_hashes().ok().map(|hashes| {
-            use std::hash::{Hash, Hasher};
-            let mut h = std::collections::hash_map::DefaultHasher::new();
+            let mut acc: [u64; 4] = [0; 4];
             for hash_bytes in &hashes {
-                hash_bytes.hash(&mut h);
+                for (i, chunk) in hash_bytes.chunks(8).enumerate() {
+                    let mut buf = [0u8; 8];
+                    buf[..chunk.len()].copy_from_slice(chunk);
+                    acc[i % 4] ^= u64::from_le_bytes(buf);
+                }
             }
-            format!("{:016x}", h.finish())
+            format!(
+                "{:016x}{:016x}{:016x}{:016x}",
+                acc[0], acc[1], acc[2], acc[3]
+            )
         });
         Self {
             symbol_count: stats.symbols,
