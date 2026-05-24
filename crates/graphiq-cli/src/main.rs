@@ -976,7 +976,7 @@ fn confirm(prompt: &str) -> bool {
 }
 
 fn check_build_dependencies() {
-    let is_macos = cfg!(target_os = "macos");
+    let is_macos = std::env::consts::OS == "macos";
 
     let deps = [
         DepCheck {
