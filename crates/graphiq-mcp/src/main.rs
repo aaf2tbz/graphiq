@@ -570,16 +570,16 @@ fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>, indexing: &
                 while let Ok(Ok(_)) = rx.recv_timeout(merge_window) {}
 
                 log_err("watcher: file change detected, reindexing...");
-                if indexing.load(Ordering::Relaxed) {
+                if indexing.load(Ordering::Acquire) {
                     log_err("watcher: index already in progress, skipping");
                     continue;
                 }
-                indexing.store(true, Ordering::Relaxed);
+                indexing.store(true, Ordering::Release);
                 let mut s = match state.lock() {
                     Ok(s) => s,
                     Err(e) => {
                         log_err(&format!("watcher: lock failed: {e}"));
-                        indexing.store(false, Ordering::Relaxed);
+                        indexing.store(false, Ordering::Release);
                         continue;
                     }
                 };
@@ -589,7 +589,7 @@ fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>, indexing: &
                 } else {
                     log_err("watcher: reindex complete");
                 }
-                indexing.store(false, Ordering::Relaxed);
+                indexing.store(false, Ordering::Release);
             }
             Ok(Err(e)) => {
                 log_err(&format!("watcher: error: {e}"));
@@ -670,12 +670,12 @@ fn background_warm(state: &Arc<Mutex<ServerState>>, indexing: &Arc<AtomicBool>) 
     };
 
     if needs_full_index {
-        indexing.store(true, Ordering::Relaxed);
+        indexing.store(true, Ordering::Release);
         let mut s = match state.lock() {
             Ok(s) => s,
             Err(e) => {
                 log_err(&format!("warm: lock failed: {e}"));
-                indexing.store(false, Ordering::Relaxed);
+                indexing.store(false, Ordering::Release);
                 return;
             }
         };
@@ -683,7 +683,7 @@ fn background_warm(state: &Arc<Mutex<ServerState>>, indexing: &Arc<AtomicBool>) 
         if let Err(e) = do_index(&mut s) {
             log_err(&format!("warm: full index failed: {e}"));
         }
-        indexing.store(false, Ordering::Relaxed);
+        indexing.store(false, Ordering::Release);
         log_err("warm: full index complete");
         return;
     }
@@ -1085,7 +1085,7 @@ fn handle_tool_call(
     }
 
     if tool_name != "index" && tool_name != "status" && tool_name != "doctor" {
-        if indexing.load(Ordering::Relaxed) {
+        if indexing.load(Ordering::Acquire) {
             return tool_ok("Indexing in progress — please retry in a few seconds.".into());
         }
         let needs_index = {
@@ -1095,23 +1095,23 @@ fn handle_tool_call(
             }
         };
         if needs_index {
-            indexing.store(true, Ordering::Relaxed);
+            indexing.store(true, Ordering::Release);
             let mut s = match state.lock() {
                 Ok(s) => s,
                 Err(e) => {
-                    indexing.store(false, Ordering::Relaxed);
+                    indexing.store(false, Ordering::Release);
                     return tool_error(&format!("lock error: {e}"));
                 }
             };
             if !db_is_empty(&s.db) {
-                indexing.store(false, Ordering::Relaxed);
+                indexing.store(false, Ordering::Release);
             } else {
                 log_err("auto-indexing (cold start)...");
                 if let Err(e) = do_index(&mut s) {
-                    indexing.store(false, Ordering::Relaxed);
+                    indexing.store(false, Ordering::Release);
                     return tool_error(&format!("auto-index failed: {e}"));
                 }
-                indexing.store(false, Ordering::Relaxed);
+                indexing.store(false, Ordering::Release);
             }
         }
     }
@@ -1151,13 +1151,13 @@ fn handle_tool_call(
             tool_status(&s)
         }
         "index" => {
-            indexing.store(true, Ordering::Relaxed);
+            indexing.store(true, Ordering::Release);
             let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
             let result = match do_index(&mut s) {
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
             };
-            indexing.store(false, Ordering::Relaxed);
+            indexing.store(false, Ordering::Release);
             result
         }
         "explain" => {
