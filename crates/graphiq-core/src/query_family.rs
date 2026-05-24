@@ -107,31 +107,88 @@ impl RetrievalPolicy {
 }
 
 const PATH_EXTENSIONS: &[&str] = &[
-    ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".java", ".c", ".cpp", ".h", ".hpp",
-    ".rb", ".yaml", ".yml", ".toml", ".json", ".xml", ".html", ".css", ".scss", ".md",
+    ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".java", ".c", ".cpp", ".h", ".hpp", ".rb",
+    ".yaml", ".yml", ".toml", ".json", ".xml", ".html", ".css", ".scss", ".md",
 ];
 
 const CROSS_CUTTING_PLURAL_NOUNS: &[&str] = &[
-    "implementations", "handlers", "providers", "routes", "guards", "migrations",
-    "middlewares", "controllers", "services", "models", "types", "interfaces",
-    "structures", "functions", "methods", "classes", "modules", "components",
-    "endpoints", "callbacks", "listeners", "adapters", "converters", "validators",
-    "serializers", "deserializers", "parsers", "renderers", "views", "schemas",
-    "operations", "processors", "factories", "builders", "strategies", "plugins",
+    "implementations",
+    "handlers",
+    "providers",
+    "routes",
+    "guards",
+    "migrations",
+    "middlewares",
+    "controllers",
+    "services",
+    "models",
+    "types",
+    "interfaces",
+    "structures",
+    "functions",
+    "methods",
+    "classes",
+    "modules",
+    "components",
+    "endpoints",
+    "callbacks",
+    "listeners",
+    "adapters",
+    "converters",
+    "validators",
+    "serializers",
+    "deserializers",
+    "parsers",
+    "renderers",
+    "views",
+    "schemas",
+    "operations",
+    "processors",
+    "factories",
+    "builders",
+    "strategies",
+    "plugins",
 ];
 
 const ABSTRACT_PREFIXES: &[&str] = &[
-    "how does ", "how do ", "how is ", "how are ", "how can ",
-    "what controls ", "what determines ", "what drives ", "what governs ",
-    "what manages ", "what orchestrates ", "what coordinates ",
-    "how does the ", "how does a ", "how does an ",
+    "how does ",
+    "how do ",
+    "how is ",
+    "how are ",
+    "how can ",
+    "what controls ",
+    "what determines ",
+    "what drives ",
+    "what governs ",
+    "what manages ",
+    "what orchestrates ",
+    "what coordinates ",
+    "how does the ",
+    "how does a ",
+    "how does an ",
 ];
 
 const ERROR_SIGNALS: &[&str] = &[
-    "error", "panic", "failed", "failure", "deadlock", "timeout", "crash",
-    "exception", "abort", "refused", "overflow", "underflow", "segfault",
-    "nil pointer", "null pointer", "stack overflow", "out of memory",
-    "connection refused", "access denied", "permission denied",
+    "error",
+    "panic",
+    "failed",
+    "failure",
+    "deadlock",
+    "timeout",
+    "crash",
+    "exception",
+    "abort",
+    "refused",
+    "overflow",
+    "underflow",
+    "segfault",
+    "nil pointer",
+    "null pointer",
+    "stack overflow",
+    "out of memory",
+    "connection refused",
+    "access denied",
+    "permission denied",
 ];
 
 pub fn classify_query_family(query: &str) -> QueryFamily {
@@ -184,8 +241,19 @@ fn is_file_path(lower: &str, tokens: &[&str]) -> bool {
         let no_natural_words = tokens.iter().all(|t| {
             !matches!(
                 *t,
-                "the" | "a" | "an" | "is" | "are" | "how" | "what" | "where"
-                    | "all" | "every" | "find" | "get" | "search"
+                "the"
+                    | "a"
+                    | "an"
+                    | "is"
+                    | "are"
+                    | "how"
+                    | "what"
+                    | "where"
+                    | "all"
+                    | "every"
+                    | "find"
+                    | "get"
+                    | "search"
             )
         });
         if has_separator && no_natural_words {
@@ -204,7 +272,9 @@ fn is_file_path(lower: &str, tokens: &[&str]) -> bool {
 fn is_code_token(t: &str) -> bool {
     t.contains('_')
         || t.contains("::")
-        || t.chars().enumerate().any(|(i, c)| i > 0 && c.is_uppercase())
+        || t.chars()
+            .enumerate()
+            .any(|(i, c)| i > 0 && c.is_uppercase())
         || (t.len() <= 2 && t.chars().all(|c| c.is_ascii_alphanumeric()))
 }
 
@@ -217,11 +287,11 @@ fn is_symbol(_original: &str, tokens: &[&str], original_tokens: &[&str]) -> bool
     // This catches "GraphDb::open path" but not "remove dead CSS rules"
     if tokens.len() >= 2 {
         let nl_words: &[&str] = &[
-            "the", "a", "an", "is", "are", "was", "were", "for", "from", "into",
-            "using", "before", "after", "during", "with", "without", "over", "under",
-            "between", "through", "how", "what", "where", "when", "who", "why",
-            "and", "or", "but", "not", "does", "do", "can", "in", "on", "at", "to",
-            "of", "if", "all", "every", "each", "any", "by", "that", "this",
+            "the", "a", "an", "is", "are", "was", "were", "for", "from", "into", "using", "before",
+            "after", "during", "with", "without", "over", "under", "between", "through", "how",
+            "what", "where", "when", "who", "why", "and", "or", "but", "not", "does", "do", "can",
+            "in", "on", "at", "to", "of", "if", "all", "every", "each", "any", "by", "that",
+            "this",
         ];
         let has_nl = tokens.iter().any(|t| nl_words.contains(t));
         if has_nl {
@@ -239,14 +309,20 @@ fn is_symbol(_original: &str, tokens: &[&str], original_tokens: &[&str]) -> bool
 fn is_cross_cutting(lower: &str, tokens: &[&str]) -> bool {
     let first = tokens.first().copied().unwrap_or("");
     if matches!(first, "all" | "every" | "each" | "list" | "show" | "find") {
-        if CROSS_CUTTING_PLURAL_NOUNS.iter().any(|noun| lower.contains(noun)) {
+        if CROSS_CUTTING_PLURAL_NOUNS
+            .iter()
+            .any(|noun| lower.contains(noun))
+        {
             return true;
         }
         if tokens.len() >= 3 {
             return true;
         }
     }
-    if lower.contains("implementations of") || lower.contains("all the ") || lower.contains("list all") {
+    if lower.contains("implementations of")
+        || lower.contains("all the ")
+        || lower.contains("list all")
+    {
         return true;
     }
     false
@@ -254,16 +330,25 @@ fn is_cross_cutting(lower: &str, tokens: &[&str]) -> bool {
 
 fn is_relationship(lower: &str) -> bool {
     let specific_patterns = [
-        "what calls ", "who calls ", "what invokes ", "who invokes ",
-        "callers of ", "callees of ", "what connects ", "what links ",
-        "relationship between ", "dependents of ", "dependencies of ",
+        "what calls ",
+        "who calls ",
+        "what invokes ",
+        "who invokes ",
+        "callers of ",
+        "callees of ",
+        "what connects ",
+        "what links ",
+        "relationship between ",
+        "dependents of ",
+        "dependencies of ",
     ];
     for p in &specific_patterns {
         if lower.contains(p) {
             return true;
         }
     }
-    if lower.starts_with("how does ") && (lower.contains(" connect ") || lower.contains(" relate ")) {
+    if lower.starts_with("how does ") && (lower.contains(" connect ") || lower.contains(" relate "))
+    {
         return true;
     }
     false
@@ -274,7 +359,9 @@ fn is_error_debug(lower: &str) -> bool {
 }
 
 fn is_natural_abstract(lower: &str) -> bool {
-    ABSTRACT_PREFIXES.iter().any(|prefix| lower.starts_with(prefix))
+    ABSTRACT_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
 }
 
 #[cfg(test)]
@@ -283,93 +370,237 @@ mod tests {
 
     #[test]
     fn test_symbol_exact() {
-        assert_eq!(classify_query_family("RateLimiter"), QueryFamily::SymbolExact);
-        assert_eq!(classify_query_family("authenticateUser"), QueryFamily::SymbolExact);
-        assert_eq!(classify_query_family("compute_trust_profile"), QueryFamily::SymbolExact);
-        assert_eq!(classify_query_family("GraphDb::open"), QueryFamily::SymbolExact);
-        assert_eq!(classify_query_family("recallMemories"), QueryFamily::SymbolExact);
+        assert_eq!(
+            classify_query_family("RateLimiter"),
+            QueryFamily::SymbolExact
+        );
+        assert_eq!(
+            classify_query_family("authenticateUser"),
+            QueryFamily::SymbolExact
+        );
+        assert_eq!(
+            classify_query_family("compute_trust_profile"),
+            QueryFamily::SymbolExact
+        );
+        assert_eq!(
+            classify_query_family("GraphDb::open"),
+            QueryFamily::SymbolExact
+        );
+        assert_eq!(
+            classify_query_family("recallMemories"),
+            QueryFamily::SymbolExact
+        );
     }
 
     #[test]
     fn test_symbol_single_word_falls_through() {
         // single lowercase words without code shape are not SymbolExact,
         // they become NaturalDescriptive (the new default for non-symbol queries)
-        assert_eq!(classify_query_family("embedding"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("trust"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("pipeline"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("chunk"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("cache"), QueryFamily::NaturalDescriptive);
+        assert_eq!(
+            classify_query_family("embedding"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("trust"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("pipeline"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("chunk"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("cache"),
+            QueryFamily::NaturalDescriptive
+        );
     }
 
     #[test]
     fn test_symbol_multi_word_code() {
         // multi-word queries with no NL words and at least one code-shaped token
-        assert_eq!(classify_query_family("recover stale leases"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("compute permission footprint"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("constellation dependency"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("validate build options"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("generate binary hashes"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("remove dead CSS rules"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("read bytes from TCP stream"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("blocking shutdown"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("acquire semaphore permit"), QueryFamily::NaturalDescriptive);
+        assert_eq!(
+            classify_query_family("recover stale leases"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("compute permission footprint"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("constellation dependency"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("validate build options"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("generate binary hashes"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("remove dead CSS rules"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("read bytes from TCP stream"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("blocking shutdown"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("acquire semaphore permit"),
+            QueryFamily::NaturalDescriptive
+        );
     }
 
     #[test]
     fn test_file_path() {
         assert_eq!(classify_query_family("predictor.rs"), QueryFamily::FilePath);
-        assert_eq!(classify_query_family("forge_config.rs"), QueryFamily::FilePath);
+        assert_eq!(
+            classify_query_family("forge_config.rs"),
+            QueryFamily::FilePath
+        );
         assert_eq!(classify_query_family("memory_db.rs"), QueryFamily::FilePath);
         assert_eq!(classify_query_family("claudemd.ts"), QueryFamily::FilePath);
-        assert_eq!(classify_query_family("runtime/scheduler/worker.rs"), QueryFamily::FilePath);
+        assert_eq!(
+            classify_query_family("runtime/scheduler/worker.rs"),
+            QueryFamily::FilePath
+        );
     }
 
     #[test]
     fn test_error_debug() {
-        assert_eq!(classify_query_family("JsonRpcError invalid request"), QueryFamily::ErrorDebug);
-        assert_eq!(classify_query_family("isTimeoutError daemon connection refused"), QueryFamily::ErrorDebug);
-        assert_eq!(classify_query_family("fail_job queue processing error recovery"), QueryFamily::ErrorDebug);
-        assert_eq!(classify_query_family("SemaphoreTimeoutError concurrent access limit"), QueryFamily::ErrorDebug);
-        assert_eq!(classify_query_family("panic in thread pool"), QueryFamily::ErrorDebug);
-        assert_eq!(classify_query_family("failed to start daemon"), QueryFamily::ErrorDebug);
+        assert_eq!(
+            classify_query_family("JsonRpcError invalid request"),
+            QueryFamily::ErrorDebug
+        );
+        assert_eq!(
+            classify_query_family("isTimeoutError daemon connection refused"),
+            QueryFamily::ErrorDebug
+        );
+        assert_eq!(
+            classify_query_family("fail_job queue processing error recovery"),
+            QueryFamily::ErrorDebug
+        );
+        assert_eq!(
+            classify_query_family("SemaphoreTimeoutError concurrent access limit"),
+            QueryFamily::ErrorDebug
+        );
+        assert_eq!(
+            classify_query_family("panic in thread pool"),
+            QueryFamily::ErrorDebug
+        );
+        assert_eq!(
+            classify_query_family("failed to start daemon"),
+            QueryFamily::ErrorDebug
+        );
     }
 
     #[test]
     fn test_natural_descriptive() {
-        assert_eq!(classify_query_family("recall memories from the store using search"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("compute trust profile for an entity"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("build the classification prompt for memory synthesis"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("initialize checkpoint flush for persistence"), QueryFamily::NaturalDescriptive);
+        assert_eq!(
+            classify_query_family("recall memories from the store using search"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("compute trust profile for an entity"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("build the classification prompt for memory synthesis"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("initialize checkpoint flush for persistence"),
+            QueryFamily::NaturalDescriptive
+        );
         // previously misclassified as SymbolPartial — these are NL descriptions
-        assert_eq!(classify_query_family("memory synthesis and condensation pipeline"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("embedding health check and provider validation"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("what checks if a connector is healthy"), QueryFamily::NaturalDescriptive);
-        assert_eq!(classify_query_family("retrieve memories using vector similarity search"), QueryFamily::NaturalDescriptive);
+        assert_eq!(
+            classify_query_family("memory synthesis and condensation pipeline"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("embedding health check and provider validation"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("what checks if a connector is healthy"),
+            QueryFamily::NaturalDescriptive
+        );
+        assert_eq!(
+            classify_query_family("retrieve memories using vector similarity search"),
+            QueryFamily::NaturalDescriptive
+        );
     }
 
     #[test]
     fn test_natural_abstract() {
-        assert_eq!(classify_query_family("how does the memory extraction pipeline work"), QueryFamily::NaturalAbstract);
-        assert_eq!(classify_query_family("how are agent sessions authenticated and authorized"), QueryFamily::NaturalAbstract);
-        assert_eq!(classify_query_family("how does the tool policy system select available tools"), QueryFamily::NaturalAbstract);
-        assert_eq!(classify_query_family("what controls the ranking order of search results"), QueryFamily::NaturalAbstract);
-        assert_eq!(classify_query_family("what determines the eviction policy"), QueryFamily::NaturalAbstract);
+        assert_eq!(
+            classify_query_family("how does the memory extraction pipeline work"),
+            QueryFamily::NaturalAbstract
+        );
+        assert_eq!(
+            classify_query_family("how are agent sessions authenticated and authorized"),
+            QueryFamily::NaturalAbstract
+        );
+        assert_eq!(
+            classify_query_family("how does the tool policy system select available tools"),
+            QueryFamily::NaturalAbstract
+        );
+        assert_eq!(
+            classify_query_family("what controls the ranking order of search results"),
+            QueryFamily::NaturalAbstract
+        );
+        assert_eq!(
+            classify_query_family("what determines the eviction policy"),
+            QueryFamily::NaturalAbstract
+        );
     }
 
     #[test]
     fn test_cross_cutting() {
-        assert_eq!(classify_query_family("all database initialization and migration functions"), QueryFamily::CrossCuttingSet);
-        assert_eq!(classify_query_family("all embedding and vector operations"), QueryFamily::CrossCuttingSet);
-        assert_eq!(classify_query_family("all JSON RPC and API error types"), QueryFamily::CrossCuttingSet);
-        assert_eq!(classify_query_family("all memory lifecycle operations"), QueryFamily::CrossCuttingSet);
-        assert_eq!(classify_query_family("every handler for incoming requests"), QueryFamily::CrossCuttingSet);
+        assert_eq!(
+            classify_query_family("all database initialization and migration functions"),
+            QueryFamily::CrossCuttingSet
+        );
+        assert_eq!(
+            classify_query_family("all embedding and vector operations"),
+            QueryFamily::CrossCuttingSet
+        );
+        assert_eq!(
+            classify_query_family("all JSON RPC and API error types"),
+            QueryFamily::CrossCuttingSet
+        );
+        assert_eq!(
+            classify_query_family("all memory lifecycle operations"),
+            QueryFamily::CrossCuttingSet
+        );
+        assert_eq!(
+            classify_query_family("every handler for incoming requests"),
+            QueryFamily::CrossCuttingSet
+        );
     }
 
     #[test]
     fn test_relationship() {
-        assert_eq!(classify_query_family("what calls authenticateUser"), QueryFamily::Relationship);
-        assert_eq!(classify_query_family("callers of RateLimiter"), QueryFamily::Relationship);
-        assert_eq!(classify_query_family("how does SearchEngine connect to FtsSearch"), QueryFamily::Relationship);
+        assert_eq!(
+            classify_query_family("what calls authenticateUser"),
+            QueryFamily::Relationship
+        );
+        assert_eq!(
+            classify_query_family("callers of RateLimiter"),
+            QueryFamily::Relationship
+        );
+        assert_eq!(
+            classify_query_family("how does SearchEngine connect to FtsSearch"),
+            QueryFamily::Relationship
+        );
     }
 
     #[test]

@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::search::SearchMode;
 
-pub const MANIFEST_SCHEMA_VERSION: u32 = 3;
+pub const MANIFEST_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,6 +61,8 @@ pub struct FreshnessHash {
     pub symbol_count: i64,
     pub edge_count: i64,
     pub file_count: i64,
+    #[serde(default)]
+    pub content_hash: Option<String>,
 }
 
 impl FreshnessHash {
@@ -72,17 +74,39 @@ impl FreshnessHash {
             file_edges: 0,
             schema_version: "0".into(),
         });
+        let content_hash = db.all_content_hashes().ok().map(|hashes| {
+            let mut acc: [u64; 4] = [0; 4];
+            for hash_bytes in &hashes {
+                for (i, chunk) in hash_bytes.chunks(8).enumerate() {
+                    let mut buf = [0u8; 8];
+                    buf[..chunk.len()].copy_from_slice(chunk);
+                    acc[i % 4] ^= u64::from_le_bytes(buf);
+                }
+            }
+            format!(
+                "{:016x}{:016x}{:016x}{:016x}",
+                acc[0], acc[1], acc[2], acc[3]
+            )
+        });
         Self {
             symbol_count: stats.symbols,
             edge_count: stats.edges,
             file_count: stats.files,
+            content_hash,
         }
     }
 
     pub fn is_stale_vs(&self, other: &FreshnessHash) -> bool {
-        self.symbol_count != other.symbol_count
+        let counts_changed = self.symbol_count != other.symbol_count
             || self.edge_count != other.edge_count
-            || self.file_count != other.file_count
+            || self.file_count != other.file_count;
+        if counts_changed {
+            return true;
+        }
+        match (&self.content_hash, &other.content_hash) {
+            (Some(a), Some(b)) => a != b,
+            _ => false,
+        }
     }
 }
 
@@ -103,9 +127,7 @@ pub struct Manifest {
 
 impl Manifest {
     pub fn compute_active_mode(artifacts: &ArtifactMap) -> SearchMode {
-        if artifacts.fts == ArtifactStatus::Ready
-            && artifacts.cruncher == ArtifactStatus::Ready
-        {
+        if artifacts.fts == ArtifactStatus::Ready && artifacts.cruncher == ArtifactStatus::Ready {
             SearchMode::GraphWalk
         } else {
             SearchMode::Fts
@@ -130,10 +152,9 @@ pub fn manifest_path(db_dir: &Path) -> std::path::PathBuf {
 
 pub fn write_manifest(db_dir: &Path, manifest: &Manifest) -> Result<(), String> {
     let path = manifest_path(db_dir);
-    let content = serde_json::to_string_pretty(manifest)
-        .map_err(|e| format!("serialize manifest: {e}"))?;
-    std::fs::write(&path, content)
-        .map_err(|e| format!("write manifest {}: {e}", path.display()))
+    let content =
+        serde_json::to_string_pretty(manifest).map_err(|e| format!("serialize manifest: {e}"))?;
+    std::fs::write(&path, content).map_err(|e| format!("write manifest {}: {e}", path.display()))
 }
 
 pub fn read_manifest(db_dir: &Path) -> Result<Option<Manifest>, String> {
@@ -143,15 +164,22 @@ pub fn read_manifest(db_dir: &Path) -> Result<Option<Manifest>, String> {
     }
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("read manifest {}: {e}", path.display()))?;
-    let manifest: Manifest = serde_json::from_str(&content)
+    let mut manifest: Manifest = serde_json::from_str(&content)
         .map_err(|e| format!("parse manifest {}: {e}", path.display()))?;
+
+    if manifest.schema_version < MANIFEST_SCHEMA_VERSION {
+        manifest.freshness.content_hash = None;
+        if manifest.artifacts.cruncher == ArtifactStatus::Ready {
+            manifest.artifacts.cruncher = ArtifactStatus::Stale;
+        }
+        manifest.schema_version = MANIFEST_SCHEMA_VERSION;
+        write_manifest(db_dir, &manifest)?;
+    }
+
     Ok(Some(manifest))
 }
 
-pub fn check_artifact_freshness(
-    db: &crate::db::GraphDb,
-    manifest: &Manifest,
-) -> ArtifactMap {
+pub fn check_artifact_freshness(db: &crate::db::GraphDb, manifest: &Manifest) -> ArtifactMap {
     let current = FreshnessHash::from_db(db);
     let topology_changed = manifest.freshness.is_stale_vs(&current);
 
@@ -170,10 +198,7 @@ pub fn check_artifact_freshness(
     artifacts
 }
 
-pub fn build_manifest(
-    db: &crate::db::GraphDb,
-    artifacts: ArtifactMap,
-) -> Manifest {
+pub fn build_manifest(db: &crate::db::GraphDb, artifacts: ArtifactMap) -> Manifest {
     let stats = db.stats().unwrap_or(crate::db::DbStats {
         files: 0,
         symbols: 0,
@@ -222,7 +247,10 @@ mod tests {
     #[test]
     fn test_artifact_status_all_ready_gives_graphwalk() {
         let artifacts = ArtifactMap::all_ready();
-        assert_eq!(Manifest::compute_active_mode(&artifacts), SearchMode::GraphWalk);
+        assert_eq!(
+            Manifest::compute_active_mode(&artifacts),
+            SearchMode::GraphWalk
+        );
     }
 
     #[test]
@@ -248,10 +276,36 @@ mod tests {
 
     #[test]
     fn test_freshness_hash_stale_detection() {
-        let a = FreshnessHash { symbol_count: 100, edge_count: 50, file_count: 10 };
-        let b = FreshnessHash { symbol_count: 101, edge_count: 50, file_count: 10 };
+        let a = FreshnessHash {
+            symbol_count: 100,
+            edge_count: 50,
+            file_count: 10,
+            content_hash: Some("abc".into()),
+        };
+        let b = FreshnessHash {
+            symbol_count: 101,
+            edge_count: 50,
+            file_count: 10,
+            content_hash: Some("abc".into()),
+        };
         assert!(a.is_stale_vs(&b));
         assert!(!a.is_stale_vs(&a));
+
+        let c = FreshnessHash {
+            symbol_count: 100,
+            edge_count: 50,
+            file_count: 10,
+            content_hash: Some("def".into()),
+        };
+        assert!(a.is_stale_vs(&c));
+
+        let d = FreshnessHash {
+            symbol_count: 100,
+            edge_count: 50,
+            file_count: 10,
+            content_hash: None,
+        };
+        assert!(!a.is_stale_vs(&d));
     }
 
     #[test]
@@ -259,7 +313,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let manifest = Manifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
-            freshness: FreshnessHash { symbol_count: 100, edge_count: 50, file_count: 10 },
+            freshness: FreshnessHash {
+                symbol_count: 100,
+                edge_count: 50,
+                file_count: 10,
+                content_hash: None,
+            },
             indexed_at: "12345".into(),
             symbols: 100,
             edges: 50,

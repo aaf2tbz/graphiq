@@ -120,7 +120,12 @@ impl<'a> FtsSearch<'a> {
                     merged.push(r);
                 }
             }
-            merged.sort_by(|a, b| b.bm25_score.partial_cmp(&a.bm25_score).unwrap().then(a.symbol.id.cmp(&b.symbol.id)));
+            merged.sort_by(|a, b| {
+                b.bm25_score
+                    .partial_cmp(&a.bm25_score)
+                    .unwrap()
+                    .then(a.symbol.id.cmp(&b.symbol.id))
+            });
             merged.truncate(limit);
             merged
         } else {
@@ -160,7 +165,12 @@ impl<'a> FtsSearch<'a> {
             .flatten()
             .filter(|r| r.bm25_score.is_finite() && r.bm25_score > 0.0)
             .collect();
-        results.sort_by(|a, b| b.bm25_score.partial_cmp(&a.bm25_score).unwrap().then(a.symbol.id.cmp(&b.symbol.id)));
+        results.sort_by(|a, b| {
+            b.bm25_score
+                .partial_cmp(&a.bm25_score)
+                .unwrap()
+                .then(a.symbol.id.cmp(&b.symbol.id))
+        });
         results
     }
 }

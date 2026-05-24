@@ -25,21 +25,117 @@ fn extract_type_tokens(signature: &str) -> Vec<String> {
     let mut types = Vec::new();
 
     let keywords: HashSet<&str> = [
-        "fn", "pub", "async", "const", "mut", "self", "Self", "super", "crate",
-        "static", "unsafe", "extern", "where", "impl", "let", "return", "if",
-        "else", "for", "while", "match", "struct", "enum", "trait", "type",
-        "mod", "use", "class", "function", "var", "def", "export", "import",
-        "from", "interface", "extends", "implements", "void", "string", "number",
-        "boolean", "any", "unknown", "never", "true", "false", "nil", "None",
-        "Some", "Ok", "Err", "ref", "move", "dyn", "Box", "Vec", "Arc",
-        "Rc", "Option", "Result", "Map", "Set", "HashMap", "HashSet", "String",
-        "Record", "Partial", "Required", "Readonly", "Pick", "Omit",
-        "Awaited", "Parameters", "Args", "Context", "Next",
-        "Config", "Options", "Props", "State", "Data", "Value",
-        "keyof", "infer", "typeof", "instanceof", "in", "of", "as",
-        "u8", "u16", "u32", "u64", "i8", "i16", "i32", "i64",
-        "f32", "f64", "usize", "isize", "bool", "str", "int", "uint",
-        "float", "double", "byte", "short", "long", "char",
+        "fn",
+        "pub",
+        "async",
+        "const",
+        "mut",
+        "self",
+        "Self",
+        "super",
+        "crate",
+        "static",
+        "unsafe",
+        "extern",
+        "where",
+        "impl",
+        "let",
+        "return",
+        "if",
+        "else",
+        "for",
+        "while",
+        "match",
+        "struct",
+        "enum",
+        "trait",
+        "type",
+        "mod",
+        "use",
+        "class",
+        "function",
+        "var",
+        "def",
+        "export",
+        "import",
+        "from",
+        "interface",
+        "extends",
+        "implements",
+        "void",
+        "string",
+        "number",
+        "boolean",
+        "any",
+        "unknown",
+        "never",
+        "true",
+        "false",
+        "nil",
+        "None",
+        "Some",
+        "Ok",
+        "Err",
+        "ref",
+        "move",
+        "dyn",
+        "Box",
+        "Vec",
+        "Arc",
+        "Rc",
+        "Option",
+        "Result",
+        "Map",
+        "Set",
+        "HashMap",
+        "HashSet",
+        "String",
+        "Record",
+        "Partial",
+        "Required",
+        "Readonly",
+        "Pick",
+        "Omit",
+        "Awaited",
+        "Parameters",
+        "Args",
+        "Context",
+        "Next",
+        "Config",
+        "Options",
+        "Props",
+        "State",
+        "Data",
+        "Value",
+        "keyof",
+        "infer",
+        "typeof",
+        "instanceof",
+        "in",
+        "of",
+        "as",
+        "u8",
+        "u16",
+        "u32",
+        "u64",
+        "i8",
+        "i16",
+        "i32",
+        "i64",
+        "f32",
+        "f64",
+        "usize",
+        "isize",
+        "bool",
+        "str",
+        "int",
+        "uint",
+        "float",
+        "double",
+        "byte",
+        "short",
+        "long",
+        "char",
     ]
     .into_iter()
     .collect();
@@ -49,11 +145,13 @@ fn extract_type_tokens(signature: &str) -> Vec<String> {
 
     for c in signature.chars() {
         match c {
-            '(' | ')' | ',' | ':' | '[' | ']' | '{' | '}' | '=' | '&' | '+' | '-' | '*' | '/' | '|' | ';' | '!' | '?' | '~' | '^' | '%' | '#' | '@' | '$' => {
+            '(' | ')' | ',' | ':' | '[' | ']' | '{' | '}' | '=' | '&' | '+' | '-' | '*' | '/'
+            | '|' | ';' | '!' | '?' | '~' | '^' | '%' | '#' | '@' | '$' => {
                 if !current.trim().is_empty() {
                     let trimmed = current.trim();
                     if trimmed.len() >= 2 && !keywords.contains(trimmed) && !trimmed.contains(' ') {
-                        if !(trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() <= 3) {
+                        if !(trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() <= 3)
+                        {
                             types.push(trimmed.to_string());
                         }
                     }
@@ -65,7 +163,8 @@ fn extract_type_tokens(signature: &str) -> Vec<String> {
                 if !current.trim().is_empty() {
                     let trimmed = current.trim();
                     if trimmed.len() >= 2 && !keywords.contains(trimmed) && !trimmed.contains(' ') {
-                        if !(trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() <= 3) {
+                        if !(trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() <= 3)
+                        {
                             types.push(trimmed.to_string());
                         }
                     }
@@ -77,7 +176,8 @@ fn extract_type_tokens(signature: &str) -> Vec<String> {
                 if !current.trim().is_empty() {
                     let trimmed = current.trim();
                     if trimmed.len() >= 2 && !keywords.contains(trimmed) && !trimmed.contains(' ') {
-                        if !(trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() <= 3) {
+                        if !(trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() <= 3)
+                        {
                             types.push(trimmed.to_string());
                         }
                     }
@@ -91,8 +191,13 @@ fn extract_type_tokens(signature: &str) -> Vec<String> {
                 } else {
                     if !current.trim().is_empty() {
                         let trimmed = current.trim();
-                        if trimmed.len() >= 2 && !keywords.contains(trimmed) && !trimmed.contains(' ') {
-                            if !(trimmed.chars().all(|c| c.is_ascii_lowercase()) && trimmed.len() <= 3) {
+                        if trimmed.len() >= 2
+                            && !keywords.contains(trimmed)
+                            && !trimmed.contains(' ')
+                        {
+                            if !(trimmed.chars().all(|c| c.is_ascii_lowercase())
+                                && trimmed.len() <= 3)
+                            {
                                 types.push(trimmed.to_string());
                             }
                         }
@@ -133,19 +238,103 @@ fn extract_field_accesses(source: &str) -> HashSet<String> {
     let bytes = source.as_bytes();
 
     let skip_methods: HashSet<&str> = [
-        "len", "push", "pop", "map", "filter", "unwrap", "expect", "clone",
-        "to", "as_ref", "as_mut", "into", "from", "iter", "collect", "next",
-        "ok", "err", "is_ok", "is_err", "is_some", "is_none", "get", "set",
-        "take", "insert", "remove", "contains", "clear", "with", "new",
-        "default", "then", "and_then", "or_else", "unwrap_or", "to_string",
-        "to_vec", "keys", "values", "entries", "lock", "spawn", "join",
-        "send", "recv", "wait", "notify", "lock", "read", "write", "flush",
-        "close", "open", "seek", "status", "code", "message", "name",
-        "json", "text", "body", "headers", "first", "last", "count", "find",
-        "flat", "reduce", "fold", "forEach", "every", "some", "sort", "reverse",
-        "slice", "splice", "concat", "join", "split", "trim", "start",
-        "end", "replace", "repeat", "pad", "char", "byte", "line", "col",
-        "bind", "call", "apply", "has", "add", "delete", "size",
+        "len",
+        "push",
+        "pop",
+        "map",
+        "filter",
+        "unwrap",
+        "expect",
+        "clone",
+        "to",
+        "as_ref",
+        "as_mut",
+        "into",
+        "from",
+        "iter",
+        "collect",
+        "next",
+        "ok",
+        "err",
+        "is_ok",
+        "is_err",
+        "is_some",
+        "is_none",
+        "get",
+        "set",
+        "take",
+        "insert",
+        "remove",
+        "contains",
+        "clear",
+        "with",
+        "new",
+        "default",
+        "then",
+        "and_then",
+        "or_else",
+        "unwrap_or",
+        "to_string",
+        "to_vec",
+        "keys",
+        "values",
+        "entries",
+        "lock",
+        "spawn",
+        "join",
+        "send",
+        "recv",
+        "wait",
+        "notify",
+        "lock",
+        "read",
+        "write",
+        "flush",
+        "close",
+        "open",
+        "seek",
+        "status",
+        "code",
+        "message",
+        "name",
+        "json",
+        "text",
+        "body",
+        "headers",
+        "first",
+        "last",
+        "count",
+        "find",
+        "flat",
+        "reduce",
+        "fold",
+        "forEach",
+        "every",
+        "some",
+        "sort",
+        "reverse",
+        "slice",
+        "splice",
+        "concat",
+        "join",
+        "split",
+        "trim",
+        "start",
+        "end",
+        "replace",
+        "repeat",
+        "pad",
+        "char",
+        "byte",
+        "line",
+        "col",
+        "bind",
+        "call",
+        "apply",
+        "has",
+        "add",
+        "delete",
+        "size",
     ]
     .into_iter()
     .collect();
@@ -153,13 +342,14 @@ fn extract_field_accesses(source: &str) -> HashSet<String> {
     for i in 0..bytes.len().saturating_sub(1) {
         if bytes[i] == b'.' {
             let mut end = i + 1;
-            while end < bytes.len()
-                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
-            {
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
                 end += 1;
             }
             let field = std::str::from_utf8(&bytes[i + 1..end]).unwrap_or("");
-            if field.len() >= 2 && !skip_methods.contains(field) && !field.chars().all(|c| c.is_ascii_uppercase()) {
+            if field.len() >= 2
+                && !skip_methods.contains(field)
+                && !field.chars().all(|c| c.is_ascii_uppercase())
+            {
                 fields.insert(field.to_string());
             }
         }
@@ -168,7 +358,9 @@ fn extract_field_accesses(source: &str) -> HashSet<String> {
     fields
 }
 
-pub fn compute_deep_graph_edges(db: &GraphDb) -> Result<DeepGraphStats, Box<dyn std::error::Error>> {
+pub fn compute_deep_graph_edges(
+    db: &GraphDb,
+) -> Result<DeepGraphStats, Box<dyn std::error::Error>> {
     let conn = db.conn();
 
     let mut sym_stmt = conn.prepare(
@@ -232,7 +424,11 @@ pub fn compute_deep_graph_edges(db: &GraphDb) -> Result<DeepGraphStats, Box<dyn 
         let base_weight = (0.15 * rarity).min(0.40);
         let is_err = is_error_type(type_name);
 
-        let insert = if is_err { &mut error_insert } else { &mut type_insert };
+        let insert = if is_err {
+            &mut error_insert
+        } else {
+            &mut type_insert
+        };
         let kind_weight = if is_err { 0.55 } else { 0.40 };
 
         for w in sym_indices.windows(2) {
@@ -244,7 +440,12 @@ pub fn compute_deep_graph_edges(db: &GraphDb) -> Result<DeepGraphStats, Box<dyn 
             let a_id = symbols[ai].0;
             let b_id = symbols[bi].0;
             let cross = symbols[ai].5 != symbols[bi].5;
-            let final_w = (if cross { base_weight * 1.5 } else { base_weight }).min(kind_weight);
+            let final_w = (if cross {
+                base_weight * 1.5
+            } else {
+                base_weight
+            })
+            .min(kind_weight);
             if final_w < 0.04 {
                 continue;
             }
@@ -281,7 +482,11 @@ pub fn compute_deep_graph_edges(db: &GraphDb) -> Result<DeepGraphStats, Box<dyn 
             let a_id = symbols[ai].0;
             let b_id = symbols[bi].0;
             let cross = symbols[ai].5 != symbols[bi].5;
-            let final_w = if cross { base_weight * 1.5 } else { base_weight };
+            let final_w = if cross {
+                base_weight * 1.5
+            } else {
+                base_weight
+            };
             if final_w < 0.03 {
                 continue;
             }
@@ -376,7 +581,9 @@ fn extract_comment_refs(source: &str, symbol_names: &[String]) -> HashSet<String
     refs
 }
 
-pub fn compute_source_graph_edges(db: &GraphDb) -> Result<DeepGraphStats, Box<dyn std::error::Error>> {
+pub fn compute_source_graph_edges(
+    db: &GraphDb,
+) -> Result<DeepGraphStats, Box<dyn std::error::Error>> {
     let conn = db.conn();
 
     let mut sym_stmt = conn.prepare(
@@ -398,7 +605,10 @@ pub fn compute_source_graph_edges(db: &GraphDb) -> Result<DeepGraphStats, Box<dy
 
     let n = symbols.len();
     let total_syms = n as f64;
-    let symbol_names: Vec<String> = symbols.iter().map(|(_, name, _, _, _)| name.clone()).collect();
+    let symbol_names: Vec<String> = symbols
+        .iter()
+        .map(|(_, name, _, _, _)| name.clone())
+        .collect();
 
     let mut string_to_symbols: HashMap<String, Vec<usize>> = HashMap::new();
     let mut comment_to_symbols: HashMap<String, Vec<usize>> = HashMap::new();
@@ -420,7 +630,10 @@ pub fn compute_source_graph_edges(db: &GraphDb) -> Result<DeepGraphStats, Box<dy
                 || lower.contains("overflow")
                 || lower.contains("deadlock")
             {
-                string_to_symbols.entry(lit.to_lowercase()).or_default().push(i);
+                string_to_symbols
+                    .entry(lit.to_lowercase())
+                    .or_default()
+                    .push(i);
             }
         }
         for ref_name in extract_comment_refs(source, &symbol_names) {
@@ -459,7 +672,12 @@ pub fn compute_source_graph_edges(db: &GraphDb) -> Result<DeepGraphStats, Box<dy
             let a_id = symbols[ai].0;
             let b_id = symbols[bi].0;
             let cross = symbols[ai].4 != symbols[bi].4;
-            let final_w = (if cross { base_weight * 1.5 } else { base_weight }).min(0.55);
+            let final_w = (if cross {
+                base_weight * 1.5
+            } else {
+                base_weight
+            })
+            .min(0.55);
             if final_w < 0.04 {
                 continue;
             }
@@ -492,7 +710,12 @@ pub fn compute_source_graph_edges(db: &GraphDb) -> Result<DeepGraphStats, Box<dy
             let a_id = symbols[ai].0;
             let b_id = symbols[bi].0;
             let cross = symbols[ai].4 != symbols[bi].4;
-            let final_w = (if cross { base_weight * 1.5 } else { base_weight }).min(0.40);
+            let final_w = (if cross {
+                base_weight * 1.5
+            } else {
+                base_weight
+            })
+            .min(0.40);
             if final_w < 0.03 {
                 continue;
             }

@@ -9,10 +9,12 @@
 //! → background_warm (full index if empty, else prewarm cache + build cruncher)
 //! → handle JSON-RPC messages (tool calls, initialize, shutdown).
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
@@ -20,17 +22,15 @@ const SERVER_NAME: &str = "graphiq";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// Mutable state for the MCP server, shared across tool calls.
-/// Holds the project root, database connection, search cache, and
-/// optional CruncherIndex for GraphWalk mode.
 struct ServerState {
     project_root: PathBuf,
     db_path: PathBuf,
     db: graphiq_core::db::GraphDb,
     cache: graphiq_core::cache::HotCache,
     cruncher_index: Option<graphiq_core::cruncher::CruncherIndex>,
-    indexing: bool,
     watching: bool,
+    last_cruncher_rebuild_at: Option<std::time::Instant>,
+    last_staleness_check_at: Option<std::time::Instant>,
 }
 
 fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
@@ -107,12 +107,13 @@ fn resolve_db_path(project_root: &Path) -> PathBuf {
     project_root.join(".graphiq").join("graphiq.db")
 }
 
-fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool, bool) {
+fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool, bool, Option<String>) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut db_override: Option<PathBuf> = None;
     let mut project_arg: Option<PathBuf> = None;
     let mut ephemeral = false;
     let mut watch = false;
+    let mut session_id: Option<String> = None;
 
     if let Ok(val) = std::env::var("GRAPHIQ_DB") {
         if !val.is_empty() {
@@ -137,6 +138,15 @@ fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool, bool) {
                 ephemeral = true;
                 i += 1;
             }
+            "--session-id" => {
+                if i + 1 < args.len() {
+                    session_id = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    log_err("--session-id requires an ID argument");
+                    i += 1;
+                }
+            }
             "--watch" => {
                 watch = true;
                 i += 1;
@@ -150,7 +160,7 @@ fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool, bool) {
         }
     }
 
-    (project_arg, db_override, ephemeral, watch)
+    (project_arg, db_override, ephemeral, watch, session_id)
 }
 
 fn db_is_empty(db: &graphiq_core::db::GraphDb) -> bool {
@@ -170,7 +180,10 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
         Err(e) => {
             let err_str = e.to_string();
             if err_str.contains("malformed") || err_str.contains("database disk image") {
-                log_err(&format!("corrupted database detected, deleting and recreating: {}", db_path.display()));
+                log_err(&format!(
+                    "corrupted database detected, deleting and recreating: {}",
+                    db_path.display()
+                ));
                 drop(indexer);
 
                 let wal = db_path.with_extension("db-wal");
@@ -187,7 +200,8 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
                     .map_err(|e2| format!("failed to recreate database: {e2}"))?;
 
                 let indexer2 = graphiq_core::index::Indexer::new(&state.db);
-                indexer2.index_project(&state.project_root)
+                indexer2
+                    .index_project(&state.project_root)
                     .map_err(|e2| format!("re-index after recovery failed: {e2}"))?
             } else {
                 return Err(format!("index failed: {e}"));
@@ -224,7 +238,7 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
 }
 
 fn main() {
-    let (project_arg, db_override, ephemeral, watch) = parse_args();
+    let (project_arg, db_override, ephemeral, watch, session_id) = parse_args();
 
     let explicit = project_arg.is_some();
     let raw_arg = project_arg
@@ -234,7 +248,11 @@ fn main() {
 
     let project_root = resolve_project_root(&raw_arg, explicit);
 
-    let ephemeral_dir: Option<PathBuf> = if ephemeral {
+    let ephemeral_dir: Option<PathBuf> = if let Some(ref sid) = session_id {
+        let dir = std::env::temp_dir().join(format!("graphiq-session-{}", sid));
+        log_err(&format!("session mode: {} (id: {})", dir.display(), sid));
+        Some(dir)
+    } else if ephemeral {
         let dir = std::env::temp_dir().join(format!(
             "graphiq-{:x}",
             std::time::SystemTime::now()
@@ -270,17 +288,35 @@ fn main() {
         }
     };
 
+    let mut needs_reindex = false;
     let project_root = {
         if let Ok(temp_db) = graphiq_core::db::GraphDb::open(&db_path) {
             if let Ok(Some(stored)) = temp_db.get_meta("project_root") {
                 let stored_path = PathBuf::from(&stored);
-                if stored_path != project_root && stored_path.exists() {
+                if stored_path != project_root && stored_path.exists() && project_root.exists() {
+                    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+                    let manifest = graphiq_core::manifest::read_manifest(db_dir).ok().flatten();
+                    let current_hash = graphiq_core::manifest::FreshnessHash::from_db(&temp_db);
+                    let manifest_stale = manifest
+                        .as_ref()
+                        .map_or(true, |m| m.freshness.is_stale_vs(&current_hash));
+                    if manifest_stale {
+                        log_err(&format!(
+                            "DB was indexed from {} but server was given {}. Manifest stale. Clearing DB for reindex.",
+                            stored_path.display(),
+                            project_root.display()
+                        ));
+                        needs_reindex = true;
+                    }
+                    project_root
+                } else if stored_path != project_root && !stored_path.exists() {
                     log_err(&format!(
-                        "DB was indexed from {} but server was given {}. Using stored root.",
+                        "DB was indexed from {} but that path no longer exists. Using {}. Will reindex.",
                         stored_path.display(),
                         project_root.display()
                     ));
-                    stored_path
+                    needs_reindex = true;
+                    project_root
                 } else {
                     project_root
                 }
@@ -330,17 +366,39 @@ fn main() {
         }
     };
 
+    let db = if needs_reindex {
+        drop(db);
+        log_err("clearing stale database for reindex...");
+        let wal = db_path.with_extension("db-wal");
+        let shm = db_path.with_extension("db-shm");
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(&wal);
+        let _ = std::fs::remove_file(&shm);
+        if let Some(parent) = db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        graphiq_core::db::GraphDb::open(&db_path).unwrap_or_else(|e| {
+            let msg = format!("failed to recreate database {}: {e}", db_path.display());
+            log_err(&msg);
+            std::process::exit(1);
+        })
+    } else {
+        db
+    };
+
     let state = Arc::new(Mutex::new(ServerState {
         project_root: project_root.clone(),
         db_path: db_path.clone(),
         db,
         cache: graphiq_core::cache::HotCache::with_defaults(),
         cruncher_index: None,
-        indexing: false,
         watching: watch,
+        last_cruncher_rebuild_at: None,
+        last_staleness_check_at: None,
     }));
 
     let running = Arc::new(AtomicBool::new(true));
+    let indexing = Arc::new(AtomicBool::new(false));
 
     if ephemeral {
         let edir_clone = ephemeral_dir.clone();
@@ -368,8 +426,9 @@ fn main() {
     if watch {
         let watch_root = project_root.clone();
         let watch_state = Arc::clone(&state);
+        let watch_indexing = Arc::clone(&indexing);
         std::thread::spawn(move || {
-            run_watcher(&watch_root, &watch_state);
+            run_watcher(&watch_root, &watch_state, &watch_indexing);
         });
         log_err("watcher started");
     }
@@ -404,7 +463,7 @@ fn main() {
             }
         };
 
-        if let Err(e) = handle_message(&msg, &state, &running, &mut stdout) {
+        if let Err(e) = handle_message(&msg, &state, &indexing, &running, &mut stdout) {
             log_err(&format!("handler error: {e}"));
         }
     }
@@ -415,13 +474,16 @@ fn main() {
     }
 }
 
-fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>) {
+fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>, indexing: &Arc<AtomicBool>) {
     use notify::{Config, Event, PollWatcher, RecursiveMode, Watcher};
 
     let watch_path = match std::fs::canonicalize(project_root) {
         Ok(p) => p,
         Err(e) => {
-            log_err(&format!("watcher: cannot canonicalize {}: {e}", project_root.display()));
+            log_err(&format!(
+                "watcher: cannot canonicalize {}: {e}",
+                project_root.display()
+            ));
             return;
         }
     };
@@ -450,14 +512,20 @@ fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>) {
     log_err(&format!("watcher: watching {}", watch_path.display()));
 
     let ignore_dirs: &[&str] = &[
-        ".git", "node_modules", "target", "build", "dist", ".graphiq",
-        "__pycache__", ".next", "vendor", ".cargo", "bun.lock",
+        ".git",
+        "node_modules",
+        "target",
+        "build",
+        "dist",
+        ".graphiq",
+        "__pycache__",
+        ".next",
+        "vendor",
+        ".cargo",
+        "bun.lock",
     ];
 
-    let debounce = std::time::Duration::from_secs(2);
-    let mut last_event = std::time::Instant::now()
-        .checked_sub(debounce)
-        .unwrap_or(std::time::Instant::now());
+    let merge_window = std::time::Duration::from_millis(500);
 
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(500)) {
@@ -499,33 +567,29 @@ fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>) {
                     continue;
                 }
 
-                let now = std::time::Instant::now();
-                if now.duration_since(last_event) < debounce {
-                    continue;
-                }
-                last_event = now;
+                while let Ok(Ok(_)) = rx.recv_timeout(merge_window) {}
 
                 log_err("watcher: file change detected, reindexing...");
+                if indexing.load(Ordering::Acquire) {
+                    log_err("watcher: index already in progress, skipping");
+                    continue;
+                }
+                indexing.store(true, Ordering::Release);
                 let mut s = match state.lock() {
                     Ok(s) => s,
                     Err(e) => {
                         log_err(&format!("watcher: lock failed: {e}"));
+                        indexing.store(false, Ordering::Release);
                         continue;
                     }
                 };
 
-                if s.indexing {
-                    log_err("watcher: index already in progress, skipping");
-                    continue;
-                }
-
-                s.indexing = true;
                 if let Err(e) = do_index(&mut s) {
                     log_err(&format!("watcher: reindex failed: {e}"));
                 } else {
                     log_err("watcher: reindex complete");
                 }
-                s.indexing = false;
+                indexing.store(false, Ordering::Release);
             }
             Ok(Err(e)) => {
                 log_err(&format!("watcher: error: {e}"));
@@ -553,7 +617,51 @@ fn sync_project_root_from_db(state: &mut ServerState) {
     }
 }
 
-fn background_warm(state: &Arc<Mutex<ServerState>>) {
+fn ensure_cruncher_fresh(state: &mut ServerState) -> Option<String> {
+    if let Some(last) = state.last_staleness_check_at {
+        if last.elapsed().as_secs() < 5 {
+            return None;
+        }
+    }
+    state.last_staleness_check_at = Some(std::time::Instant::now());
+
+    let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
+    let manifest = match graphiq_core::manifest::read_manifest(db_dir) {
+        Ok(Some(m)) => m,
+        _ => return None,
+    };
+
+    let fresh = graphiq_core::manifest::check_artifact_freshness(&state.db, &manifest);
+    if fresh.cruncher != graphiq_core::manifest::ArtifactStatus::Stale {
+        return None;
+    }
+
+    if let Some(last) = state.last_cruncher_rebuild_at {
+        if last.elapsed().as_secs() < 30 {
+            return None;
+        }
+    }
+
+    log_err("staleness guard: cruncher stale, rebuilding...");
+    match graphiq_core::cruncher::build_cruncher_index(&state.db) {
+        Ok(ci) => {
+            state.cruncher_index = Some(ci);
+            state.last_cruncher_rebuild_at = Some(std::time::Instant::now());
+            let updated = graphiq_core::manifest::build_manifest_all_ready(&state.db);
+            if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &updated) {
+                log_err(&format!("staleness guard: manifest write failed: {e}"));
+            }
+            log_err("staleness guard: cruncher rebuilt");
+            Some("cruncher silently rebuilt (index was stale)".into())
+        }
+        Err(e) => {
+            log_err(&format!("staleness guard: cruncher rebuild failed: {e}"));
+            None
+        }
+    }
+}
+
+fn background_warm(state: &Arc<Mutex<ServerState>>, indexing: &Arc<AtomicBool>) {
     let needs_full_index = {
         match state.lock() {
             Ok(s) => db_is_empty(&s.db),
@@ -562,19 +670,20 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
     };
 
     if needs_full_index {
+        indexing.store(true, Ordering::Release);
         let mut s = match state.lock() {
             Ok(s) => s,
             Err(e) => {
                 log_err(&format!("warm: lock failed: {e}"));
+                indexing.store(false, Ordering::Release);
                 return;
             }
         };
-        s.indexing = true;
         log_err("warm: database empty, starting full index...");
         if let Err(e) = do_index(&mut s) {
             log_err(&format!("warm: full index failed: {e}"));
         }
-        s.indexing = false;
+        indexing.store(false, Ordering::Release);
         log_err("warm: full index complete");
         return;
     }
@@ -596,6 +705,8 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
             s.cruncher_index = Some(ci);
             log_err("warm: cruncher built");
         }
+    } else {
+        ensure_cruncher_fresh(&mut s);
     }
 
     log_err("warm: ready");
@@ -604,6 +715,7 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
 fn handle_message(
     msg: &Value,
     state: &Arc<Mutex<ServerState>>,
+    indexing: &Arc<AtomicBool>,
     running: &Arc<AtomicBool>,
     out: &mut impl Write,
 ) -> Result<(), String> {
@@ -630,7 +742,10 @@ fn handle_message(
         "initialize" => {
             let (pr, dp) = {
                 let s = state.lock().map_err(|e| e.to_string())?;
-                (s.project_root.display().to_string(), s.db_path.display().to_string())
+                (
+                    s.project_root.display().to_string(),
+                    s.db_path.display().to_string(),
+                )
             };
             let result = json!({
                 "protocolVersion": PROTOCOL_VERSION,
@@ -649,8 +764,9 @@ fn handle_message(
             });
             send_response(id, &result, out)?;
             let state_c = Arc::clone(state);
+            let indexing_c = Arc::clone(indexing);
             std::thread::spawn(move || {
-                background_warm(&state_c);
+                background_warm(&state_c, &indexing_c);
             });
         }
         "initialized" => {}
@@ -671,7 +787,7 @@ fn handle_message(
         }
         "tools/call" => {
             let params = msg.get("params").cloned().unwrap_or(json!({}));
-            let result = handle_tool_call(state, params);
+            let result = handle_tool_call(state, indexing, params);
             send_response(id, &result, out)?;
         }
         "shutdown" => {
@@ -774,6 +890,11 @@ fn tools_list() -> Value {
                         "symbol": {
                             "type": "string",
                             "description": "Symbol name"
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "description": "Number of surrounding file lines to include before/after the symbol (default 0)",
+                            "default": 0
                         }
                     },
                     "required": ["symbol"]
@@ -817,6 +938,10 @@ fn tools_list() -> Value {
                         "subsystem": {
                             "type": "string",
                             "description": "Focus on a specific subsystem"
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "Structured pattern query: hub, bridge, leaf, entry_point, orchestrator, boundary, container, validator, error_handler"
                         }
                     },
                     "required": ["question"]
@@ -941,7 +1066,11 @@ fn tools_list() -> Value {
     })
 }
 
-fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
+fn handle_tool_call(
+    state: &Arc<Mutex<ServerState>>,
+    indexing: &Arc<AtomicBool>,
+    params: Value,
+) -> Value {
     let tool_name = match params.get("name").and_then(|v| v.as_str()) {
         Some(n) => n,
         None => {
@@ -956,133 +1085,118 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
     }
 
     if tool_name != "index" && tool_name != "status" && tool_name != "doctor" {
-        let (needs_index, currently_indexing) = {
-            match state.lock() {
-                Ok(s) => (db_is_empty(&s.db), s.indexing),
-                Err(_) => (false, false),
-            }
-        };
-        if currently_indexing {
+        if indexing.load(Ordering::Acquire) {
             return tool_ok("Indexing in progress — please retry in a few seconds.".into());
         }
+        let needs_index = {
+            match state.lock() {
+                Ok(s) => db_is_empty(&s.db),
+                Err(_) => false,
+            }
+        };
         if needs_index {
+            indexing.store(true, Ordering::Release);
             let mut s = match state.lock() {
                 Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
+                Err(e) => {
+                    indexing.store(false, Ordering::Release);
+                    return tool_error(&format!("lock error: {e}"));
+                }
             };
-            s.indexing = true;
-            log_err("auto-indexing (cold start)...");
-            if let Err(e) = do_index(&mut s) {
-                s.indexing = false;
-                return tool_error(&format!("auto-index failed: {e}"));
+            if !db_is_empty(&s.db) {
+                indexing.store(false, Ordering::Release);
+            } else {
+                log_err("auto-indexing (cold start)...");
+                if let Err(e) = do_index(&mut s) {
+                    indexing.store(false, Ordering::Release);
+                    return tool_error(&format!("auto-index failed: {e}"));
+                }
+                indexing.store(false, Ordering::Release);
             }
-            s.indexing = false;
         }
     }
 
     match tool_name {
         "search" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
-            tool_search(&s, arguments)
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let staleness_note = ensure_cruncher_fresh(&mut s);
+            let result = tool_search(&s, arguments);
+            match staleness_note {
+                Some(note) => {
+                    let mut lines = vec![note];
+                    if let Some(content) = result
+                        .get("content")
+                        .and_then(|c| c.as_array())
+                        .and_then(|a| a.first())
+                        .and_then(|e| e.get("text"))
+                        .and_then(|t| t.as_str())
+                    {
+                        lines.push(content.to_string());
+                    }
+                    tool_ok(lines.join("\n"))
+                }
+                None => result,
+            }
         }
         "blast" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_blast(&s.db, arguments)
         }
         "context" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_context(&s.db, &s.cache, arguments)
         }
         "status" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_status(&s)
         }
         "index" => {
-            let mut s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
-            match do_index(&mut s) {
+            indexing.store(true, Ordering::Release);
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let result = match do_index(&mut s) {
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
-            }
+            };
+            indexing.store(false, Ordering::Release);
+            result
         }
         "explain" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_explain(&s.db, arguments)
         }
         "topology" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_topology(&s.db, arguments)
         }
         "why" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_why(&s.db, &s.cache, s.cruncher_index.as_ref(), arguments)
         }
         "interrogate" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_interrogate(&s.db, arguments)
         }
         "doctor" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_doctor(&s)
         }
         "upgrade_index" => {
-            let mut s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
             match tool_upgrade_index(&mut s) {
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
             }
         }
         "constants" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_constants(&s.db, arguments)
         }
         "dead_code" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_dead_code(&s.db)
         }
         "briefing" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_briefing(&s.db, arguments)
         }
         _ => tool_error(&format!("unknown tool: {tool_name}")),
@@ -1102,10 +1216,7 @@ fn tool_ok(text: String) -> Value {
     })
 }
 
-fn tool_search(
-    state: &ServerState,
-    args: Value,
-) -> Value {
+fn tool_search(state: &ServerState, args: Value) -> Value {
     let query = match args.get("query").and_then(|v| v.as_str()) {
         Some(q) => q,
         None => return tool_error("missing required parameter: query"),
@@ -1115,10 +1226,7 @@ fn tool_search(
         return tool_error("query must not be empty");
     }
 
-    let requested_top_k = args
-        .get("top_k")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(10);
+    let requested_top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(10);
     let top_k = requested_top_k.min(50) as usize;
     let file_filter = args.get("file_filter").and_then(|v| v.as_str());
 
@@ -1131,10 +1239,39 @@ fn tool_search(
         q = q.file_filter(f);
     }
 
-    let result = engine.search(&q);
+    let mut result = engine.search(&q);
+
+    let cluster = args
+        .get("cluster")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    if cluster && result.results.len() > 3 {
+        let mut by_file: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, scored) in result.results.iter().enumerate() {
+            let file = scored.file_path.clone().unwrap_or_default();
+            by_file.entry(file).or_default().push(i);
+        }
+        let mut clustered: Vec<usize> = Vec::new();
+        let mut backfill: Vec<usize> = Vec::new();
+        for (_, indices) in &by_file {
+            let take = indices.len().min(3);
+            clustered.extend(indices.iter().take(take));
+            backfill.extend(indices.iter().skip(take));
+        }
+        clustered.extend(backfill);
+        let mut new_results = Vec::with_capacity(clustered.len());
+        for idx in clustered {
+            new_results.push(result.results[idx].clone());
+        }
+        result.results = new_results;
+    }
 
     let mut lines = Vec::new();
-    let cap_note = if requested_top_k > 50 { format!(" (capped from {})", requested_top_k) } else { String::new() };
+    let cap_note = if requested_top_k > 50 {
+        format!(" (capped from {})", requested_top_k)
+    } else {
+        String::new()
+    };
     lines.push(format!(
         "Search: \"{}\" ({} results, family: {}, mode: {}{})",
         query,
@@ -1144,6 +1281,8 @@ fn tool_search(
         cap_note,
     ));
     lines.push(String::new());
+
+    let subsystems = graphiq_core::subsystems::load_subsystems(&state.db).ok();
 
     for (i, scored) in result.results.iter().enumerate() {
         let sym = &scored.symbol;
@@ -1155,15 +1294,40 @@ fn tool_search(
             let callers = n.callers.len();
             let callees = n.callees.len();
             let members = n.members.len();
-            if callers >= 10 { "hub" }
-            else if callers >= 3 && callees >= 3 { "bridge" }
-            else if callers > 0 && callees > 0 { "connector" }
-            else if members > 0 { "container" }
-            else { "" }
+            if callers >= 10 {
+                "hub"
+            } else if callers >= 3 && callees >= 3 {
+                "bridge"
+            } else if callers > 0 && callees > 0 {
+                "connector"
+            } else if members > 0 {
+                "container"
+            } else {
+                ""
+            }
         });
-        let role_str = if role_tag.is_empty() { String::new() } else { format!(" [{}]", role_tag) };
+        let role_str = if role_tag.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", role_tag)
+        };
+        let subsystem_str = subsystems
+            .as_ref()
+            .and_then(|si| {
+                si.symbol_to_subsystem
+                    .get(&sym.id)
+                    .map(|&idx| si.subsystems.get(idx))
+                    .flatten()
+            })
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let subsystem_tag = if subsystem_str.is_empty() {
+            String::new()
+        } else {
+            format!(" subsystem: {}", subsystem_str)
+        };
         lines.push(format!(
-            "#{} [{:.2}] {}:{}  {}::{} ({}L){}",
+            "#{} [{:.2}] {}:{}  {}::{} ({}L){}{}",
             i + 1,
             scored.score,
             file,
@@ -1172,6 +1336,7 @@ fn tool_search(
             sym.name,
             line_count,
             role_str,
+            subsystem_tag,
         ));
         if let Some(ref sig) = sym.signature {
             let short = sig.lines().next().unwrap_or("");
@@ -1179,8 +1344,26 @@ fn tool_search(
         }
 
         if let Some(ref n) = neighborhood {
-            let caller_names: Vec<String> = n.callers.iter().take(3).map(|(s, _)| s.name.clone()).collect();
-            let callee_names: Vec<String> = n.callees.iter().take(3).map(|(s, _)| s.name.clone()).collect();
+            let incoming = n.callers.len();
+            let outgoing = n.callees.len();
+            if incoming > 0 || outgoing > 0 {
+                lines.push(format!(
+                    "  edges: {} incoming, {} outgoing",
+                    incoming, outgoing
+                ));
+            }
+            let caller_names: Vec<String> = n
+                .callers
+                .iter()
+                .take(3)
+                .map(|(s, _)| s.name.clone())
+                .collect();
+            let callee_names: Vec<String> = n
+                .callees
+                .iter()
+                .take(3)
+                .map(|(s, _)| s.name.clone())
+                .collect();
             if !caller_names.is_empty() || !callee_names.is_empty() {
                 lines.push("  calls:".into());
                 for name in &callee_names {
@@ -1205,6 +1388,28 @@ fn tool_search(
 
     if result.results.is_empty() {
         lines.push("No results found.".into());
+    } else {
+        let name_counts: HashMap<String, usize> =
+            result.results.iter().fold(HashMap::new(), |mut acc, r| {
+                *acc.entry(r.symbol.name.clone()).or_insert(0) += 1;
+                acc
+            });
+        let ambiguous: Vec<&str> = name_counts
+            .iter()
+            .filter(|(_, &count)| count > 1)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if !ambiguous.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Note: {} — use context with file path or qualified name for specific result.",
+                ambiguous
+                    .iter()
+                    .map(|n| format!("'{}' appears multiple times", n))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
     }
 
     tool_ok(lines.join("\n"))
@@ -1255,13 +1460,32 @@ fn tool_blast(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     }
 
     let disambig = if candidates.len() > 1 {
-        let alts: Vec<String> = candidates.iter().take(5).map(|s| {
-            let f = s.source.lines().next().unwrap_or("").trim();
-            let preview = if f.len() > 60 { &f[..60] } else { f };
-            format!("    {} (file_id: {})  {}", s.kind.as_str(), s.file_id, preview)
-        }).collect();
-        let extra = if candidates.len() > 5 { format!("\n    ... and {} more", candidates.len() - 5) } else { String::new() };
-        format!("\nNote: {} symbols match '{}'. Using first result.\nAlternatives:\n{}{}\n", candidates.len(), symbol_name, alts.join("\n"), extra)
+        let alts: Vec<String> = candidates
+            .iter()
+            .take(5)
+            .map(|s| {
+                let f = s.source.lines().next().unwrap_or("").trim();
+                let preview = if f.len() > 60 { &f[..60] } else { f };
+                format!(
+                    "    {} (file_id: {})  {}",
+                    s.kind.as_str(),
+                    s.file_id,
+                    preview
+                )
+            })
+            .collect();
+        let extra = if candidates.len() > 5 {
+            format!("\n    ... and {} more", candidates.len() - 5)
+        } else {
+            String::new()
+        };
+        format!(
+            "\nNote: {} symbols match '{}'. Using first result.\nAlternatives:\n{}{}\n",
+            candidates.len(),
+            symbol_name,
+            alts.join("\n"),
+            extra
+        )
     } else {
         String::new()
     };
@@ -1273,7 +1497,21 @@ fn tool_blast(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     };
 
     match graphiq_core::blast::compute_blast_radius(db, sym.id, depth, direction, None) {
-        Ok(radius) => tool_ok(format!("{}{}", disambig, graphiq_core::blast::format_blast_report(&radius))),
+        Ok(radius) => {
+            let total = radius.forward_count() + radius.backward_count();
+            let mut output = format!(
+                "{}{}",
+                disambig,
+                graphiq_core::blast::format_blast_report(&radius)
+            );
+            if total > 50 {
+                output.push_str(&format!(
+                    "\n\nLarge blast radius ({} symbols affected). Consider using topology with a smaller depth for focused analysis.",
+                    total
+                ));
+            }
+            tool_ok(output)
+        }
         Err(e) => tool_error(&format!("blast computation failed: {e}")),
     }
 }
@@ -1325,7 +1563,60 @@ fn tool_context(
     ));
     lines.push(String::new());
     lines.push("Source:".into());
-    lines.push(sym.source.clone());
+
+    let source_lines: Vec<&str> = sym.source.lines().collect();
+    let total_lines = source_lines.len();
+    let context_lines = args
+        .get("context_lines")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    if total_lines > 50 {
+        let head_n = 10.min(total_lines);
+        let tail_n = 5.min(total_lines.saturating_sub(head_n));
+        for line in source_lines.iter().take(head_n) {
+            lines.push(line.to_string());
+        }
+        if total_lines > head_n + tail_n {
+            lines.push(format!(
+                "    ... ({} lines omitted, showing {} of {})",
+                total_lines - head_n - tail_n,
+                head_n + tail_n,
+                total_lines
+            ));
+        }
+        for line in source_lines.iter().skip(total_lines - tail_n) {
+            lines.push(line.to_string());
+        }
+    } else {
+        lines.push(sym.source.clone());
+    }
+
+    if context_lines > 0 {
+        if let Ok(Some(file_path)) = db.file_path_for_id(sym.file_id) {
+            if let Ok(file_content) = std::fs::read_to_string(&file_path) {
+                let file_lines: Vec<&str> = file_content.lines().collect();
+                let line_start = sym.line_start as usize;
+                let line_end = sym.line_end as usize;
+                let start = line_start.saturating_sub(context_lines + 1);
+                let end = (line_end + context_lines).min(file_lines.len());
+                lines.push(String::new());
+                lines.push(format!(
+                    "Context ({} lines before, {} after):",
+                    line_start.saturating_sub(start + 1),
+                    end.saturating_sub(line_end)
+                ));
+                for (i, line) in file_lines.iter().enumerate().take(end).skip(start) {
+                    let marker = if i + 1 >= line_start && i + 1 <= line_end {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    lines.push(format!("{} {:>4} | {}", marker, i + 1, line));
+                }
+            }
+        }
+    }
 
     if let Some(n) = neighborhood {
         if !n.callers.is_empty() {
@@ -1386,7 +1677,14 @@ fn tool_status(state: &ServerState) -> Value {
             let mode = engine.active_mode();
 
             let mut artifacts = Vec::new();
-            artifacts.push(format!("cruncher: {}", if state.cruncher_index.is_some() { "ready" } else { "missing" }));
+            artifacts.push(format!(
+                "cruncher: {}",
+                if state.cruncher_index.is_some() {
+                    "ready"
+                } else {
+                    "missing"
+                }
+            ));
             if state.watching {
                 artifacts.push("watcher: active".to_string());
             }
@@ -1394,8 +1692,10 @@ fn tool_status(state: &ServerState) -> Value {
             let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
             let manifest_section = match graphiq_core::manifest::read_manifest(db_dir) {
                 Ok(Some(manifest)) => {
-                    let fresh = graphiq_core::manifest::check_artifact_freshness(&state.db, &manifest);
-                    let manifest_mode = graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
+                    let fresh =
+                        graphiq_core::manifest::check_artifact_freshness(&state.db, &manifest);
+                    let manifest_mode =
+                        graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
                     let mut s = format!(
                         "\n  Manifest (v{}, indexed {}):",
                         manifest.schema_version, manifest.indexed_at
@@ -1409,7 +1709,8 @@ fn tool_status(state: &ServerState) -> Value {
                         manifest_mode, mode,
                     ));
                     if manifest_mode != graphiq_core::search::SearchMode::Fts {
-                        let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
+                        let reasons =
+                            graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
                         if !reasons.is_empty() {
                             s.push_str("\n    downgrade reasons:");
                             for r in &reasons {
@@ -1477,27 +1778,55 @@ fn tool_explain(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     let mut evidence_lines = Vec::new();
     for edge in &outgoing {
         let ev = parse_evidence_kind(&edge.metadata);
-        count_evidence(ev, &mut direct_count, &mut boundary_count, &mut reinforcing_count, &mut structural_count, &mut incidental_count);
+        count_evidence(
+            ev,
+            &mut direct_count,
+            &mut boundary_count,
+            &mut reinforcing_count,
+            &mut structural_count,
+            &mut incidental_count,
+        );
         if ev != "incidental" {
             if let Some(t) = db.get_symbol(edge.target_id).ok().flatten() {
-                evidence_lines.push(format!("  -> [{}] {} ({}) via {}", ev, t.name, t.kind.as_str(), edge.kind.as_str()));
+                evidence_lines.push(format!(
+                    "  -> [{}] {} ({}) via {}",
+                    ev,
+                    t.name,
+                    t.kind.as_str(),
+                    edge.kind.as_str()
+                ));
             }
         }
     }
     for edge in &incoming {
         let ev = parse_evidence_kind(&edge.metadata);
-        count_evidence(ev, &mut direct_count, &mut boundary_count, &mut reinforcing_count, &mut structural_count, &mut incidental_count);
+        count_evidence(
+            ev,
+            &mut direct_count,
+            &mut boundary_count,
+            &mut reinforcing_count,
+            &mut structural_count,
+            &mut incidental_count,
+        );
         if ev != "incidental" {
             if let Some(s) = db.get_symbol(edge.source_id).ok().flatten() {
-                evidence_lines.push(format!("  <- [{}] {} ({}) via {}", ev, s.name, s.kind.as_str(), edge.kind.as_str()));
+                evidence_lines.push(format!(
+                    "  <- [{}] {} ({}) via {}",
+                    ev,
+                    s.name,
+                    s.kind.as_str(),
+                    edge.kind.as_str()
+                ));
             }
         }
     }
 
     let total_edges = outgoing.len() + incoming.len();
     lines.push(format!("\nEvidence profile ({} edges):", total_edges));
-    lines.push(format!("  direct: {} | boundary: {} | reinforcing: {} | structural: {} | incidental: {}",
-        direct_count, boundary_count, reinforcing_count, structural_count, incidental_count));
+    lines.push(format!(
+        "  direct: {} | boundary: {} | reinforcing: {} | structural: {} | incidental: {}",
+        direct_count, boundary_count, reinforcing_count, structural_count, incidental_count
+    ));
 
     if !evidence_lines.is_empty() {
         lines.push("\nEvidence-bearing edges:".into());
@@ -1509,8 +1838,14 @@ fn tool_explain(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
         }
     }
 
-    let out_call_count = outgoing.iter().filter(|e| e.kind == graphiq_core::edge::EdgeKind::Calls).count();
-    let in_call_count = incoming.iter().filter(|e| e.kind == graphiq_core::edge::EdgeKind::Calls).count();
+    let out_call_count = outgoing
+        .iter()
+        .filter(|e| e.kind == graphiq_core::edge::EdgeKind::Calls)
+        .count();
+    let in_call_count = incoming
+        .iter()
+        .filter(|e| e.kind == graphiq_core::edge::EdgeKind::Calls)
+        .count();
 
     if out_call_count >= 5 && in_call_count <= 2 {
         lines.push("\nStructural role: orchestrator (many outgoing calls, few incoming)".into());
@@ -1520,17 +1855,29 @@ fn tool_explain(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
         lines.push("\nStructural role: connector (bidirectional call flow)".into());
     }
 
-    let cross_module = outgoing.iter().chain(incoming.iter())
+    let cross_module = outgoing
+        .iter()
+        .chain(incoming.iter())
         .filter(|e| e.metadata.to_string().contains("\"cross_module\":true"))
         .count();
     if cross_module > 0 {
-        lines.push(format!("\nCross-module connections: {} edges cross module boundaries", cross_module));
+        lines.push(format!(
+            "\nCross-module connections: {} edges cross module boundaries",
+            cross_module
+        ));
     }
 
     tool_ok(lines.join("\n"))
 }
 
-fn count_evidence(ev: &str, d: &mut usize, b: &mut usize, r: &mut usize, s: &mut usize, i: &mut usize) {
+fn count_evidence(
+    ev: &str,
+    d: &mut usize,
+    b: &mut usize,
+    r: &mut usize,
+    s: &mut usize,
+    i: &mut usize,
+) {
     match ev {
         "direct" => *d += 1,
         "boundary" => *b += 1,
@@ -1547,7 +1894,11 @@ fn tool_topology(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
         None => return tool_error("missing required parameter: symbol"),
     };
 
-    let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(2).min(5) as usize;
+    let depth = args
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2)
+        .min(5) as usize;
 
     let candidates = match db.symbols_by_name(symbol_name) {
         Ok(c) => c,
@@ -1569,10 +1920,13 @@ fn tool_topology(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
 
     let mut boundary_symbols: Vec<(String, String, String)> = Vec::new();
     let mut hub_symbols: Vec<(String, usize)> = Vec::new();
-    let mut evidence_summary: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut evidence_summary: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
 
     while let Some((sid, d)) = queue.pop_front() {
-        if d >= depth { continue; }
+        if d >= depth {
+            continue;
+        }
 
         let out = db.edges_from(sid).unwrap_or_default();
         let inc = db.edges_to(sid).unwrap_or_default();
@@ -1596,7 +1950,11 @@ fn tool_topology(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
             *evidence_summary.entry(ev.to_string()).or_insert(0) += 1;
             if ev == "boundary" {
                 if let Some(t) = db.get_symbol(edge.target_id).ok().flatten() {
-                    boundary_symbols.push((t.name, t.kind.as_str().to_string(), edge.kind.as_str().to_string()));
+                    boundary_symbols.push((
+                        t.name,
+                        t.kind.as_str().to_string(),
+                        edge.kind.as_str().to_string(),
+                    ));
                 }
             }
         }
@@ -1617,13 +1975,22 @@ fn tool_topology(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
         }
     }
 
-    lines.push(format!("\nRegion size: {} symbols (depth={})", visited.len(), depth));
+    lines.push(format!(
+        "\nRegion size: {} symbols (depth={})",
+        visited.len(),
+        depth
+    ));
 
     let total_ev: usize = evidence_summary.values().sum();
     if total_ev > 0 {
         lines.push("\nEvidence distribution:".into());
         for (kind, count) in &evidence_summary {
-            lines.push(format!("  {}: {} ({:.0}%)", kind, count, *count as f64 / total_ev as f64 * 100.0));
+            lines.push(format!(
+                "  {}: {} ({:.0}%)",
+                kind,
+                count,
+                *count as f64 / total_ev as f64 * 100.0
+            ));
         }
     }
 
@@ -1665,12 +2032,19 @@ fn tool_why(
         engine = engine.with_cruncher(ci);
     }
 
-    let q = graphiq_core::search::SearchQuery::new(query).top_k(20).with_trace();
+    let q = graphiq_core::search::SearchQuery::new(query)
+        .top_k(20)
+        .with_trace();
     let result = engine.search(&q);
 
     let scored = match result.results.iter().find(|r| r.symbol.name == symbol_name) {
         Some(s) => s,
-        None => return tool_error(&format!("'{}' not found in search results for '{}'", symbol_name, query)),
+        None => {
+            return tool_error(&format!(
+                "'{}' not found in search results for '{}'",
+                symbol_name, query
+            ))
+        }
     };
 
     if let Some(trace) = result.traces.get(&scored.symbol.id) {
@@ -1679,19 +2053,43 @@ fn tool_why(
 
     let sym = &scored.symbol;
     let mut lines = Vec::new();
-    lines.push(format!("=== Why did '{}' rank for '{}'? ===", sym.name, query));
-    lines.push(format!("Score: {:.4} (rank #{})", scored.score,
-        result.results.iter().position(|r| r.symbol.name == symbol_name).unwrap_or(0) + 1));
-    lines.push(format!("Family: {}  Mode: {}", result.query_family, result.search_mode));
+    lines.push(format!(
+        "=== Why did '{}' rank for '{}'? ===",
+        sym.name, query
+    ));
+    lines.push(format!(
+        "Score: {:.4} (rank #{})",
+        scored.score,
+        result
+            .results
+            .iter()
+            .position(|r| r.symbol.name == symbol_name)
+            .unwrap_or(0)
+            + 1
+    ));
+    lines.push(format!(
+        "Family: {}  Mode: {}",
+        result.query_family, result.search_mode
+    ));
 
     let query_lower = query.to_lowercase();
-    let query_terms: Vec<String> = query_lower.split_whitespace().filter(|w| w.len() >= 3).map(|s| s.to_string()).collect();
+    let query_terms: Vec<String> = query_lower
+        .split_whitespace()
+        .filter(|w| w.len() >= 3)
+        .map(|s| s.to_string())
+        .collect();
 
     let neighborhood = cache.load_neighborhood(db, sym.id);
 
     if let Some(ref n) = neighborhood {
-        let matching_callers: Vec<String> = n.callers.iter()
-            .filter(|(s, _)| query_terms.iter().any(|t| s.name.to_lowercase().contains(t.as_str())))
+        let matching_callers: Vec<String> = n
+            .callers
+            .iter()
+            .filter(|(s, _)| {
+                query_terms
+                    .iter()
+                    .any(|t| s.name.to_lowercase().contains(t.as_str()))
+            })
             .map(|(s, _)| s.name.clone())
             .collect();
         if !matching_callers.is_empty() {
@@ -1701,8 +2099,14 @@ fn tool_why(
             }
         }
 
-        let matching_callees: Vec<String> = n.callees.iter()
-            .filter(|(s, _)| query_terms.iter().any(|t| s.name.to_lowercase().contains(t.as_str())))
+        let matching_callees: Vec<String> = n
+            .callees
+            .iter()
+            .filter(|(s, _)| {
+                query_terms
+                    .iter()
+                    .any(|t| s.name.to_lowercase().contains(t.as_str()))
+            })
             .map(|(s, _)| s.name.clone())
             .collect();
         if !matching_callees.is_empty() {
@@ -1751,15 +2155,14 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     };
 
     let focus_subsystem = args.get("subsystem").and_then(|v| v.as_str());
+    let pattern = args.get("pattern").and_then(|v| v.as_str());
 
     let subsystems = match graphiq_core::subsystems::load_subsystems(db) {
         Ok(s) if !s.subsystems.is_empty() => s,
-        _ => {
-            match graphiq_core::subsystems::detect_subsystems(db) {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("subsystem detection failed: {e}")),
-            }
-        }
+        _ => match graphiq_core::subsystems::detect_subsystems(db) {
+            Ok(s) => s,
+            Err(e) => return tool_error(&format!("subsystem detection failed: {e}")),
+        },
     };
 
     let roles_available = db
@@ -1788,19 +2191,37 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     let lower = question.to_lowercase();
     let mut lines: Vec<String> = Vec::new();
 
-    if lower.contains("subsystem") || lower.contains("module") || lower.contains("component") || lower.contains("architecture") || lower.contains("structure") || lower.contains("organized") || lower.contains("layout") || lower.contains("overview") {
-        let active: Vec<_> = subsystems.subsystems.iter()
+    if lower.contains("subsystem")
+        || lower.contains("module")
+        || lower.contains("component")
+        || lower.contains("architecture")
+        || lower.contains("structure")
+        || lower.contains("organized")
+        || lower.contains("layout")
+        || lower.contains("overview")
+    {
+        let active: Vec<_> = subsystems
+            .subsystems
+            .iter()
             .filter(|s| s.internal_edge_count > 0)
             .collect();
         let active_top: Vec<_> = active.iter().take(20).collect();
 
-        lines.push(format!("Active subsystems ({} with internal edges, {} total):", active.len(), subsystems.subsystems.len()));
+        lines.push(format!(
+            "Active subsystems ({} with internal edges, {} total):",
+            active.len(),
+            subsystems.subsystems.len()
+        ));
         lines.push("".into());
         for s in &active_top {
             let sample: Vec<String> = s.symbol_names.iter().take(5).cloned().collect();
             lines.push(format!(
                 "{}: {} symbols, {} internal, {} boundary (cohesion: {:.2})",
-                s.name, s.symbol_ids.len(), s.internal_edge_count, s.boundary_edge_count, s.cohesion
+                s.name,
+                s.symbol_ids.len(),
+                s.internal_edge_count,
+                s.boundary_edge_count,
+                s.cohesion
             ));
             if !sample.is_empty() {
                 lines.push(format!("  key symbols: {}", sample.join(", ")));
@@ -1811,36 +2232,68 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
         }
     }
 
-    if lower.contains("entry point") || lower.contains("entrypoint") || lower.contains("main") || lower.contains("start") || lower.contains("init") || lower.contains("bootstrap") || lower.contains("boot") {
+    if lower.contains("entry point")
+        || lower.contains("entrypoint")
+        || lower.contains("main")
+        || lower.contains("start")
+        || lower.contains("init")
+        || lower.contains("bootstrap")
+        || lower.contains("boot")
+    {
         if roles_available {
             let conn = db.conn();
-            let mut stmt = conn.prepare(
-                "SELECT symbol_name, roles, subsystem_id, external_callers, internal_degree
+            let mut stmt = conn
+                .prepare(
+                    "SELECT symbol_name, roles, subsystem_id, external_callers, internal_degree
                  FROM symbol_structural_roles
                  WHERE roles LIKE '%entry_point%'
                  ORDER BY external_callers DESC
-                 LIMIT 25"
-            ).unwrap();
+                 LIMIT 25",
+                )
+                .unwrap();
             let rows: Vec<(String, String, i64, i64, i64)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
                 .ok()
                 .map(|r| r.flatten().collect())
                 .unwrap_or_default();
 
-            lines.push(format!("\nEntry points ({} found, by external caller count):", rows.len()));
+            lines.push(format!(
+                "\nEntry points ({} found, by external caller count):",
+                rows.len()
+            ));
             for (name, _roles, sub_id, ext_callers, int_deg) in &rows {
-                let sub_name = subsystems.subsystems.iter()
+                let sub_name = subsystems
+                    .subsystems
+                    .iter()
                     .find(|s| s.id == *sub_id as usize)
                     .map(|s| s.name.as_str())
                     .unwrap_or("?");
-                lines.push(format!("  {} [{}] ({} callers, {} internal calls)", name, sub_name, ext_callers, int_deg));
+                lines.push(format!(
+                    "  {} [{}] ({} callers, {} internal calls)",
+                    name, sub_name, ext_callers, int_deg
+                ));
             }
         } else {
-            lines.push("\nRun `graphiq subsystems --roles` to enable entry point detection.".into());
+            lines
+                .push("\nRun `graphiq subsystems --roles` to enable entry point detection.".into());
         }
     }
 
-    if lower.contains("error") || lower.contains("fail") || lower.contains("fault") || lower.contains("panic") || lower.contains("crash") || lower.contains("exception") {
+    if lower.contains("error")
+        || lower.contains("fail")
+        || lower.contains("fault")
+        || lower.contains("panic")
+        || lower.contains("crash")
+        || lower.contains("exception")
+    {
         if roles_available {
             let conn = db.conn();
             let mut stmt = conn.prepare(
@@ -1852,45 +2305,76 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
                  LIMIT 25"
             ).unwrap();
             let rows: Vec<(String, String, i64, i64, i64)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
                 .ok()
                 .map(|r| r.flatten().collect())
                 .unwrap_or_default();
 
             lines.push(format!("\nError boundary symbols ({} found):", rows.len()));
             for (name, roles, sub_id, int_deg, bnd_deg) in &rows {
-                let sub_name = subsystems.subsystems.iter()
+                let sub_name = subsystems
+                    .subsystems
+                    .iter()
                     .find(|s| s.id == *sub_id as usize)
                     .map(|s| s.name.as_str())
                     .unwrap_or("?");
-                lines.push(format!("  {} [{}] (roles: {}, {} internal, {} boundary)", name, sub_name, roles, int_deg, bnd_deg));
+                lines.push(format!(
+                    "  {} [{}] (roles: {}, {} internal, {} boundary)",
+                    name, sub_name, roles, int_deg, bnd_deg
+                ));
             }
         }
     }
 
-    if lower.contains("boundary") || lower.contains("boundar") || lower.contains("interface") || lower.contains("api") || lower.contains("surface") || lower.contains("contract") {
+    if lower.contains("boundary")
+        || lower.contains("boundar")
+        || lower.contains("interface")
+        || lower.contains("api")
+        || lower.contains("surface")
+        || lower.contains("contract")
+    {
         if roles_available {
             let conn = db.conn();
-            let mut stmt = conn.prepare(
-                "SELECT symbol_name, subsystem_id, boundary_degree, internal_degree
+            let mut stmt = conn
+                .prepare(
+                    "SELECT symbol_name, subsystem_id, boundary_degree, internal_degree
                  FROM symbol_structural_roles
                  WHERE roles LIKE '%boundary%'
                  ORDER BY boundary_degree DESC
-                 LIMIT 25"
-            ).unwrap();
+                 LIMIT 25",
+                )
+                .unwrap();
             let rows: Vec<(String, i64, i64, i64)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
                 .ok()
                 .map(|r| r.flatten().collect())
                 .unwrap_or_default();
 
-            lines.push(format!("\nBoundary symbols ({} with boundary role):", rows.len()));
+            lines.push(format!(
+                "\nBoundary symbols ({} with boundary role):",
+                rows.len()
+            ));
             for (name, sub_id, bnd_deg, int_deg) in &rows {
-                let sub_name = subsystems.subsystems.iter()
+                let sub_name = subsystems
+                    .subsystems
+                    .iter()
                     .find(|s| s.id == *sub_id as usize)
                     .map(|s| s.name.as_str())
                     .unwrap_or("?");
-                lines.push(format!("  {} [{}] ({} boundary edges, {} internal)", name, sub_name, bnd_deg, int_deg));
+                lines.push(format!(
+                    "  {} [{}] ({} boundary edges, {} internal)",
+                    name, sub_name, bnd_deg, int_deg
+                ));
             }
         }
     }
@@ -1907,87 +2391,122 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
             ];
 
             for (role_key, role_label) in &role_types {
-                let sql = format!(
-                    "SELECT COUNT(*) FROM symbol_structural_roles WHERE roles LIKE '%{}%'",
-                    role_key
-                );
-                let count: i64 = conn.prepare(&sql).ok()
-                    .and_then(|mut s| s.query_row([], |r| r.get(0)).ok())
+                let pattern = format!("%{}%", role_key);
+                let count: i64 = conn
+                    .prepare("SELECT COUNT(*) FROM symbol_structural_roles WHERE roles LIKE ?")
+                    .ok()
+                    .and_then(|mut s| s.query_row(rusqlite::params![pattern], |r| r.get(0)).ok())
                     .unwrap_or(0);
                 if count > 0 {
                     lines.push(format!("  {}: {}", role_label, count));
                 }
             }
         } else {
-            lines.push("\nRun `graphiq subsystems --roles` to enable structural role analysis.".into());
+            lines.push(
+                "\nRun `graphiq subsystems --roles` to enable structural role analysis.".into(),
+            );
         }
     }
 
     if lower.contains("orchestrat") || lower.contains("orchestrator") {
         if roles_available {
             let conn = db.conn();
-            let mut stmt = conn.prepare(
-                "SELECT symbol_name, subsystem_id, internal_degree, external_callers
+            let mut stmt = conn
+                .prepare(
+                    "SELECT symbol_name, subsystem_id, internal_degree, external_callers
                  FROM symbol_structural_roles
                  WHERE roles LIKE '%orchestrator%'
                  ORDER BY internal_degree DESC
-                 LIMIT 20"
-            ).unwrap();
+                 LIMIT 20",
+                )
+                .unwrap();
             let rows: Vec<(String, i64, i64, i64)> = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))
+                .query_map([], |row| {
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                })
                 .ok()
                 .map(|r| r.flatten().collect())
                 .unwrap_or_default();
 
             lines.push(format!("\nOrchestrators ({} found):", rows.len()));
             for (name, sub_id, int_deg, ext_callers) in &rows {
-                let sub_name = subsystems.subsystems.iter()
+                let sub_name = subsystems
+                    .subsystems
+                    .iter()
                     .find(|s| s.id == *sub_id as usize)
                     .map(|s| s.name.as_str())
                     .unwrap_or("?");
-                lines.push(format!("  {} [{}] ({} internal calls, {} external callers)", name, sub_name, int_deg, ext_callers));
+                lines.push(format!(
+                    "  {} [{}] ({} internal calls, {} external callers)",
+                    name, sub_name, int_deg, ext_callers
+                ));
             }
         }
     }
 
-    if lower.contains("cohesion") || lower.contains("coupling") || lower.contains("tight") || lower.contains("loose") {
-        let mut sorted: Vec<_> = subsystems.subsystems.iter()
+    if lower.contains("cohesion")
+        || lower.contains("coupling")
+        || lower.contains("tight")
+        || lower.contains("loose")
+    {
+        let mut sorted: Vec<_> = subsystems
+            .subsystems
+            .iter()
             .filter(|s| s.internal_edge_count > 0)
             .collect();
         sorted.sort_by(|a, b| b.cohesion.partial_cmp(&a.cohesion).unwrap());
 
         lines.push("\nSubsystem cohesion ranking (highest first):".into());
         for s in sorted.iter().take(10) {
-            lines.push(format!("  {:.2} - {} ({} symbols, {} internal, {} boundary)",
-                s.cohesion, s.name, s.symbol_ids.len(), s.internal_edge_count, s.boundary_edge_count));
+            lines.push(format!(
+                "  {:.2} - {} ({} symbols, {} internal, {} boundary)",
+                s.cohesion,
+                s.name,
+                s.symbol_ids.len(),
+                s.internal_edge_count,
+                s.boundary_edge_count
+            ));
         }
         lines.push("\nLowest cohesion:".into());
         for s in sorted.iter().rev().take(5) {
-            lines.push(format!("  {:.2} - {} ({} symbols, {} internal, {} boundary)",
-                s.cohesion, s.name, s.symbol_ids.len(), s.internal_edge_count, s.boundary_edge_count));
+            lines.push(format!(
+                "  {:.2} - {} ({} symbols, {} internal, {} boundary)",
+                s.cohesion,
+                s.name,
+                s.symbol_ids.len(),
+                s.internal_edge_count,
+                s.boundary_edge_count
+            ));
         }
     }
 
-    if lower.contains("convention") || lower.contains("pattern") || lower.contains("contradiction") {
+    if lower.contains("convention") || lower.contains("pattern") || lower.contains("contradiction")
+    {
         if roles_available {
             let conn = db.conn();
-            let mut stmt = conn.prepare(
-                "SELECT subsystem_id, roles, COUNT(*) as cnt
+            let mut stmt = conn
+                .prepare(
+                    "SELECT subsystem_id, roles, COUNT(*) as cnt
                  FROM symbol_structural_roles
                  WHERE roles LIKE '%entry_point%' OR roles LIKE '%orchestrator%'
                  GROUP BY subsystem_id
                  ORDER BY cnt DESC
-                 LIMIT 10"
-            ).unwrap();
+                 LIMIT 10",
+                )
+                .unwrap();
             let rows: Vec<(i64, String, i64)> = stmt
                 .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                 .ok()
                 .map(|r| r.flatten().collect())
                 .unwrap_or_default();
 
-            lines.push("\nSubsystem leadership (entry points + orchestrators per subsystem):".into());
+            lines.push(
+                "\nSubsystem leadership (entry points + orchestrators per subsystem):".into(),
+            );
             for (sub_id, roles, cnt) in &rows {
-                let sub_name = subsystems.subsystems.iter()
+                let sub_name = subsystems
+                    .subsystems
+                    .iter()
                     .find(|s| s.id == *sub_id as usize)
                     .map(|s| s.name.as_str())
                     .unwrap_or("?");
@@ -1996,10 +2515,124 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
         }
     }
 
+    if let Some(pat) = pattern {
+        let pat_lower = pat.to_lowercase().replace('_', " ");
+        let role_filter = match pat_lower.as_str() {
+            "hub" | "hub symbols" | "hubs" => "roles LIKE '%hub%'",
+            "bridge" | "bridge symbols" | "bridges" => "roles LIKE '%bridge%'",
+            "leaf" | "leaf symbols" | "leaves" => "roles LIKE '%leaf%'",
+            "entry point" | "entry points" | "entry_points" | "entry" => {
+                "roles LIKE '%entry_point%'"
+            }
+            "orchestrator" | "orchestrators" => "roles LIKE '%orchestrator%'",
+            "boundary" | "boundary symbols" => "roles LIKE '%boundary%'",
+            "container" | "containers" => "roles LIKE '%container%'",
+            "validator" | "validators" | "validation" => {
+                "(symbol_name LIKE '%valid%' OR symbol_name LIKE '%check%' OR symbol_name LIKE '%verify%')"
+            }
+            "error handler" | "error handlers" | "error_handlers" | "error handling" => {
+                "(symbol_name LIKE '%error%' OR symbol_name LIKE '%fail%' OR symbol_name LIKE '%handle%' OR symbol_name LIKE '%catch%')"
+            }
+            _ => {
+                lines.push(format!("Unknown pattern: '{}'. Available: hub, bridge, leaf, entry_point, orchestrator, boundary, container, validator, error_handler", pat));
+                return tool_ok(lines.join("\n"));
+            }
+        };
+
+        if !roles_available {
+            lines.push(
+                "Structural roles not computed. Run `graphiq subsystems --roles` first.".into(),
+            );
+            return tool_ok(lines.join("\n"));
+        }
+
+        let sub_filter_id = if let Some(focus) = focus_subsystem {
+            subsystems
+                .subsystems
+                .iter()
+                .find(|s| s.name.to_lowercase().contains(&focus.to_lowercase()))
+                .map(|s| s.id as i64)
+        } else {
+            None
+        };
+
+        let conn = db.conn();
+
+        let rows: Vec<(String, String, i64, i64, i64)> = if let Some(sub_id) = sub_filter_id {
+            let sql = format!(
+                "SELECT symbol_name, roles, subsystem_id, external_callers, internal_degree
+                 FROM symbol_structural_roles
+                 WHERE {} AND subsystem_id = ?
+                 ORDER BY external_callers DESC
+                 LIMIT 50",
+                role_filter,
+            );
+            conn.prepare(&sql)
+                .ok()
+                .and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![sub_id], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    })
+                    .ok()
+                    .map(|r| r.flatten().collect())
+                })
+                .unwrap_or_default()
+        } else {
+            let sql = format!(
+                "SELECT symbol_name, roles, subsystem_id, external_callers, internal_degree
+                 FROM symbol_structural_roles
+                 WHERE {}
+                 ORDER BY external_callers DESC
+                 LIMIT 50",
+                role_filter,
+            );
+            conn.prepare(&sql)
+                .ok()
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    })
+                    .ok()
+                    .map(|r| r.flatten().collect())
+                })
+                .unwrap_or_default()
+        };
+
+        if !rows.is_empty() {
+            lines.push(format!("\nPattern '{}' ({} results):", pat, rows.len()));
+            for (name, roles, sub_id, ext_callers, int_deg) in &rows {
+                let sub_name = subsystems
+                    .subsystems
+                    .iter()
+                    .find(|s| s.id == *sub_id as usize)
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("?");
+                lines.push(format!(
+                    "  {} [{}] (roles: {}, {} callers, {} internal)",
+                    name, sub_name, roles, ext_callers, int_deg
+                ));
+            }
+        }
+    }
+
     if lines.len() <= 1 || (lines.len() == 2 && lines[1].is_empty()) {
         lines.push(format!("No keyword matched for: \"{}\"", question));
 
-        let active: Vec<_> = subsystems.subsystems.iter()
+        let active: Vec<_> = subsystems
+            .subsystems
+            .iter()
             .filter(|s| s.internal_edge_count > 0)
             .collect();
         if !active.is_empty() {
@@ -2008,7 +2641,10 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
                 let sample: Vec<String> = s.symbol_names.iter().take(3).cloned().collect();
                 lines.push(format!(
                     "  {} ({} symbols, cohesion: {:.2}) — {}",
-                    s.name, s.symbol_ids.len(), s.cohesion, sample.join(", ")
+                    s.name,
+                    s.symbol_ids.len(),
+                    s.cohesion,
+                    sample.join(", ")
                 ));
             }
         }
@@ -2125,7 +2761,11 @@ fn tool_upgrade_index(state: &mut ServerState) -> Result<String, String> {
 }
 
 fn parse_evidence_kind(meta: &serde_json::Value) -> &'static str {
-    if let Some(kind) = meta.get("evidence").and_then(|e| e.get("kind")).and_then(|k| k.as_str()) {
+    if let Some(kind) = meta
+        .get("evidence")
+        .and_then(|e| e.get("kind"))
+        .and_then(|k| k.as_str())
+    {
         match kind {
             "direct" => "direct",
             "boundary" => "boundary",
@@ -2153,10 +2793,7 @@ fn human_bytes(bytes: u64) -> String {
 
 fn tool_constants(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     let filter = args.get("query").and_then(|v| v.as_str());
-    let top = args
-        .get("top")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(20) as usize;
+    let top = args.get("top").and_then(|v| v.as_u64()).unwrap_or(20) as usize;
 
     let entries = match graphiq_core::numeric_bridges::query_constants(db, filter, top) {
         Ok(e) => e,
@@ -2176,15 +2813,22 @@ fn tool_constants(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
             .as_deref()
             .map(|n| format!(" ({})", n))
             .unwrap_or_default();
-        let sites: Vec<String> = entry.symbols.iter().map(|sym| {
-            let file = sym.file.rsplit('/').next().unwrap_or(&sym.file);
-            let name: String = sym.name.chars().take(40).collect();
-            let trunc = if sym.name.len() > 40 { "..." } else { "" };
-            format!("{}:{}:{}{} ({})", file, sym.line, name, trunc, sym.kind)
-        }).collect();
+        let sites: Vec<String> = entry
+            .symbols
+            .iter()
+            .map(|sym| {
+                let file = sym.file.rsplit('/').next().unwrap_or(&sym.file);
+                let name: String = sym.name.chars().take(40).collect();
+                let trunc = if sym.name.len() > 40 { "..." } else { "" };
+                format!("{}:{}:{}{} ({})", file, sym.line, name, trunc, sym.kind)
+            })
+            .collect();
         lines.push(format!(
             "  {}{} — {} symbols: {}",
-            entry.literal, named, entry.count, sites.join(", ")
+            entry.literal,
+            named,
+            entry.count,
+            sites.join(", ")
         ));
     }
 
@@ -2194,7 +2838,8 @@ fn tool_constants(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
 fn tool_dead_code(db: &graphiq_core::db::GraphDb) -> Value {
     match graphiq_core::dead_code::detect_dead_code(db) {
         Ok(result) => {
-            let json = serde_json::to_value(&result).unwrap_or_else(|_| json!({"error": "serialization failed"}));
+            let json = serde_json::to_value(&result)
+                .unwrap_or_else(|_| json!({"error": "serialization failed"}));
             let mut lines = Vec::new();
             lines.push(serde_json::to_string_pretty(&json).unwrap_or_default());
 
@@ -2208,7 +2853,10 @@ fn tool_dead_code(db: &graphiq_core::db::GraphDb) -> Value {
 }
 
 fn tool_briefing(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
-    let compact = args.get("compact").and_then(|v| v.as_bool()).unwrap_or(false);
+    let compact = args
+        .get("compact")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let result = if compact {
         graphiq_core::briefing::generate_briefing_compact(db)
@@ -2217,7 +2865,25 @@ fn tool_briefing(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     };
 
     match result {
-        Ok(text) => tool_ok(text),
+        Ok(text) => {
+            let mut output = text;
+            output.push_str("\n\nQuery families (how to search effectively):\n");
+            output.push_str(
+                "  symbol-exact:     'RateLimiter', 'handleLogin' — exact symbol names\n",
+            );
+            output.push_str("  symbol-partial:   'rate_limit' — partial symbol name matches\n");
+            output.push_str("  file-path:        'src/auth/middleware' — find by file path\n");
+            output.push_str("  error-debug:      'panic: index out of bounds' — error messages\n");
+            output.push_str(
+                "  nl-descriptive:   'how does authentication work' — natural language\n",
+            );
+            output.push_str("  nl-abstract:      'error handling patterns' — abstract concepts\n");
+            output.push_str("  cross-cutting:    'all middleware' — cross-cutting concerns\n");
+            output.push_str(
+                "  relationship:     'callers of authenticateUser' — relationship queries\n",
+            );
+            tool_ok(output)
+        }
         Err(e) => tool_error(&format!("briefing failed: {e}")),
     }
 }

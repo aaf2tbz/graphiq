@@ -13,11 +13,46 @@ use crate::db::GraphDb;
 use crate::subsystems::{self, SubsystemIndex};
 
 const GENERIC_NAMES: &[&str] = &[
-    "get", "set", "push", "pop", "remove", "add", "delete", "update", "create",
-    "new", "init", "start", "stop", "run", "execute", "process", "handle",
-    "parse", "format", "to_string", "from", "into", "default", "clone", "eq",
-    "drop", "send", "sync", "copy", "main", "test", "iter", "next", "len",
-    "is_empty", "as_ref", "as_mut", "deref", "index", "call",
+    "get",
+    "set",
+    "push",
+    "pop",
+    "remove",
+    "add",
+    "delete",
+    "update",
+    "create",
+    "new",
+    "init",
+    "start",
+    "stop",
+    "run",
+    "execute",
+    "process",
+    "handle",
+    "parse",
+    "format",
+    "to_string",
+    "from",
+    "into",
+    "default",
+    "clone",
+    "eq",
+    "drop",
+    "send",
+    "sync",
+    "copy",
+    "main",
+    "test",
+    "iter",
+    "next",
+    "len",
+    "is_empty",
+    "as_ref",
+    "as_mut",
+    "deref",
+    "index",
+    "call",
 ];
 
 fn is_generic_name(name: &str) -> bool {
@@ -72,7 +107,10 @@ fn humanize_package_name(name: &str) -> String {
 }
 
 fn humanize_file_name(name: &str) -> String {
-    let stem = name.trim_end_matches(".rs").trim_end_matches(".ts").trim_end_matches(".js");
+    let stem = name
+        .trim_end_matches(".rs")
+        .trim_end_matches(".ts")
+        .trim_end_matches(".js");
     let words: Vec<&str> = stem.split(&['-', '_'][..]).collect();
     words
         .iter()
@@ -251,16 +289,25 @@ fn write_architecture(out: &mut String, data: &BriefingData, limit: Option<usize
     for sub in &subs {
         let name = humanize_subsystem_name(&sub.name);
         let boundary_pct = if sub.internal_edge_count + sub.boundary_edge_count > 0 {
-            (sub.boundary_edge_count as f64 / (sub.internal_edge_count + sub.boundary_edge_count) as f64 * 100.0) as i64
+            (sub.boundary_edge_count as f64
+                / (sub.internal_edge_count + sub.boundary_edge_count) as f64
+                * 100.0) as i64
         } else {
             0
         };
         out.push_str(&format!(
             "### {} ({} symbols, {} boundary)\n\n",
-            name, sub.symbol_ids.len(), boundary_pct
+            name,
+            sub.symbol_ids.len(),
+            boundary_pct
         ));
 
-        let mut names: Vec<&str> = sub.symbol_names.iter().map(|s| s.as_str()).take(30).collect();
+        let mut names: Vec<&str> = sub
+            .symbol_names
+            .iter()
+            .map(|s| s.as_str())
+            .take(30)
+            .collect();
         names.retain(|n| !is_generic_name(n));
         names.truncate(20);
         if !names.is_empty() {
@@ -301,7 +348,8 @@ fn write_concepts(out: &mut String, data: &BriefingData) {
     let mut subs: Vec<_> = data.subsystems.subsystems.iter().collect();
     subs.sort_by(|a, b| b.boundary_edge_count.cmp(&a.boundary_edge_count).reverse());
 
-    let cross_cutting: Vec<_> = subs.iter()
+    let cross_cutting: Vec<_> = subs
+        .iter()
         .filter(|s| s.boundary_edge_count > s.internal_edge_count / 2)
         .take(10)
         .collect();
@@ -313,7 +361,9 @@ fn write_concepts(out: &mut String, data: &BriefingData) {
     out.push_str("## Cross-Cutting Concerns\n\n");
     for sub in &cross_cutting {
         let name = humanize_subsystem_name(&sub.name);
-        let key: Vec<_> = sub.symbol_names.iter()
+        let key: Vec<_> = sub
+            .symbol_names
+            .iter()
             .take(8)
             .filter(|n| !is_generic_name(n))
             .cloned()

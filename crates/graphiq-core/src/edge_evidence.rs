@@ -35,12 +35,7 @@ pub fn infer_edge_evidence(db: &GraphDb) -> Result<EdgeEvidenceIndex, String> {
             .map_err(|e| e.to_string())?;
         let rows: Vec<(i64, i64, String, String)> = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                ))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
             .map_err(|e| e.to_string())?
             .flatten()
@@ -65,12 +60,7 @@ pub fn infer_edge_evidence(db: &GraphDb) -> Result<EdgeEvidenceIndex, String> {
             .map_err(|e| e.to_string())?;
         let rows: Vec<(i64, i64, i64, String)> = stmt
             .query_map([], |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                ))
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
             })
             .map_err(|e| e.to_string())?
             .flatten()
@@ -103,10 +93,7 @@ pub fn infer_edge_evidence(db: &GraphDb) -> Result<EdgeEvidenceIndex, String> {
             _ => false,
         };
 
-        let multiplicity = multi_path
-            .get(&(*src, *tgt))
-            .copied()
-            .unwrap_or(1);
+        let multiplicity = multi_path.get(&(*src, *tgt)).copied().unwrap_or(1);
 
         let src_motifs = symbol_motifs.get(src).map(|v| v.as_slice()).unwrap_or(&[]);
         let tgt_motifs = symbol_motifs.get(tgt).map(|v| v.as_slice()).unwrap_or(&[]);
@@ -433,10 +420,7 @@ fn detect_motif_members(db: &GraphDb) -> HashMap<i64, Vec<String>> {
     result
 }
 
-pub fn write_edge_evidence(
-    db: &GraphDb,
-    evidence: &EdgeEvidenceIndex,
-) -> Result<usize, String> {
+pub fn write_edge_evidence(db: &GraphDb, evidence: &EdgeEvidenceIndex) -> Result<usize, String> {
     let conn = db.conn();
     let mut updated = 0;
 
@@ -472,35 +456,67 @@ mod tests {
 
     fn setup_db() -> GraphDb {
         let db = GraphDb::open_in_memory().unwrap();
-        let f1 = db.upsert_file("src/auth.ts", "typescript", "a", 1000, 50).unwrap();
-        let f2 = db.upsert_file("src/utils.ts", "typescript", "b", 1000, 30).unwrap();
+        let f1 = db
+            .upsert_file("src/auth.ts", "typescript", "a", 1000, 50)
+            .unwrap();
+        let f2 = db
+            .upsert_file("src/utils.ts", "typescript", "b", 1000, 30)
+            .unwrap();
 
-        let s1 = SymbolBuilder::new(f1, "main".into(), SymbolKind::Function, "fn main()".into(), "typescript".into())
-            .lines(1, 5)
-            .visibility(Visibility::Public)
-            .build();
-        let s2 = SymbolBuilder::new(f1, "authenticate".into(), SymbolKind::Function, "fn auth()".into(), "typescript".into())
-            .lines(7, 15)
-            .visibility(Visibility::Public)
-            .build();
-        let s3 = SymbolBuilder::new(f2, "hashPassword".into(), SymbolKind::Function, "fn hash()".into(), "typescript".into())
-            .lines(1, 5)
-            .visibility(Visibility::Private)
-            .build();
-        let s4 = SymbolBuilder::new(f1, "validate".into(), SymbolKind::Function, "fn val()".into(), "typescript".into())
-            .lines(17, 22)
-            .visibility(Visibility::Private)
-            .build();
+        let s1 = SymbolBuilder::new(
+            f1,
+            "main".into(),
+            SymbolKind::Function,
+            "fn main()".into(),
+            "typescript".into(),
+        )
+        .lines(1, 5)
+        .visibility(Visibility::Public)
+        .build();
+        let s2 = SymbolBuilder::new(
+            f1,
+            "authenticate".into(),
+            SymbolKind::Function,
+            "fn auth()".into(),
+            "typescript".into(),
+        )
+        .lines(7, 15)
+        .visibility(Visibility::Public)
+        .build();
+        let s3 = SymbolBuilder::new(
+            f2,
+            "hashPassword".into(),
+            SymbolKind::Function,
+            "fn hash()".into(),
+            "typescript".into(),
+        )
+        .lines(1, 5)
+        .visibility(Visibility::Private)
+        .build();
+        let s4 = SymbolBuilder::new(
+            f1,
+            "validate".into(),
+            SymbolKind::Function,
+            "fn val()".into(),
+            "typescript".into(),
+        )
+        .lines(17, 22)
+        .visibility(Visibility::Private)
+        .build();
 
         let id1 = db.insert_symbol(&s1).unwrap();
         let id2 = db.insert_symbol(&s2).unwrap();
         let id3 = db.insert_symbol(&s3).unwrap();
         let id4 = db.insert_symbol(&s4).unwrap();
 
-        db.insert_edge(id1, id2, EdgeKind::Calls, 1.0, serde_json::Value::Null).unwrap();
-        db.insert_edge(id2, id3, EdgeKind::Calls, 1.0, serde_json::Value::Null).unwrap();
-        db.insert_edge(id2, id4, EdgeKind::Calls, 1.0, serde_json::Value::Null).unwrap();
-        db.insert_edge(id4, id3, EdgeKind::References, 0.4, serde_json::Value::Null).unwrap();
+        db.insert_edge(id1, id2, EdgeKind::Calls, 1.0, serde_json::Value::Null)
+            .unwrap();
+        db.insert_edge(id2, id3, EdgeKind::Calls, 1.0, serde_json::Value::Null)
+            .unwrap();
+        db.insert_edge(id2, id4, EdgeKind::Calls, 1.0, serde_json::Value::Null)
+            .unwrap();
+        db.insert_edge(id4, id3, EdgeKind::References, 0.4, serde_json::Value::Null)
+            .unwrap();
 
         db
     }
@@ -510,7 +526,10 @@ mod tests {
         let db = setup_db();
         let evidence = infer_edge_evidence(&db).unwrap();
 
-        assert!(!evidence.edge_evidence.is_empty(), "should have evidence for edges");
+        assert!(
+            !evidence.edge_evidence.is_empty(),
+            "should have evidence for edges"
+        );
     }
 
     #[test]
@@ -519,9 +538,15 @@ mod tests {
         let evidence = infer_edge_evidence(&db).unwrap();
 
         let auth_to_hash = evidence.edge_evidence.get(&(2, 3, "calls".to_string()));
-        assert!(auth_to_hash.is_some(), "should have evidence for authenticate->hashPassword");
+        assert!(
+            auth_to_hash.is_some(),
+            "should have evidence for authenticate->hashPassword"
+        );
         let profile = auth_to_hash.unwrap();
-        assert!(profile.cross_module, "authenticate->hashPassword should be cross-module");
+        assert!(
+            profile.cross_module,
+            "authenticate->hashPassword should be cross-module"
+        );
     }
 
     #[test]
@@ -537,7 +562,9 @@ mod tests {
             "public->public should not be cross-visibility"
         );
 
-        let val_to_hash = evidence.edge_evidence.get(&(4, 3, "references".to_string()));
+        let val_to_hash = evidence
+            .edge_evidence
+            .get(&(4, 3, "references".to_string()));
         assert!(val_to_hash.is_some());
     }
 
@@ -551,7 +578,10 @@ mod tests {
 
         let edges = db.edges_from(1).unwrap();
         let call_edge = edges.iter().find(|e| e.kind == EdgeKind::Calls).unwrap();
-        assert!(call_edge.metadata.is_object(), "metadata should be a JSON object");
+        assert!(
+            call_edge.metadata.is_object(),
+            "metadata should be a JSON object"
+        );
         let ev = &call_edge.metadata["evidence"];
         assert!(ev["kind"].is_string(), "evidence should have kind");
     }
@@ -559,38 +589,82 @@ mod tests {
     #[test]
     fn test_classify_implements_as_boundary() {
         let db = GraphDb::open_in_memory().unwrap();
-        let fid = db.upsert_file("src/main.ts", "typescript", "a", 1000, 10).unwrap();
-        let s1 = SymbolBuilder::new(fid, "trait".into(), SymbolKind::Interface, "interface".into(), "typescript".into())
-            .visibility(Visibility::Public)
-            .build();
-        let s2 = SymbolBuilder::new(fid, "impl".into(), SymbolKind::Class, "class".into(), "typescript".into())
-            .visibility(Visibility::Private)
-            .build();
+        let fid = db
+            .upsert_file("src/main.ts", "typescript", "a", 1000, 10)
+            .unwrap();
+        let s1 = SymbolBuilder::new(
+            fid,
+            "trait".into(),
+            SymbolKind::Interface,
+            "interface".into(),
+            "typescript".into(),
+        )
+        .visibility(Visibility::Public)
+        .build();
+        let s2 = SymbolBuilder::new(
+            fid,
+            "impl".into(),
+            SymbolKind::Class,
+            "class".into(),
+            "typescript".into(),
+        )
+        .visibility(Visibility::Private)
+        .build();
         let id1 = db.insert_symbol(&s1).unwrap();
         let id2 = db.insert_symbol(&s2).unwrap();
-        db.insert_edge(id2, id1, EdgeKind::Implements, 0.8, serde_json::Value::Null).unwrap();
+        db.insert_edge(id2, id1, EdgeKind::Implements, 0.8, serde_json::Value::Null)
+            .unwrap();
 
         let evidence = infer_edge_evidence(&db).unwrap();
-        let profile = evidence.edge_evidence.get(&(id2, id1, "implements".to_string())).unwrap();
-        assert_eq!(profile.kind, EvidenceKind::Boundary, "implements with cross-visibility should be boundary");
+        let profile = evidence
+            .edge_evidence
+            .get(&(id2, id1, "implements".to_string()))
+            .unwrap();
+        assert_eq!(
+            profile.kind,
+            EvidenceKind::Boundary,
+            "implements with cross-visibility should be boundary"
+        );
     }
 
     #[test]
     fn test_incidental_for_references() {
         let db = GraphDb::open_in_memory().unwrap();
-        let fid = db.upsert_file("src/main.ts", "typescript", "a", 1000, 10).unwrap();
-        let s1 = SymbolBuilder::new(fid, "a".into(), SymbolKind::Function, "fn".into(), "typescript".into())
-            .visibility(Visibility::Public)
-            .build();
-        let s2 = SymbolBuilder::new(fid, "b".into(), SymbolKind::Function, "fn".into(), "typescript".into())
-            .visibility(Visibility::Public)
-            .build();
+        let fid = db
+            .upsert_file("src/main.ts", "typescript", "a", 1000, 10)
+            .unwrap();
+        let s1 = SymbolBuilder::new(
+            fid,
+            "a".into(),
+            SymbolKind::Function,
+            "fn".into(),
+            "typescript".into(),
+        )
+        .visibility(Visibility::Public)
+        .build();
+        let s2 = SymbolBuilder::new(
+            fid,
+            "b".into(),
+            SymbolKind::Function,
+            "fn".into(),
+            "typescript".into(),
+        )
+        .visibility(Visibility::Public)
+        .build();
         let id1 = db.insert_symbol(&s1).unwrap();
         let id2 = db.insert_symbol(&s2).unwrap();
-        db.insert_edge(id1, id2, EdgeKind::References, 0.4, serde_json::Value::Null).unwrap();
+        db.insert_edge(id1, id2, EdgeKind::References, 0.4, serde_json::Value::Null)
+            .unwrap();
 
         let evidence = infer_edge_evidence(&db).unwrap();
-        let profile = evidence.edge_evidence.get(&(id1, id2, "references".to_string())).unwrap();
-        assert_eq!(profile.kind, EvidenceKind::Incidental, "simple reference should be incidental");
+        let profile = evidence
+            .edge_evidence
+            .get(&(id1, id2, "references".to_string()))
+            .unwrap();
+        assert_eq!(
+            profile.kind,
+            EvidenceKind::Incidental,
+            "simple reference should be incidental"
+        );
     }
 }

@@ -12,13 +12,11 @@
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use crate::cruncher::{
-    CruncherIndex, MAX_SEEDS,
-    build_query_terms,
-    term_match_score, name_coverage,
-    per_term_match, compute_name_overlap, neighbor_match_score, alias_match_score,
+    alias_match_score, build_query_terms, compute_name_overlap, name_coverage,
+    neighbor_match_score, per_term_match, term_match_score, CruncherIndex, MAX_SEEDS,
 };
 use crate::query_family::QueryFamily;
-use crate::scoring::{Candidate, ScoreConfig, score_candidates, apply_bm25_lock};
+use crate::scoring::{apply_bm25_lock, score_candidates, Candidate, ScoreConfig};
 
 pub struct PipelineConfig {
     pub top_k: usize,
@@ -37,7 +35,11 @@ pub fn unified_search(
     }
 
     let _n_qt = query_terms.len();
-    let bm25_max = bm25_seeds.iter().map(|(_, s)| *s).fold(0.0f64, f64::max).max(1e-10);
+    let bm25_max = bm25_seeds
+        .iter()
+        .map(|(_, s)| *s)
+        .fold(0.0f64, f64::max)
+        .max(1e-10);
 
     let mut candidates: BTreeMap<usize, Candidate> = BTreeMap::new();
 
@@ -54,19 +56,22 @@ pub fn unified_search(
             let mut sp = HashSet::new();
             sp.insert(i);
 
-            candidates.insert(i, Candidate {
-                idx: i,
-                bm25_score: score / bm25_max,
-                coverage_score: cov_score,
-                coverage_count: cov_count,
-                name_score: name_s,
-                is_seed: true,
-                walk_evidence: 0.0,
-                seed_paths: sp,
-                name_overlap: no,
-                neighbor_score: ns,
-                alias_score: as_,
-            });
+            candidates.insert(
+                i,
+                Candidate {
+                    idx: i,
+                    bm25_score: score / bm25_max,
+                    coverage_score: cov_score,
+                    coverage_count: cov_count,
+                    name_score: name_s,
+                    is_seed: true,
+                    walk_evidence: 0.0,
+                    seed_paths: sp,
+                    name_overlap: no,
+                    neighbor_score: ns,
+                    alias_score: as_,
+                },
+            );
         }
     }
 
@@ -88,23 +93,26 @@ pub fn unified_search(
                 let is_col = idx.collision_names.contains(&ql);
                 let as_ = alias_match_score(&query_terms, &idx.alias_terms[i], is_col);
 
-                candidates.insert(i, Candidate {
-                    idx: i,
-                    bm25_score: 0.0,
-                    coverage_score: cov_score,
-                    coverage_count: cov_count,
-                    name_score: name_s,
-                    is_seed: true,
-                    walk_evidence: 0.0,
-                    seed_paths: {
-                        let mut sp = HashSet::new();
-                        sp.insert(i);
-                        sp
+                candidates.insert(
+                    i,
+                    Candidate {
+                        idx: i,
+                        bm25_score: 0.0,
+                        coverage_score: cov_score,
+                        coverage_count: cov_count,
+                        name_score: name_s,
+                        is_seed: true,
+                        walk_evidence: 0.0,
+                        seed_paths: {
+                            let mut sp = HashSet::new();
+                            sp.insert(i);
+                            sp
+                        },
+                        name_overlap: no,
+                        neighbor_score: ns,
+                        alias_score: as_,
                     },
-                    name_overlap: no,
-                    neighbor_score: ns,
-                    alias_score: as_,
-                });
+                );
             }
         }
     }
@@ -160,8 +168,10 @@ pub fn unified_search(
                 let entry = candidates.entry(neighbor_i).or_insert_with(|| {
                     let (ns_name, _) =
                         name_coverage(&query_terms, &idx.term_sets[neighbor_i].name_terms);
-                    let no = compute_name_overlap(&query_terms, &idx.term_sets[neighbor_i].name_terms);
-                    let ns_nbr = neighbor_match_score(&query_terms, &idx.neighbor_terms[neighbor_i]);
+                    let no =
+                        compute_name_overlap(&query_terms, &idx.term_sets[neighbor_i].name_terms);
+                    let ns_nbr =
+                        neighbor_match_score(&query_terms, &idx.neighbor_terms[neighbor_i]);
                     let sym_name_lower = idx.symbol_names[neighbor_i].to_lowercase();
                     let is_col = idx.collision_names.contains(&sym_name_lower);
                     let as_ = alias_match_score(&query_terms, &idx.alias_terms[neighbor_i], is_col);

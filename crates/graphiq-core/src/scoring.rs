@@ -10,8 +10,8 @@
 
 use std::collections::HashSet;
 
-use crate::cruncher::{CruncherIndex, QueryTerm};
 use crate::cruncher::{kind_boost, test_penalty};
+use crate::cruncher::{CruncherIndex, QueryTerm};
 use crate::query_family::QueryFamily;
 
 pub struct Candidate {
@@ -169,9 +169,21 @@ pub fn score_candidates(
                 return None;
             }
 
-            let cov_norm = if idf_sum > 0.0 { c.coverage_score / idf_sum } else { 0.0 };
-            let name_norm = if idf_sum > 0.0 { c.name_score / idf_sum } else { 0.0 };
-            let walk_norm = if idf_sum > 0.0 { c.walk_evidence / idf_sum } else { 0.0 };
+            let cov_norm = if idf_sum > 0.0 {
+                c.coverage_score / idf_sum
+            } else {
+                0.0
+            };
+            let name_norm = if idf_sum > 0.0 {
+                c.name_score / idf_sum
+            } else {
+                0.0
+            };
+            let walk_norm = if idf_sum > 0.0 {
+                c.walk_evidence / idf_sum
+            } else {
+                0.0
+            };
 
             let query_specificity = if !query_terms.is_empty() {
                 query_terms.iter().filter(|qt| qt.idf > 1.0).count() as f64
@@ -204,13 +216,14 @@ pub fn score_candidates(
                 0.0
             };
 
-            let name_overlap_additive = if config.name_overlap_enabled && c.name_overlap > config.name_overlap_gate {
-                let excess = (c.name_overlap - config.name_overlap_gate)
-                    / (1.0 - config.name_overlap_gate);
-                config.name_overlap_max_w * query_specificity * excess
-            } else {
-                0.0
-            };
+            let name_overlap_additive =
+                if config.name_overlap_enabled && c.name_overlap > config.name_overlap_gate {
+                    let excess = (c.name_overlap - config.name_overlap_gate)
+                        / (1.0 - config.name_overlap_gate);
+                    config.name_overlap_max_w * query_specificity * excess
+                } else {
+                    0.0
+                };
 
             let neighbor_boost = if c.neighbor_score > 0.0 && config.walk_enabled {
                 let neighbor_norm = c.neighbor_score / idf_sum.max(1e-10);
@@ -244,7 +257,11 @@ pub fn score_candidates(
                 * kb
                 * tp;
 
-            if raw > 0.0 { Some((c.idx, raw)) } else { None }
+            if raw > 0.0 {
+                Some((c.idx, raw))
+            } else {
+                None
+            }
         })
         .collect();
 
@@ -258,13 +275,10 @@ pub fn apply_bm25_lock(
     query_terms: &[QueryTerm],
     idx: &CruncherIndex,
 ) {
-    let bm25_confident = bm25_seeds.len() >= 2
-        && bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10) > 1.2;
+    let bm25_confident =
+        bm25_seeds.len() >= 2 && bm25_seeds[0].1 / bm25_seeds[1].1.max(1e-10) > 1.2;
     if bm25_confident {
-        if let Some(&lock_i) = bm25_seeds
-            .first()
-            .and_then(|(id, _)| idx.id_to_idx.get(id))
-        {
+        if let Some(&lock_i) = bm25_seeds.first().and_then(|(id, _)| idx.id_to_idx.get(id)) {
             let lock_name = idx.symbol_names[lock_i].to_lowercase();
             let has_name_match = query_terms.iter().any(|qt| lock_name.contains(&qt.text));
             if has_name_match {

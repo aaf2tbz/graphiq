@@ -17,8 +17,8 @@ use crate::db::GraphDb;
 use crate::edge::{BlastDirection, BlastRadius};
 use crate::fts::{FtsConfig, FtsSearch};
 use crate::graph::StructuralExpander;
-use crate::rerank::{Reranker, ScoredSymbol};
 use crate::query_family::{self, QueryFamily};
+use crate::rerank::{Reranker, ScoredSymbol};
 use crate::trace::RetrievalTrace;
 
 /// Search mode — determines whether structural graph walking is used.
@@ -192,21 +192,13 @@ impl<'a> SearchEngine<'a> {
         let ci = self.cruncher_index.unwrap();
 
         let seed_config = crate::seeds::SeedConfig::for_family(family);
-        let (seeds, total_fts, _bm25_original) = crate::seeds::generate_seeds(
-            self.db, &query.query, &seed_config,
-        );
+        let (seeds, total_fts, _bm25_original) =
+            crate::seeds::generate_seeds(self.db, &query.query, &seed_config);
 
-        let pipeline_config = crate::pipeline::PipelineConfig {
-            top_k: query.top_k,
-        };
+        let pipeline_config = crate::pipeline::PipelineConfig { top_k: query.top_k };
 
-        let raw_results = crate::pipeline::unified_search(
-            &query.query,
-            ci,
-            &seeds,
-            &pipeline_config,
-            family,
-        );
+        let raw_results =
+            crate::pipeline::unified_search(&query.query, ci, &seeds, &pipeline_config, family);
 
         let file_paths = self.load_file_paths();
         let results: Vec<ScoredSymbol> = raw_results

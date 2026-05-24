@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 
-use crate::search::SearchMode;
 use crate::query_family::QueryFamily;
+use crate::search::SearchMode;
 
 #[derive(Debug, Clone)]
 pub enum SeedOrigin {
@@ -72,8 +72,12 @@ impl ConfidenceReport {
         c += self.seed_strength * 0.3;
         c += (self.evidence_channels as f64 / 5.0).min(1.0) * 0.2;
         c += self.coverage_fraction * 0.2;
-        if self.has_name_match { c += 0.15; }
-        if self.has_structural_path { c += 0.15; }
+        if self.has_name_match {
+            c += 0.15;
+        }
+        if self.has_structural_path {
+            c += 0.15;
+        }
         c.min(1.0)
     }
 }
@@ -94,35 +98,63 @@ impl RetrievalTrace {
         let mut lines = Vec::new();
 
         lines.push(format!("  trace for '{}':", symbol_name));
-        lines.push(format!("    family: {}  mode: {}", self.query_family, self.search_mode));
+        lines.push(format!(
+            "    family: {}  mode: {}",
+            self.query_family, self.search_mode
+        ));
 
         let seed_count = self.seeds.len();
-        let bm25_seeds = self.seeds.iter().filter(|s| matches!(s.origin, SeedOrigin::Bm25)).count();
-        let name_seeds = self.seeds.iter().filter(|s| matches!(s.origin, SeedOrigin::NameExpansion)).count();
-        let walk_seeds = self.seeds.iter().filter(|s| matches!(s.origin, SeedOrigin::GraphWalk)).count();
-        lines.push(format!("    seeds: {} total ({} bm25, {} name, {} walk)", seed_count, bm25_seeds, name_seeds, walk_seeds));
+        let bm25_seeds = self
+            .seeds
+            .iter()
+            .filter(|s| matches!(s.origin, SeedOrigin::Bm25))
+            .count();
+        let name_seeds = self
+            .seeds
+            .iter()
+            .filter(|s| matches!(s.origin, SeedOrigin::NameExpansion))
+            .count();
+        let walk_seeds = self
+            .seeds
+            .iter()
+            .filter(|s| matches!(s.origin, SeedOrigin::GraphWalk))
+            .count();
+        lines.push(format!(
+            "    seeds: {} total ({} bm25, {} name, {} walk)",
+            seed_count, bm25_seeds, name_seeds, walk_seeds
+        ));
 
         if !self.expansions.is_empty() {
             lines.push(format!("    expansions: {} steps", self.expansions.len()));
             for exp in self.expansions.iter().take(5) {
-                lines.push(format!("      {} -> {} [{}] heat={:.3}",
-                    exp.from_symbol_id, exp.to_symbol_id, exp.edge_kind, exp.heat_contribution));
+                lines.push(format!(
+                    "      {} -> {} [{}] heat={:.3}",
+                    exp.from_symbol_id, exp.to_symbol_id, exp.edge_kind, exp.heat_contribution
+                ));
             }
         }
 
         if !self.evidence_edges.is_empty() {
             lines.push(format!("    evidence edges: {}", self.evidence_edges.len()));
             for e in self.evidence_edges.iter().take(5) {
-                lines.push(format!("      {} -> {} [{}] {}={:.3}",
-                    e.from_symbol_id, e.to_symbol_id, e.edge_kind, e.evidence_kind, e.weight));
+                lines.push(format!(
+                    "      {} -> {} [{}] {}={:.3}",
+                    e.from_symbol_id, e.to_symbol_id, e.edge_kind, e.evidence_kind, e.weight
+                ));
             }
         }
 
         let s = &self.score;
         lines.push("    score breakdown:".into());
-        lines.push(format!("      bm25={:.3}  coverage={:.3}  name={:.3}", s.bm25_raw, s.coverage_score, s.name_score));
+        lines.push(format!(
+            "      bm25={:.3}  coverage={:.3}  name={:.3}",
+            s.bm25_raw, s.coverage_score, s.name_score
+        ));
         lines.push(format!("      walk_evidence={:.3}", s.walk_evidence));
-        lines.push(format!("      is_seed={}  bm25_locked={}  final={:.3}", s.is_seed, s.bm25_locked, s.final_score));
+        lines.push(format!(
+            "      is_seed={}  bm25_locked={}  final={:.3}",
+            s.is_seed, s.bm25_locked, s.final_score
+        ));
 
         let conf = &self.confidence;
         lines.push(format!("    confidence: {:.2} (seed_strength={:.2}, channels={}, coverage={:.2}, name={}, path={})",
@@ -139,8 +171,14 @@ impl RetrievalTrace {
 
     pub fn format_why(&self, symbol_name: &str, query: &str) -> String {
         let mut lines = Vec::new();
-        lines.push(format!("=== Why did '{}' rank for '{}'? ===", symbol_name, query));
-        lines.push(format!("Family: {}  Mode: {}", self.query_family, self.search_mode));
+        lines.push(format!(
+            "=== Why did '{}' rank for '{}'? ===",
+            symbol_name, query
+        ));
+        lines.push(format!(
+            "Family: {}  Mode: {}",
+            self.query_family, self.search_mode
+        ));
         lines.push(format!("Final score: {:.4}", self.score.final_score));
         lines.push(String::new());
 
@@ -177,9 +215,15 @@ impl RetrievalTrace {
 
         if !self.evidence_edges.is_empty() {
             lines.push(String::new());
-            lines.push(format!("Evidence chain ({} edges):", self.evidence_edges.len()));
+            lines.push(format!(
+                "Evidence chain ({} edges):",
+                self.evidence_edges.len()
+            ));
             for e in self.evidence_edges.iter().take(10) {
-                lines.push(format!("  [{}] {} ({:.3})", e.evidence_kind, e.edge_kind, e.weight));
+                lines.push(format!(
+                    "  [{}] {} ({:.3})",
+                    e.evidence_kind, e.edge_kind, e.weight
+                ));
             }
         }
 
@@ -187,26 +231,37 @@ impl RetrievalTrace {
             lines.push(String::new());
             lines.push(format!("Expansion path ({} steps):", self.expansions.len()));
             for exp in self.expansions.iter().take(5) {
-                lines.push(format!("  via {} [{}] heat={:.3}",
+                lines.push(format!(
+                    "  via {} [{}] heat={:.3}",
                     exp.edge_kind,
                     exp.evidence_kind.as_deref().unwrap_or("?"),
-                    exp.heat_contribution));
+                    exp.heat_contribution
+                ));
             }
         }
 
         lines.push(String::new());
         let conf = &self.confidence;
-        lines.push(format!("Confidence: {:.0}% — {}", conf.confidence() * 100.0, self.confidence_label()));
+        lines.push(format!(
+            "Confidence: {:.0}% — {}",
+            conf.confidence() * 100.0,
+            self.confidence_label()
+        ));
 
         lines.join("\n")
     }
 
     fn confidence_label(&self) -> &'static str {
         let c = self.confidence.confidence();
-        if c >= 0.8 { "high confidence" }
-        else if c >= 0.5 { "moderate confidence" }
-        else if c >= 0.3 { "low confidence — likely needs verification" }
-        else { "very low confidence — result may be spurious" }
+        if c >= 0.8 {
+            "high confidence"
+        } else if c >= 0.5 {
+            "moderate confidence"
+        } else if c >= 0.3 {
+            "low confidence — likely needs verification"
+        } else {
+            "very low confidence — result may be spurious"
+        }
     }
 }
 
