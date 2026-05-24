@@ -302,7 +302,8 @@ mod tests {
             EvidenceKind::Direct.retrieval_weight() > EvidenceKind::Incidental.retrieval_weight()
         );
         assert!(
-            EvidenceKind::Boundary.retrieval_weight() >= EvidenceKind::Structural.retrieval_weight()
+            EvidenceKind::Boundary.retrieval_weight()
+                >= EvidenceKind::Structural.retrieval_weight()
         );
         assert!((EvidenceKind::Incidental.retrieval_weight() - 0.3).abs() < f64::EPSILON);
     }

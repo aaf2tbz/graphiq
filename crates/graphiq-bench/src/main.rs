@@ -1,9 +1,9 @@
 use std::path::Path;
 
+use graphiq_core::cache::HotCache;
 use graphiq_core::cruncher;
 use graphiq_core::db::GraphDb;
 use graphiq_core::search::{SearchEngine, SearchQuery};
-use graphiq_core::cache::HotCache;
 
 #[derive(Debug, Clone, serde::Deserialize)]
 struct BenchQuery {
@@ -42,7 +42,11 @@ fn dcg_at_k(relevances: &[f64], k: usize) -> f64 {
 fn ndcg_at_k(results: &[f64], ideal: &[f64], k: usize) -> f64 {
     let dcg = dcg_at_k(results, k);
     let idcg = dcg_at_k(ideal, k);
-    if idcg == 0.0 { 0.0 } else { dcg / idcg }
+    if idcg == 0.0 {
+        0.0
+    } else {
+        dcg / idcg
+    }
 }
 
 fn compute_ideal_rels(db: &GraphDb, q: &BenchQuery) -> Vec<f64> {
@@ -51,7 +55,11 @@ fn compute_ideal_rels(db: &GraphDb, q: &BenchQuery) -> Vec<f64> {
     if !q.relevance.is_empty() {
         for (name, grade) in &q.relevance {
             let count: i64 = conn
-                .query_row("SELECT COUNT(*) FROM symbols WHERE name = ?", [&name], |row| row.get(0))
+                .query_row(
+                    "SELECT COUNT(*) FROM symbols WHERE name = ?",
+                    [&name],
+                    |row| row.get(0),
+                )
                 .unwrap_or(0);
             for _ in 0..count {
                 ideal.push(*grade as f64);
@@ -59,7 +67,11 @@ fn compute_ideal_rels(db: &GraphDb, q: &BenchQuery) -> Vec<f64> {
         }
     } else if let Some(exp) = &q.expected_symbol {
         let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM symbols WHERE name = ?", [&exp], |row| row.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM symbols WHERE name = ?",
+                [&exp],
+                |row| row.get(0),
+            )
             .unwrap_or(0);
         for _ in 0..count.max(1) {
             ideal.push(3.0);
@@ -86,10 +98,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn grep_search(db: &GraphDb, query: &str, top_k: usize) -> Vec<(i64, f64)> {
-    let terms: Vec<&str> = query
-        .split_whitespace()
-        .filter(|t| t.len() >= 2)
-        .collect();
+    let terms: Vec<&str> = query.split_whitespace().filter(|t| t.len() >= 2).collect();
     if terms.is_empty() {
         return Vec::new();
     }
@@ -106,9 +115,7 @@ fn grep_search(db: &GraphDb, query: &str, top_k: usize) -> Vec<(i64, f64)> {
             .unwrap();
 
         let rows: Vec<(i64, String)> = stmt
-            .query_map([&pattern], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
+            .query_map([&pattern], |row| Ok((row.get(0)?, row.get(1)?)))
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
@@ -186,7 +193,10 @@ fn run_ndcg(fe: &FullEngine, queries: &[BenchQuery]) {
                 let ndcg = ndcg_at_k(&rels, &ideal, k);
                 per_query[mi][ki].push(ndcg);
             }
-            let ndcg10 = per_query[mi][cutoffs.len() - 1].last().copied().unwrap_or(0.0);
+            let ndcg10 = per_query[mi][cutoffs.len() - 1]
+                .last()
+                .copied()
+                .unwrap_or(0.0);
             cat_data
                 .entry(q.category.clone())
                 .or_insert_with(|| vec![vec![]; n_methods])[mi]
@@ -213,7 +223,9 @@ fn run_ndcg(fe: &FullEngine, queries: &[BenchQuery]) {
     let mut cats: Vec<&String> = cat_data.keys().collect();
     cats.sort();
     print!("{:<20}", "Category");
-    for m in METHODS { print!("{:>10}", m); }
+    for m in METHODS {
+        print!("{:>10}", m);
+    }
     println!();
     println!("{}", "-".repeat(20 + 10 * n_methods));
     for cat in &cats {
@@ -228,7 +240,9 @@ fn run_ndcg(fe: &FullEngine, queries: &[BenchQuery]) {
 
     println!("\n--- Per Query (NDCG@10) ---\n");
     print!("{:<30}", "Query");
-    for m in METHODS { print!("{:>10}", m); }
+    for m in METHODS {
+        print!("{:>10}", m);
+    }
     println!();
     println!("{}", "-".repeat(30 + 10 * n_methods));
     for (i, q) in queries.iter().enumerate() {
@@ -273,9 +287,8 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
             };
 
             let found_rank = if !q.relevance.is_empty() {
-                hits.iter().position(|(id, _)| {
-                    q.relevance_of(&sym_name(fe.db, *id)) >= 2
-                })
+                hits.iter()
+                    .position(|(id, _)| q.relevance_of(&sym_name(fe.db, *id)) >= 2)
             } else {
                 hits.iter().position(|(id, _)| {
                     let name = sym_name(fe.db, *id);
@@ -283,7 +296,8 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
                 })
             };
 
-            let hits_in_10 = hits.iter()
+            let hits_in_10 = hits
+                .iter()
                 .filter(|(id, _)| {
                     if !q.relevance.is_empty() {
                         q.relevance_of(&sym_name(fe.db, *id)) >= 2
@@ -295,7 +309,12 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
                 .count();
 
             let rr = found_rank.map(|r| 1.0 / (r + 1) as f64).unwrap_or(0.0);
-            all[mi].push(MrrRow { rr, found_rank, hits_in_10, relevant_total });
+            all[mi].push(MrrRow {
+                rr,
+                found_rank,
+                hits_in_10,
+                relevant_total,
+            });
             cat_data
                 .entry(q.category.clone())
                 .or_insert_with(|| vec![vec![]; n_methods])[mi]
@@ -307,19 +326,36 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
     println!("  MRR@10  ({} queries)", n);
     println!("{}", "=".repeat(84));
 
-    println!("\n{:<10} {:>8} {:>7} {:>7} {:>6} {:>6} {:>6} {:>7} {:>7} {:>7}", 
-        "Method", "MRR", "P@10", "R@10", "H@1", "H@3", "H@5", "Acc@1", "Acc@3", "Acc@10");
+    println!(
+        "\n{:<10} {:>8} {:>7} {:>7} {:>6} {:>6} {:>6} {:>7} {:>7} {:>7}",
+        "Method", "MRR", "P@10", "R@10", "H@1", "H@3", "H@5", "Acc@1", "Acc@3", "Acc@10"
+    );
     println!("{}", "-".repeat(82));
     for mi in 0..n_methods {
         let mrr: f64 = all[mi].iter().map(|r| r.rr).sum::<f64>() / n as f64;
-        let p10: f64 = all[mi].iter().map(|r| r.hits_in_10 as f64 / 10.0).sum::<f64>() / n as f64;
-        let r10: f64 = all[mi].iter()
+        let p10: f64 = all[mi]
+            .iter()
+            .map(|r| r.hits_in_10 as f64 / 10.0)
+            .sum::<f64>()
+            / n as f64;
+        let r10: f64 = all[mi]
+            .iter()
             .filter(|r| r.relevant_total > 0)
             .map(|r| (r.hits_in_10 as f64 / r.relevant_total as f64).min(1.0))
-            .sum::<f64>() / n as f64;
-        let h1 = all[mi].iter().filter(|r| r.found_rank.map_or(false, |r| r < 1)).count();
-        let h3 = all[mi].iter().filter(|r| r.found_rank.map_or(false, |r| r < 3)).count();
-        let h5 = all[mi].iter().filter(|r| r.found_rank.map_or(false, |r| r < 5)).count();
+            .sum::<f64>()
+            / n as f64;
+        let h1 = all[mi]
+            .iter()
+            .filter(|r| r.found_rank.map_or(false, |r| r < 1))
+            .count();
+        let h3 = all[mi]
+            .iter()
+            .filter(|r| r.found_rank.map_or(false, |r| r < 3))
+            .count();
+        let h5 = all[mi]
+            .iter()
+            .filter(|r| r.found_rank.map_or(false, |r| r < 5))
+            .count();
         let h10 = all[mi].iter().filter(|r| r.found_rank.is_some()).count();
         let acc1 = h1;
         let acc3 = h3;
@@ -332,7 +368,9 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
     let mut cats: Vec<&String> = cat_data.keys().collect();
     cats.sort();
     print!("{:<20}", "Category");
-    for m in METHODS { print!("{:>10}", m); }
+    for m in METHODS {
+        print!("{:>10}", m);
+    }
     println!();
     println!("{}", "-".repeat(20 + 10 * n_methods));
     for cat in &cats {
@@ -347,7 +385,9 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
 
     println!("\n--- Per Query (rank) ---\n");
     print!("{:<30}", "Query");
-    for m in METHODS { print!("{:>10}", m); }
+    for m in METHODS {
+        print!("{:>10}", m);
+    }
     println!();
     println!("{}", "-".repeat(30 + 10 * n_methods));
     for (i, q) in queries.iter().enumerate() {
@@ -363,16 +403,18 @@ fn run_mrr(fe: &FullEngine, queries: &[BenchQuery]) {
     }
 }
 
- struct FullEngine<'a> {
-     db: &'a GraphDb,
-     engine: SearchEngine<'a>,
- }
+struct FullEngine<'a> {
+    db: &'a GraphDb,
+    engine: SearchEngine<'a>,
+}
 
 impl<'a> FullEngine<'a> {
     fn run_router(&self, query: &str, top_k: usize) -> Vec<(i64, f64)> {
         let q = SearchQuery::new(query).top_k(top_k);
-        self.engine.search(&q)
-            .results.iter()
+        self.engine
+            .search(&q)
+            .results
+            .iter()
             .map(|r| (r.symbol.id, r.score))
             .collect()
     }
@@ -386,7 +428,10 @@ fn run_speed_bench(fe: &FullEngine, queries: &[BenchQuery]) {
     let bench_iters = 50;
 
     println!("\n{}", "=".repeat(70));
-    println!("  Speed Benchmark  ({} queries, {} iterations after {} warmup)", n_queries, bench_iters, warmup_iters);
+    println!(
+        "  Speed Benchmark  ({} queries, {} iterations after {} warmup)",
+        n_queries, bench_iters, warmup_iters
+    );
     println!("{}", "=".repeat(70));
 
     let mut g_times: Vec<Vec<f64>> = vec![vec![]; n_queries];
@@ -419,8 +464,12 @@ fn run_speed_bench(fe: &FullEngine, queries: &[BenchQuery]) {
                 let name = sym_name(fe.db, *id);
                 name == expected || expected.contains(&name) || name.contains(expected)
             });
-            if g_rank.is_some() { g_rr[qi] = 1.0 / (g_rank.unwrap() as f64 + 1.0); }
-            if r_rank.is_some() { r_rr[qi] = 1.0 / (r_rank.unwrap() as f64 + 1.0); }
+            if g_rank.is_some() {
+                g_rr[qi] = 1.0 / (g_rank.unwrap() as f64 + 1.0);
+            }
+            if r_rank.is_some() {
+                r_rr[qi] = 1.0 / (r_rank.unwrap() as f64 + 1.0);
+            }
         }
     }
 
@@ -433,7 +482,9 @@ fn run_speed_bench(fe: &FullEngine, queries: &[BenchQuery]) {
     all_r.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
     let percentile = |v: &[f64], p: f64| -> f64 {
-        if v.is_empty() { return 0.0; }
+        if v.is_empty() {
+            return 0.0;
+        }
         let idx = ((p / 100.0) * (v.len() - 1) as f64).round() as usize;
         v[idx.min(v.len() - 1)]
     };
@@ -445,23 +496,40 @@ fn run_speed_bench(fe: &FullEngine, queries: &[BenchQuery]) {
     let r_p95 = percentile(&all_r, 95.0);
     let _r_p99 = percentile(&all_r, 99.0);
 
-    println!("\n{:<12} {:>8} {:>8} {:>8}  {:>8} {:>8} {:>8}", "", "MRR", "Med(us)", "P95(us)", "MRR", "Med(us)", "P95(us)");
-    println!("{:<12} {:>8} {:>8} {:>8}  {:>8} {:>8} {:>8}", "", "----", "-------", "-------", "----", "-------", "-------");
-    println!("{:<12} {:>8.3} {:>8.0} {:>8.0}  {:>8.3} {:>8.0} {:>8.0}", "OVERALL",
-        g_mrr, g_med, g_p95, r_mrr, r_med, r_p95);
+    println!(
+        "\n{:<12} {:>8} {:>8} {:>8}  {:>8} {:>8} {:>8}",
+        "", "MRR", "Med(us)", "P95(us)", "MRR", "Med(us)", "P95(us)"
+    );
+    println!(
+        "{:<12} {:>8} {:>8} {:>8}  {:>8} {:>8} {:>8}",
+        "", "----", "-------", "-------", "----", "-------", "-------"
+    );
+    println!(
+        "{:<12} {:>8.3} {:>8.0} {:>8.0}  {:>8.3} {:>8.0} {:>8.0}",
+        "OVERALL", g_mrr, g_med, g_p95, r_mrr, r_med, r_p95
+    );
 
     println!("\n--- Per Query ---\n");
-    println!("{:<35} {:>6} {:>8} {:>8}  {:>6} {:>8} {:>8}", "Query", "G RR", "G med", "G p95", "R RR", "R med", "R p95");
+    println!(
+        "{:<35} {:>6} {:>8} {:>8}  {:>6} {:>8} {:>8}",
+        "Query", "G RR", "G med", "G p95", "R RR", "R med", "R p95"
+    );
     println!("{}", "-".repeat(90));
     for (qi, q) in queries.iter().enumerate() {
         let g_t = &mut g_times[qi];
         let r_t = &mut r_times[qi];
         g_t.sort_by(|a, b| a.partial_cmp(b).unwrap());
         r_t.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        println!("{:<35} {:>6.3} {:>7.0}us {:>7.0}us  {:>6.3} {:>7.0}us {:>7.0}us",
+        println!(
+            "{:<35} {:>6.3} {:>7.0}us {:>7.0}us  {:>6.3} {:>7.0}us {:>7.0}us",
             truncate(&q.query, 35),
-            g_rr[qi], percentile(g_t, 50.0), percentile(g_t, 95.0),
-            r_rr[qi], percentile(r_t, 50.0), percentile(r_t, 95.0));
+            g_rr[qi],
+            percentile(g_t, 50.0),
+            percentile(g_t, 95.0),
+            r_rr[qi],
+            percentile(r_t, 50.0),
+            percentile(r_t, 95.0)
+        );
     }
 }
 
@@ -481,30 +549,38 @@ fn main() {
         let db_path = &args[2];
         let db = match GraphDb::open(Path::new(db_path)) {
             Ok(d) => d,
-            Err(e) => { eprintln!("error opening database: {e}"); std::process::exit(1); }
+            Err(e) => {
+                eprintln!("error opening database: {e}");
+                std::process::exit(1);
+            }
         };
         let stats = db.stats().unwrap();
         println!("GraphIQ Speed Benchmark");
-        println!("{} files, {} symbols, {} edges\n", stats.files, stats.symbols, stats.edges);
+        println!(
+            "{} files, {} symbols, {} edges\n",
+            stats.files, stats.symbols, stats.edges
+        );
 
         let ci = match cruncher::build_cruncher_index(&db) {
             Ok(idx) => idx,
-            Err(e) => { eprintln!("cruncher build failed: {e}"); std::process::exit(1); }
+            Err(e) => {
+                eprintln!("cruncher build failed: {e}");
+                std::process::exit(1);
+            }
         };
         let cache = HotCache::with_defaults();
         cache.prewarm(&db, 200);
         let engine = SearchEngine::new(&db, &cache).with_cruncher(&ci);
 
-        let fe = FullEngine {
-             db: &db,
-             engine,
-         };
+        let fe = FullEngine { db: &db, engine };
 
         let content = std::fs::read_to_string(&args[3]).unwrap_or_else(|e| {
-            eprintln!("error reading query file: {e}"); std::process::exit(1);
+            eprintln!("error reading query file: {e}");
+            std::process::exit(1);
         });
         let mut queries: Vec<BenchQuery> = serde_json::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("error parsing query file: {e}"); std::process::exit(1);
+            eprintln!("error parsing query file: {e}");
+            std::process::exit(1);
         });
         queries.truncate(10);
 
@@ -515,16 +591,25 @@ fn main() {
     let db_path = &args[1];
     let db = match GraphDb::open(Path::new(db_path)) {
         Ok(d) => d,
-        Err(e) => { eprintln!("error opening database: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("error opening database: {e}");
+            std::process::exit(1);
+        }
     };
 
     let stats = db.stats().unwrap();
     println!("GraphIQ Benchmark");
-    println!("{} files, {} symbols, {} edges\n", stats.files, stats.symbols, stats.edges);
+    println!(
+        "{} files, {} symbols, {} edges\n",
+        stats.files, stats.symbols, stats.edges
+    );
 
     let ci = match cruncher::build_cruncher_index(&db) {
         Ok(idx) => idx,
-        Err(e) => { eprintln!("cruncher build failed: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("cruncher build failed: {e}");
+            std::process::exit(1);
+        }
     };
 
     let cache = HotCache::with_defaults();
@@ -535,17 +620,16 @@ fn main() {
     let ndcg_file = args.get(2).filter(|s| !s.is_empty()).map(|s| s.as_str());
     let mrr_file = args.get(3).filter(|s| !s.is_empty()).map(|s| s.as_str());
 
-    let fe = FullEngine {
-        db: &db,
-        engine,
-    };
+    let fe = FullEngine { db: &db, engine };
 
     if let Some(file) = ndcg_file {
         let content = std::fs::read_to_string(file).unwrap_or_else(|e| {
-            eprintln!("error reading query file: {e}"); std::process::exit(1);
+            eprintln!("error reading query file: {e}");
+            std::process::exit(1);
         });
         let queries: Vec<BenchQuery> = serde_json::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("error parsing query file: {e}"); std::process::exit(1);
+            eprintln!("error parsing query file: {e}");
+            std::process::exit(1);
         });
         run_ndcg(&fe, &queries);
         run_mrr(&fe, &queries);
@@ -553,10 +637,12 @@ fn main() {
 
     if let Some(file) = mrr_file {
         let content = std::fs::read_to_string(file).unwrap_or_else(|e| {
-            eprintln!("error reading MRR query file: {e}"); std::process::exit(1);
+            eprintln!("error reading MRR query file: {e}");
+            std::process::exit(1);
         });
         let queries: Vec<BenchQuery> = serde_json::from_str(&content).unwrap_or_else(|e| {
-            eprintln!("error parsing MRR query file: {e}"); std::process::exit(1);
+            eprintln!("error parsing MRR query file: {e}");
+            std::process::exit(1);
         });
         run_ndcg(&fe, &queries);
         run_mrr(&fe, &queries);

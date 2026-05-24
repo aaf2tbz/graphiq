@@ -18,6 +18,8 @@ enum Commands {
         path: PathBuf,
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
+        #[arg(long)]
+        force_reindex: bool,
         #[cfg(feature = "embed")]
         #[arg(long)]
         embed: bool,
@@ -125,11 +127,20 @@ fn main() {
     let cli = Cli::parse();
     match cli.command {
         #[cfg(not(feature = "embed"))]
-        Commands::Index { path, db, .. } => cmd_index(&path, &db, false),
+        Commands::Index {
+            path,
+            db,
+            force_reindex,
+            ..
+        } => cmd_index(&path, &db, false, force_reindex),
         #[cfg(feature = "embed")]
         Commands::Index {
-            path, db, embed, ..
-        } => cmd_index(&path, &db, embed),
+            path,
+            db,
+            embed,
+            force_reindex,
+            ..
+        } => cmd_index(&path, &db, embed, force_reindex),
 
         Commands::Search {
             query,
@@ -156,7 +167,12 @@ fn main() {
             skip_index,
             ephemeral,
             harness,
-        } => cmd_setup(project.as_deref(), skip_index, ephemeral, harness.as_deref()),
+        } => cmd_setup(
+            project.as_deref(),
+            skip_index,
+            ephemeral,
+            harness.as_deref(),
+        ),
         Commands::Doctor { db } => cmd_doctor(&db),
         Commands::UpgradeIndex { db } => cmd_upgrade_index(&db),
         Commands::Constants { db, query, top } => cmd_constants(&db, query.as_deref(), top),
@@ -187,11 +203,28 @@ fn resolve_db(project_path: &std::path::Path, db_arg: &std::path::Path) -> PathB
     }
 }
 
-fn cmd_index(path: &std::path::Path, db_path: &std::path::Path, do_embed: bool) {
+fn cmd_index(
+    path: &std::path::Path,
+    db_path: &std::path::Path,
+    do_embed: bool,
+    force_reindex: bool,
+) {
     let db_path = resolve_db(path, db_path);
 
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent).unwrap();
+    }
+
+    if force_reindex && db_path.exists() {
+        println!(
+            "Force reindex: removing existing database {}",
+            db_path.display()
+        );
+        let wal = db_path.with_extension("db-wal");
+        let shm = db_path.with_extension("db-shm");
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(&wal);
+        let _ = std::fs::remove_file(&shm);
     }
 
     let db = open_db_or_exit(&db_path);
@@ -262,19 +295,21 @@ fn cmd_search(
     let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
     if let Ok(Some(manifest)) = graphiq_core::manifest::read_manifest(db_dir) {
         let fresh = graphiq_core::manifest::check_artifact_freshness(&db, &manifest);
-        let stale: Vec<(&str, graphiq_core::manifest::ArtifactStatus)> = vec![
-            ("cruncher", fresh.cruncher),
-        ]
-        .into_iter()
-        .filter(|(_, s)| *s != graphiq_core::manifest::ArtifactStatus::Ready)
-        .collect();
+        let stale: Vec<(&str, graphiq_core::manifest::ArtifactStatus)> =
+            vec![("cruncher", fresh.cruncher)]
+                .into_iter()
+                .filter(|(_, s)| *s != graphiq_core::manifest::ArtifactStatus::Ready)
+                .collect();
 
         if !stale.is_empty() && debug {
             eprintln!("manifest: {} artifact(s) not ready:", stale.len());
             for (name, status) in &stale {
                 eprintln!("  {}: {}", name, status);
             }
-            eprintln!("  run `graphiq upgrade-index --db {}` to rebuild", db_path.display());
+            eprintln!(
+                "  run `graphiq upgrade-index --db {}` to rebuild",
+                db_path.display()
+            );
         }
     }
 
@@ -439,7 +474,8 @@ fn cmd_status(db_path: &std::path::Path) {
                 let mode = graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
                 println!("    Active mode: {}", mode);
                 if mode != graphiq_core::search::SearchMode::GraphWalk {
-                    let reasons = graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
+                    let reasons =
+                        graphiq_core::manifest::Manifest::compute_downgrade_reasons(&fresh);
                     if !reasons.is_empty() {
                         println!("    Downgrade reasons:");
                         for r in &reasons {
@@ -537,19 +573,24 @@ fn cmd_subsystems(db_path: &std::path::Path, compute_roles: bool) {
     sorted.sort_by(|a, b| b.cohesion.partial_cmp(&a.cohesion).unwrap());
 
     println!("\n=== Subsystems ({}) ===\n", index.subsystems.len());
-    println!("{:<40} {:>6} {:>10} {:>10} {:>8}", "Name", "Symbols", "Internal", "Boundary", "Cohesion");
+    println!(
+        "{:<40} {:>6} {:>10} {:>10} {:>8}",
+        "Name", "Symbols", "Internal", "Boundary", "Cohesion"
+    );
     println!("{}", "-".repeat(78));
     for s in sorted.iter().take(30) {
         println!(
             "{:<40} {:>6} {:>10} {:>10} {:>8.2}",
-            s.name, s.symbol_ids.len(), s.internal_edge_count, s.boundary_edge_count, s.cohesion
+            s.name,
+            s.symbol_ids.len(),
+            s.internal_edge_count,
+            s.boundary_edge_count,
+            s.cohesion
         );
     }
 }
 
 fn cmd_roles(db_path: &std::path::Path, subsystem_filter: Option<usize>, top: usize) {
-    
-
     if !db_path.exists() {
         eprintln!("database not found: {}", db_path.display());
         std::process::exit(1);
@@ -580,8 +621,13 @@ fn cmd_roles(db_path: &std::path::Path, subsystem_filter: Option<usize>, top: us
     let rows: Vec<(String, String, i64, i64, i64, i64, i64)> = stmt
         .query_map([], |row| {
             Ok((
-                row.get(0)?, row.get(1)?, row.get(2)?,
-                row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?,
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
             ))
         })
         .unwrap()
@@ -589,7 +635,10 @@ fn cmd_roles(db_path: &std::path::Path, subsystem_filter: Option<usize>, top: us
         .collect();
 
     println!("\n=== Structural Roles (top {}) ===\n", rows.len().min(top));
-    println!("{:<45} {:<30} {:>8} {:>6} {:>6} {:>5} {:>5}", "Symbol", "Roles", "Subsystem", "IntDeg", "BndDeg", "ExtIn", "ExtOut");
+    println!(
+        "{:<45} {:<30} {:>8} {:>6} {:>6} {:>5} {:>5}",
+        "Symbol", "Roles", "Subsystem", "IntDeg", "BndDeg", "ExtIn", "ExtOut"
+    );
     println!("{}", "-".repeat(112));
 
     for (name, roles_str, sub_id, int_deg, bnd_deg, ext_in, ext_out) in &rows {
@@ -636,7 +685,10 @@ fn cmd_doctor(db_path: &std::path::Path) {
 
     println!("GraphIQ Doctor");
     println!("  Database: {}", db_path.display());
-    println!("  Files: {}  Symbols: {}  Edges: {}", stats.files, stats.symbols, stats.edges);
+    println!(
+        "  Files: {}  Symbols: {}  Edges: {}",
+        stats.files, stats.symbols, stats.edges
+    );
     println!();
 
     let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
@@ -652,7 +704,10 @@ fn cmd_doctor(db_path: &std::path::Path) {
             let cruncher_ok = graphiq_core::cruncher::build_cruncher_index(&db).is_ok();
 
             println!("    fts:          ready ({} symbols in FTS)", stats.symbols);
-            println!("    cruncher:     {}", if cruncher_ok { "ready" } else { "missing" });
+            println!(
+                "    cruncher:     {}",
+                if cruncher_ok { "ready" } else { "missing" }
+            );
             return;
         }
         Err(e) => {
@@ -664,14 +719,15 @@ fn cmd_doctor(db_path: &std::path::Path) {
     let fresh = graphiq_core::manifest::check_artifact_freshness(&db, &manifest);
     let mode = graphiq_core::manifest::Manifest::compute_active_mode(&fresh);
 
-    println!("  Manifest (v{}, indexed at {})", manifest.schema_version, manifest.indexed_at);
+    println!(
+        "  Manifest (v{}, indexed at {})",
+        manifest.schema_version, manifest.indexed_at
+    );
     println!();
 
     println!("  Artifact health:");
-    let all_artifacts: Vec<(&str, graphiq_core::manifest::ArtifactStatus)> = vec![
-        ("fts", fresh.fts),
-        ("cruncher", fresh.cruncher),
-    ];
+    let all_artifacts: Vec<(&str, graphiq_core::manifest::ArtifactStatus)> =
+        vec![("fts", fresh.fts), ("cruncher", fresh.cruncher)];
 
     let mut stale_count = 0;
     let mut missing_count = 0;
@@ -704,8 +760,14 @@ fn cmd_doctor(db_path: &std::path::Path) {
 
     println!();
     if stale_count > 0 || missing_count > 0 {
-        println!("  DIAGNOSIS: {} stale, {} missing artifacts", stale_count, missing_count);
-        println!("  FIX: run `graphiq upgrade-index --db {}`", db_path.display());
+        println!(
+            "  DIAGNOSIS: {} stale, {} missing artifacts",
+            stale_count, missing_count
+        );
+        println!(
+            "  FIX: run `graphiq upgrade-index --db {}`",
+            db_path.display()
+        );
     } else {
         println!("  DIAGNOSIS: all artifacts healthy");
     }
@@ -724,17 +786,15 @@ fn cmd_upgrade_index(db_path: &std::path::Path) {
     let existing = graphiq_core::manifest::read_manifest(db_dir).ok().flatten();
     let needs_rebuild = existing.as_ref().map_or(true, |m| {
         let fresh = graphiq_core::manifest::check_artifact_freshness(&db, m);
-        let all: Vec<_> = vec![
-            fresh.cruncher,
-        ];
-        all.iter().any(|s| *s != graphiq_core::manifest::ArtifactStatus::Ready)
+        let all: Vec<_> = vec![fresh.cruncher];
+        all.iter()
+            .any(|s| *s != graphiq_core::manifest::ArtifactStatus::Ready)
     });
 
     if !needs_rebuild {
         if let Some(m) = &existing {
             let fresh = graphiq_core::manifest::check_artifact_freshness(&db, m);
-            if fresh.cruncher == graphiq_core::manifest::ArtifactStatus::Ready
-            {
+            if fresh.cruncher == graphiq_core::manifest::ArtifactStatus::Ready {
                 println!("All artifacts are fresh. No rebuild needed.");
                 return;
             }
@@ -783,7 +843,10 @@ fn cmd_constants(db_path: &std::path::Path, query: Option<&str>, top: usize) {
         return;
     }
 
-    println!("{:<12} {:<30} {:>6}  {}", "LITERAL", "NAMED", "COUNT", "USAGE SITES");
+    println!(
+        "{:<12} {:<30} {:>6}  {}",
+        "LITERAL", "NAMED", "COUNT", "USAGE SITES"
+    );
     println!("{}", "-".repeat(90));
     for entry in &entries {
         let named = entry.named.as_deref().unwrap_or("—");
@@ -823,7 +886,8 @@ fn cmd_deep_graph(db_path: &std::path::Path) {
         "deep graph: {} type-flow, {} error-type, {} data-shape edges",
         stats.type_flow_edges, stats.error_type_edges, stats.data_shape_edges
     );
-    let src_stats = graphiq_core::deep_graph::compute_source_graph_edges(&db).expect("compute source");
+    let src_stats =
+        graphiq_core::deep_graph::compute_source_graph_edges(&db).expect("compute source");
     println!(
         "source graph: {} string-literal, {} comment-ref edges",
         src_stats.string_literal_edges, src_stats.comment_ref_edges
@@ -843,7 +907,12 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
     }
 }
 
- fn cmd_setup(project: Option<&std::path::Path>, skip_index: bool, ephemeral: bool, harness_filter: Option<&str>) {
+fn cmd_setup(
+    project: Option<&std::path::Path>,
+    skip_index: bool,
+    ephemeral: bool,
+    harness_filter: Option<&str>,
+) {
     use serde_json::{json, Value};
 
     fn pretty(v: &Value) -> String {
@@ -916,11 +985,81 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
 
     // Claude Desktop
     if should_configure("claude-desktop") {
-    let claude_config =
-        dirs::config_dir().map(|d| d.join("Claude").join("claude_desktop_config.json"));
+        let claude_config =
+            dirs::config_dir().map(|d| d.join("Claude").join("claude_desktop_config.json"));
 
-    if let Some(ref config_path) = claude_config {
-        if config_path.exists() || config_path.parent().map_or(false, |p| p.exists()) {
+        if let Some(ref config_path) = claude_config {
+            if config_path.exists() || config_path.parent().map_or(false, |p| p.exists()) {
+                let project_str = project_path.display().to_string();
+                let mut args = vec![project_str.clone()];
+                if ephemeral {
+                    args.push("--ephemeral".to_string());
+                }
+                let entry = json!({
+                    "command": "graphiq-mcp",
+                    "args": args
+                });
+
+                let (config, written) = if config_path.exists() {
+                    match std::fs::read_to_string(config_path) {
+                        Ok(content) => {
+                            let mut parsed: Value =
+                                serde_json::from_str(&content).unwrap_or(json!({}));
+                            let servers = parsed
+                                .as_object_mut()
+                                .unwrap()
+                                .entry("mcpServers")
+                                .or_insert_with(|| json!({}))
+                                .as_object_mut()
+                                .unwrap();
+                            let already = servers
+                                .get("graphiq")
+                                .and_then(|v| v.get("args"))
+                                .and_then(|a| a.as_array())
+                                .and_then(|arr| arr.first())
+                                .and_then(|v| v.as_str())
+                                .map_or(false, |s| s == project_str);
+                            if already {
+                                servers.insert("graphiq".into(), entry);
+                                (pretty(&parsed), false)
+                            } else {
+                                servers.insert("graphiq".into(), entry);
+                                (pretty(&parsed), true)
+                            }
+                        }
+                        Err(_) => {
+                            let obj = json!({"mcpServers": {"graphiq": entry}});
+                            (pretty(&obj), true)
+                        }
+                    }
+                } else {
+                    let obj = json!({"mcpServers": {"graphiq": entry}});
+                    (pretty(&obj), true)
+                };
+
+                if let Some(parent) = config_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::write(config_path, &config) {
+                    Ok(()) => {
+                        let status = if written { "configured" } else { "updated" };
+                        println!("  Claude Desktop: {} {}", status, config_path.display());
+                        configured.push("Claude Desktop".to_string());
+                    }
+                    Err(e) => {
+                        eprintln!("  Claude Desktop: failed to write config: {e}");
+                    }
+                }
+            }
+        }
+    } else {
+        skipped.push("Claude Desktop".to_string());
+    }
+
+    // Claude Code
+    if should_configure("claude-code") {
+        let claude_code_config = project_path.join(".claude").join(".mcp.json");
+        {
             let project_str = project_path.display().to_string();
             let mut args = vec![project_str.clone()];
             if ephemeral {
@@ -931,8 +1070,12 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
                 "args": args
             });
 
-            let (config, written) = if config_path.exists() {
-                match std::fs::read_to_string(config_path) {
+            if let Some(parent) = claude_code_config.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+
+            let (config, written) = if claude_code_config.exists() {
+                match std::fs::read_to_string(&claude_code_config) {
                     Ok(content) => {
                         let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
                         let servers = parsed
@@ -942,20 +1085,9 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
                             .or_insert_with(|| json!({}))
                             .as_object_mut()
                             .unwrap();
-                        let already = servers
-                            .get("graphiq")
-                            .and_then(|v| v.get("args"))
-                            .and_then(|a| a.as_array())
-                            .and_then(|arr| arr.first())
-                            .and_then(|v| v.as_str())
-                            .map_or(false, |s| s == project_str);
-                        if already {
-                            servers.insert("graphiq".into(), entry);
-                            (pretty(&parsed), false)
-                        } else {
-                            servers.insert("graphiq".into(), entry);
-                            (pretty(&parsed), true)
-                        }
+                        let already = servers.contains_key("graphiq");
+                        servers.insert("graphiq".into(), entry);
+                        (pretty(&parsed), !already)
                     }
                     Err(_) => {
                         let obj = json!({"mcpServers": {"graphiq": entry}});
@@ -967,217 +1099,163 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
                 (pretty(&obj), true)
             };
 
-            if let Some(parent) = config_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            match std::fs::write(config_path, &config) {
+            match std::fs::write(&claude_code_config, &config) {
                 Ok(()) => {
                     let status = if written { "configured" } else { "updated" };
-                    println!("  Claude Desktop: {} {}", status, config_path.display());
-                    configured.push("Claude Desktop".to_string());
+                    println!(
+                        "  Claude Code:   {} {}",
+                        status,
+                        claude_code_config.display()
+                    );
+                    configured.push("Claude Code".to_string());
                 }
                 Err(e) => {
-                    eprintln!("  Claude Desktop: failed to write config: {e}");
+                    eprintln!("  Claude Code:   failed to write config: {e}");
                 }
             }
         }
-    }
-    } else {
-        skipped.push("Claude Desktop".to_string());
-    }
-
-    // Claude Code
-    if should_configure("claude-code") {
-    let claude_code_config = project_path.join(".claude").join(".mcp.json");
-    {
-        let project_str = project_path.display().to_string();
-        let mut args = vec![project_str.clone()];
-        if ephemeral {
-            args.push("--ephemeral".to_string());
-        }
-        let entry = json!({
-            "command": "graphiq-mcp",
-            "args": args
-        });
-
-        if let Some(parent) = claude_code_config.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        let (config, written) = if claude_code_config.exists() {
-            match std::fs::read_to_string(&claude_code_config) {
-                Ok(content) => {
-                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
-                    let servers = parsed
-                        .as_object_mut()
-                        .unwrap()
-                        .entry("mcpServers")
-                        .or_insert_with(|| json!({}))
-                        .as_object_mut()
-                        .unwrap();
-                    let already = servers.contains_key("graphiq");
-                    servers.insert("graphiq".into(), entry);
-                    (pretty(&parsed), !already)
-                }
-                Err(_) => {
-                    let obj = json!({"mcpServers": {"graphiq": entry}});
-                    (pretty(&obj), true)
-                }
-            }
-        } else {
-            let obj = json!({"mcpServers": {"graphiq": entry}});
-            (pretty(&obj), true)
-        };
-
-        match std::fs::write(&claude_code_config, &config) {
-            Ok(()) => {
-                let status = if written { "configured" } else { "updated" };
-                println!("  Claude Code:   {} {}", status, claude_code_config.display());
-                configured.push("Claude Code".to_string());
-            }
-            Err(e) => {
-                eprintln!("  Claude Code:   failed to write config: {e}");
-            }
-        }
-    }
     } else {
         skipped.push("Claude Code".to_string());
     }
 
     // OpenCode
     if should_configure("opencode") {
-    let opencode_config =
-        dirs::home_dir().map(|d| d.join(".config").join("opencode").join("opencode.json"));
+        let opencode_config =
+            dirs::home_dir().map(|d| d.join(".config").join("opencode").join("opencode.json"));
 
-    if let Some(ref config_path) = opencode_config {
-        let project_str = project_path.display().to_string();
-        let mut cmd = vec!["graphiq-mcp".to_string(), project_str.clone()];
-        if ephemeral {
-            cmd.push("--ephemeral".to_string());
-        }
-        let entry = json!({
-            "type": "local",
-            "command": cmd,
-            "enabled": true
-        });
+        if let Some(ref config_path) = opencode_config {
+            let project_str = project_path.display().to_string();
+            let mut cmd = vec!["graphiq-mcp".to_string(), project_str.clone()];
+            if ephemeral {
+                cmd.push("--ephemeral".to_string());
+            }
+            let entry = json!({
+                "type": "local",
+                "command": cmd,
+                "enabled": true
+            });
 
-        let (config, written) = if config_path.exists() {
-            match std::fs::read_to_string(config_path) {
-                Ok(content) => {
-                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
-                    let mcp = parsed
-                        .as_object_mut()
-                        .unwrap()
-                        .entry("mcp")
-                        .or_insert_with(|| json!({}))
-                        .as_object_mut()
-                        .unwrap();
-                    let already = mcp
-                        .get("graphiq")
-                        .and_then(|v| v.get("command"))
-                        .and_then(|a| a.as_array())
-                        .and_then(|arr| arr.get(1))
-                        .and_then(|v| v.as_str())
-                        .map_or(false, |s| s == project_str);
-                    mcp.insert("graphiq".into(), entry);
-                    (pretty(&parsed), !already)
+            let (config, written) = if config_path.exists() {
+                match std::fs::read_to_string(config_path) {
+                    Ok(content) => {
+                        let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+                        let mcp = parsed
+                            .as_object_mut()
+                            .unwrap()
+                            .entry("mcp")
+                            .or_insert_with(|| json!({}))
+                            .as_object_mut()
+                            .unwrap();
+                        let already = mcp
+                            .get("graphiq")
+                            .and_then(|v| v.get("command"))
+                            .and_then(|a| a.as_array())
+                            .and_then(|arr| arr.get(1))
+                            .and_then(|v| v.as_str())
+                            .map_or(false, |s| s == project_str);
+                        mcp.insert("graphiq".into(), entry);
+                        (pretty(&parsed), !already)
+                    }
+                    Err(_) => {
+                        let obj = json!({"mcp": {"graphiq": entry}});
+                        (pretty(&obj), true)
+                    }
                 }
-                Err(_) => {
-                    let obj = json!({"mcp": {"graphiq": entry}});
-                    (pretty(&obj), true)
+            } else {
+                let obj = json!({"mcp": {"graphiq": entry}});
+                (pretty(&obj), true)
+            };
+
+            if let Some(parent) = config_path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::write(config_path, &config) {
+                Ok(()) => {
+                    let status = if written { "configured" } else { "updated" };
+                    println!("  opencode:      {} {}", status, config_path.display());
+                    configured.push("opencode".to_string());
+                }
+                Err(e) => {
+                    eprintln!("  opencode:      failed to write config: {e}");
                 }
             }
-        } else {
-            let obj = json!({"mcp": {"graphiq": entry}});
-            (pretty(&obj), true)
-        };
-
-        if let Some(parent) = config_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
         }
-        match std::fs::write(config_path, &config) {
-            Ok(()) => {
-                let status = if written { "configured" } else { "updated" };
-                println!("  opencode:      {} {}", status, config_path.display());
-                configured.push("opencode".to_string());
-            }
-            Err(e) => {
-                eprintln!("  opencode:      failed to write config: {e}");
-            }
-        }
-    }
     } else {
         skipped.push("opencode".to_string());
     }
 
     // Codex CLI
     if should_configure("codex") {
-    let codex_config = dirs::home_dir().map(|d| d.join(".codex").join("config.toml"));
+        let codex_config = dirs::home_dir().map(|d| d.join(".codex").join("config.toml"));
 
-    if let Some(ref config_path) = codex_config {
-        let project_str = project_path.display().to_string();
-        let args_suffix = if ephemeral { ", \"--ephemeral\"" } else { "" };
+        if let Some(ref config_path) = codex_config {
+            let project_str = project_path.display().to_string();
+            let args_suffix = if ephemeral { ", \"--ephemeral\"" } else { "" };
 
-        let (content, written) = if config_path.exists() {
-            match std::fs::read_to_string(config_path) {
-                Ok(existing) => {
-                    let already = existing.contains("[mcp_servers.graphiq]")
-                        && existing.contains(&project_str);
-                    if already {
-                        (existing, false)
-                    } else {
-                        let mut cleaned = existing;
-                        let section = format!(
+            let (content, written) = if config_path.exists() {
+                match std::fs::read_to_string(config_path) {
+                    Ok(existing) => {
+                        let already = existing.contains("[mcp_servers.graphiq]")
+                            && existing.contains(&project_str);
+                        if already {
+                            (existing, false)
+                        } else {
+                            let mut cleaned = existing;
+                            let section = format!(
                             "\n[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"{}]\nenabled = true\n",
                             project_str, args_suffix
                         );
-                        cleaned.push_str(&section);
-                        (cleaned, true)
+                            cleaned.push_str(&section);
+                            (cleaned, true)
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  Codex:         failed to read config: {e}");
+                        return;
                     }
                 }
-                Err(e) => {
-                    eprintln!("  Codex:         failed to read config: {e}");
-                    return;
-                }
-            }
-        } else {
-            let section = format!(
+            } else {
+                let section = format!(
                 "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"{}]\nenabled = true\n",
                 project_str, args_suffix
             );
-            (section, true)
-        };
+                (section, true)
+            };
 
-        match std::fs::write(config_path, &content) {
-            Ok(()) => {
-                let status = if written { "configured" } else { "updated" };
-                println!("  Codex:         {} {}", status, config_path.display());
-                configured.push("Codex".to_string());
-            }
-            Err(e) => {
-                eprintln!("  Codex:         failed to write config: {e}");
+            match std::fs::write(config_path, &content) {
+                Ok(()) => {
+                    let status = if written { "configured" } else { "updated" };
+                    println!("  Codex:         {} {}", status, config_path.display());
+                    configured.push("Codex".to_string());
+                }
+                Err(e) => {
+                    eprintln!("  Codex:         failed to write config: {e}");
+                }
             }
         }
-    }
     } else {
         skipped.push("Codex".to_string());
     }
 
     // Hermes
     if should_configure("hermes") {
-    let hermes_config = dirs::home_dir().map(|d| d.join(".hermes").join("config.yaml"));
+        let hermes_config = dirs::home_dir().map(|d| d.join(".hermes").join("config.yaml"));
 
-    if let Some(ref config_path) = hermes_config {
-        let project_str = project_path.display().to_string();
-        let ephemeral_line = if ephemeral { "\n      - --ephemeral" } else { "" };
+        if let Some(ref config_path) = hermes_config {
+            let project_str = project_path.display().to_string();
+            let ephemeral_line = if ephemeral {
+                "\n      - --ephemeral"
+            } else {
+                ""
+            };
 
-        let (content, written) = if config_path.exists() {
-            match std::fs::read_to_string(config_path) {
-                Ok(existing) => {
-                    let has_graphiq =
-                        existing.contains("mcp_servers:") && existing.contains("graphiq:");
-                    if has_graphiq {
-                        let updated = regex::Regex::new(
+            let (content, written) = if config_path.exists() {
+                match std::fs::read_to_string(config_path) {
+                    Ok(existing) => {
+                        let has_graphiq =
+                            existing.contains("mcp_servers:") && existing.contains("graphiq:");
+                        if has_graphiq {
+                            let updated = regex::Regex::new(
                             r"(?m)^(mcp_servers:\n(\s+graphiq:.*?)(?=\n\n|\n[a-z_]+:|\z))"
                         )
                         .map(|re| {
@@ -1189,41 +1267,41 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
                             re.replace(&existing, replacement.as_str()).to_string()
                         })
                         .unwrap_or_else(|_| existing.clone());
-                        (updated, false)
-                    } else {
-                        let section = format!(
+                            (updated, false)
+                        } else {
+                            let section = format!(
                             "\nmcp_servers:\n  graphiq:\n    command: graphiq-mcp\n    args:\n      - {}{ephemeral_line}\n    enabled: true\n",
                             project_str
                         );
-                        let mut out = existing;
-                        out.push_str(&section);
-                        (out, true)
+                            let mut out = existing;
+                            out.push_str(&section);
+                            (out, true)
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("  Hermes:        failed to read config: {e}");
+                        return;
                     }
                 }
-                Err(e) => {
-                    eprintln!("  Hermes:        failed to read config: {e}");
-                    return;
-                }
-            }
-        } else {
-            let section = format!(
+            } else {
+                let section = format!(
                 "mcp_servers:\n  graphiq:\n    command: graphiq-mcp\n    args:\n      - {}{ephemeral_line}\n    enabled: true\n",
                 project_str
             );
-            (section, true)
-        };
+                (section, true)
+            };
 
-        match std::fs::write(config_path, &content) {
-            Ok(()) => {
-                let status = if written { "configured" } else { "updated" };
-                println!("  Hermes:        {} {}", status, config_path.display());
-                configured.push("Hermes".to_string());
-            }
-            Err(e) => {
-                eprintln!("  Hermes:        failed to write config: {e}");
+            match std::fs::write(config_path, &content) {
+                Ok(()) => {
+                    let status = if written { "configured" } else { "updated" };
+                    println!("  Hermes:        {} {}", status, config_path.display());
+                    configured.push("Hermes".to_string());
+                }
+                Err(e) => {
+                    eprintln!("  Hermes:        failed to write config: {e}");
+                }
             }
         }
-    }
     } else {
         skipped.push("Hermes".to_string());
     }
@@ -1377,7 +1455,7 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
                         servers.insert("graphiq".into(), entry["mcpServers"]["graphiq"].clone());
                         (pretty(&parsed), !already)
                     }
-                    Err(_) => (pretty(&entry), true)
+                    Err(_) => (pretty(&entry), true),
                 }
             } else {
                 (pretty(&entry), true)
@@ -1417,7 +1495,10 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
                 }
             }
         } else {
-            println!("  Aider:         already configured ({})", aider_config.display());
+            println!(
+                "  Aider:         already configured ({})",
+                aider_config.display()
+            );
             configured.push("Aider".to_string());
         }
     } else {
@@ -2501,8 +2582,7 @@ end
     let fts = graphiq_core::fts::FtsSearch::new(&db);
 
     let cruncher_idx = graphiq_core::cruncher::build_cruncher_index(&db).unwrap();
-    let engine = graphiq_core::search::SearchEngine::new(&db, &cache)
-        .with_cruncher(&cruncher_idx);
+    let engine = graphiq_core::search::SearchEngine::new(&db, &cache).with_cruncher(&cruncher_idx);
 
     let queries = &[
         ("symbol-exact", "authenticate"),
@@ -2614,22 +2694,54 @@ end
         };
 
         println!("  \"{}\"  [target: {}]", query, expected);
-        println!("  BM25 rank: {:>3}   GraphIQ rank: {:>3}   {}", bm25_label, gq_label, verdict);
+        println!(
+            "  BM25 rank: {:>3}   GraphIQ rank: {:>3}   {}",
+            bm25_label, gq_label, verdict
+        );
 
         let bm25_slice: Vec<_> = fts_results.iter().take(top_n).collect();
         let gq_slice: Vec<_> = result.results.iter().take(top_n).collect();
 
         for i in 0..top_n {
             let left = bm25_slice.get(i).map(|r| {
-                let fp = file_paths.get(&r.symbol.file_id).map(|s| s.as_str()).unwrap_or("?");
-                let hit = if r.symbol.name.contains(expected) { " <<" } else { "" };
-                format!("#{} {:.1} {}:{} {}::{}{}", i + 1, r.bm25_score, fp, r.symbol.line_start, r.symbol.kind.as_str(), r.symbol.name, hit)
+                let fp = file_paths
+                    .get(&r.symbol.file_id)
+                    .map(|s| s.as_str())
+                    .unwrap_or("?");
+                let hit = if r.symbol.name.contains(expected) {
+                    " <<"
+                } else {
+                    ""
+                };
+                format!(
+                    "#{} {:.1} {}:{} {}::{}{}",
+                    i + 1,
+                    r.bm25_score,
+                    fp,
+                    r.symbol.line_start,
+                    r.symbol.kind.as_str(),
+                    r.symbol.name,
+                    hit
+                )
             });
 
             let right = gq_slice.get(i).map(|r| {
                 let fp = r.file_path.as_deref().unwrap_or("?");
-                let hit = if r.symbol.name.contains(expected) { " <<" } else { "" };
-                format!("#{} {:.1} {}:{} {}::{}{}", i + 1, r.score, fp, r.symbol.line_start, r.symbol.kind.as_str(), r.symbol.name, hit)
+                let hit = if r.symbol.name.contains(expected) {
+                    " <<"
+                } else {
+                    ""
+                };
+                format!(
+                    "#{} {:.1} {}:{} {}::{}{}",
+                    i + 1,
+                    r.score,
+                    fp,
+                    r.symbol.line_start,
+                    r.symbol.kind.as_str(),
+                    r.symbol.name,
+                    hit
+                )
             });
 
             match (left, right) {
@@ -2643,8 +2755,10 @@ end
     }
 
     let total = graphiq_wins + bm25_wins + ties;
-    println!("  Result: GraphIQ {}/{} | BM25 {}/{} | Tied {}/{}",
-        graphiq_wins, total, bm25_wins, total, ties, total);
+    println!(
+        "  Result: GraphIQ {}/{} | BM25 {}/{} | Tied {}/{}",
+        graphiq_wins, total, bm25_wins, total, ties, total
+    );
     println!();
 
     println!("── Blast Radius ──");

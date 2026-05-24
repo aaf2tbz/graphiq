@@ -76,10 +76,31 @@ fn extract_type_tokens(signature: &str) -> Vec<String> {
     }
 
     let keywords: &[&str] = &[
-        "fn", "function", "async", "await", "pub", "private", "protected",
-        "static", "const", "mut", "let", "var", "self", "Self", "impl",
-        "where", "return", "void", "never", "unknown", "any",
-        "true", "false", "null", "undefined",
+        "fn",
+        "function",
+        "async",
+        "await",
+        "pub",
+        "private",
+        "protected",
+        "static",
+        "const",
+        "mut",
+        "let",
+        "var",
+        "self",
+        "Self",
+        "impl",
+        "where",
+        "return",
+        "void",
+        "never",
+        "unknown",
+        "any",
+        "true",
+        "false",
+        "null",
+        "undefined",
     ];
 
     tokens
@@ -87,15 +108,16 @@ fn extract_type_tokens(signature: &str) -> Vec<String> {
         .filter(|t| t.len() >= 2 && !keywords.contains(&t.as_str()))
         .filter(|t| !t.chars().all(|c| c.is_ascii_digit()))
         .map(|t| crate::tokenize::decompose_identifier(&t))
-        .flat_map(|t| t.split_whitespace().map(|s| s.to_lowercase()).collect::<Vec<_>>())
+        .flat_map(|t| {
+            t.split_whitespace()
+                .map(|s| s.to_lowercase())
+                .collect::<Vec<_>>()
+        })
         .filter(|t| t.len() >= 2)
         .collect()
 }
 
-fn compute_edge_mix(
-    outgoing: &[(String, String)],
-    incoming: &[(String, String)],
-) -> String {
+fn compute_edge_mix(outgoing: &[(String, String)], incoming: &[(String, String)]) -> String {
     let mut kind_counts: HashMap<String, usize> = HashMap::new();
 
     for (kind, _) in outgoing {
@@ -179,14 +201,14 @@ fn compute_neighborhood_signature(
     sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     sorted.truncate(MAX_ALIAS_TOKENS);
 
-    sorted.into_iter().map(|(t, _)| t).collect::<Vec<_>>().join(" ")
+    sorted
+        .into_iter()
+        .map(|(t, _)| t)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
-fn compute_container_context(
-    db: &GraphDb,
-    symbol_id: i64,
-    file_path: Option<&str>,
-) -> String {
+fn compute_container_context(db: &GraphDb, symbol_id: i64, file_path: Option<&str>) -> String {
     let mut parts = Vec::new();
 
     if let Some(path) = file_path {
@@ -275,26 +297,39 @@ fn infer_behavioral_context(
         .take(8)
         .collect();
 
-    if sig_lower.contains("async") || sig_lower.contains("future")
-        || sig_lower.contains("promise")
+    if sig_lower.contains("async") || sig_lower.contains("future") || sig_lower.contains("promise")
     {
         tags.push("async-op");
     }
-    if sig_lower.contains("pin") || src_lower.contains("pin!")
-        || src_lower.contains("pin_project")
+    if sig_lower.contains("pin") || src_lower.contains("pin!") || src_lower.contains("pin_project")
     {
         tags.push("pinned");
     }
     if sig_lower.contains("poll") || name_lower.starts_with("poll_") {
-        if callee_names.iter().any(|n| n.contains("park") || n.contains("waker")) {
+        if callee_names
+            .iter()
+            .any(|n| n.contains("park") || n.contains("waker"))
+        {
             tags.push("parking-poll");
-        } else if callee_names.iter().any(|n| n.contains("read") || n.contains("write") || n.contains("flush")) {
+        } else if callee_names
+            .iter()
+            .any(|n| n.contains("read") || n.contains("write") || n.contains("flush"))
+        {
             tags.push("io-poll");
-        } else if callee_names.iter().any(|n| n.contains("stream") || n.contains("next")) {
+        } else if callee_names
+            .iter()
+            .any(|n| n.contains("stream") || n.contains("next"))
+        {
             tags.push("stream-poll");
-        } else if callee_names.iter().any(|n| n.contains("reserve") || n.contains("acquire")) {
+        } else if callee_names
+            .iter()
+            .any(|n| n.contains("reserve") || n.contains("acquire"))
+        {
             tags.push("resource-poll");
-        } else if callee_names.iter().any(|n| n.contains("complete") || n.contains("close")) {
+        } else if callee_names
+            .iter()
+            .any(|n| n.contains("complete") || n.contains("close"))
+        {
             tags.push("completion-poll");
         } else {
             tags.push("task-poll");
@@ -329,7 +364,10 @@ fn infer_behavioral_context(
         tags.push("thread-park");
     }
     if name_lower.contains("shutdown") {
-        if callee_names.iter().any(|n| n.contains("close") || n.contains("drop")) {
+        if callee_names
+            .iter()
+            .any(|n| n.contains("close") || n.contains("drop"))
+        {
             tags.push("graceful-shutdown");
         } else {
             tags.push("shutdown");
@@ -338,9 +376,15 @@ fn infer_behavioral_context(
     if name_lower.contains("transition") {
         if callee_names.iter().any(|n| n.contains("park")) {
             tags.push("state-transition-parking");
-        } else if callee_names.iter().any(|n| n.contains("search") || n.contains("work")) {
+        } else if callee_names
+            .iter()
+            .any(|n| n.contains("search") || n.contains("work"))
+        {
             tags.push("state-transition-search");
-        } else if callee_names.iter().any(|n| n.contains("complete") || n.contains("finish")) {
+        } else if callee_names
+            .iter()
+            .any(|n| n.contains("complete") || n.contains("finish"))
+        {
             tags.push("state-transition-completion");
         } else if callee_names.iter().any(|n| n.contains("shutdown")) {
             tags.push("state-transition-shutdown");
@@ -358,7 +402,10 @@ fn infer_behavioral_context(
     if name_lower.contains("cancel") {
         tags.push("cancellation");
     }
-    if name_lower.contains("reclaim") || name_lower.contains("free") || name_lower.contains("dealloc") {
+    if name_lower.contains("reclaim")
+        || name_lower.contains("free")
+        || name_lower.contains("dealloc")
+    {
         tags.push("memory-reclaim");
     }
     if name_lower.contains("merge") {
@@ -379,15 +426,13 @@ fn infer_behavioral_context(
 pub fn compute_structural_aliases(db: &GraphDb) -> Result<AliasStats, Box<dyn std::error::Error>> {
     let conn = db.conn();
 
-    let total_symbols: usize = conn
-        .query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get::<_, i64>(0))?
-        as usize;
+    let total_symbols: usize = conn.query_row("SELECT COUNT(*) FROM symbols", [], |row| {
+        row.get::<_, i64>(0)
+    })? as usize;
 
     let mut collision_map: HashMap<String, Vec<i64>> = HashMap::new();
     {
-        let mut stmt = conn.prepare(
-            "SELECT id, LOWER(name) as lname FROM symbols ORDER BY id"
-        )?;
+        let mut stmt = conn.prepare("SELECT id, LOWER(name) as lname FROM symbols ORDER BY id")?;
         let rows: Vec<(i64, String)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .flatten()
@@ -430,7 +475,7 @@ pub fn compute_structural_aliases(db: &GraphDb) -> Result<AliasStats, Box<dyn st
     {
         let mut stmt = conn.prepare(
             "SELECT id, name, name_decomposed, signature, source, file_id \
-             FROM symbols"
+             FROM symbols",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(SymbolInfo {
@@ -490,7 +535,11 @@ pub fn compute_structural_aliases(db: &GraphDb) -> Result<AliasStats, Box<dyn st
 
             let sig_str = info.signature.as_deref().unwrap_or("");
             let type_tokens = extract_type_tokens(sig_str);
-            let sig_types = type_tokens.into_iter().take(8).collect::<Vec<_>>().join(" ");
+            let sig_types = type_tokens
+                .into_iter()
+                .take(8)
+                .collect::<Vec<_>>()
+                .join(" ");
 
             let neighborhood_sig = compute_neighborhood_signature(
                 id,
@@ -531,14 +580,17 @@ pub fn compute_structural_aliases(db: &GraphDb) -> Result<AliasStats, Box<dyn st
 
             let alias_text = alias_parts.join(". ");
 
-            alias_data.push((id, AmbiguityFingerprint {
-                edge_mix,
-                sig_types,
-                neighborhood_sig,
-                container_context,
-                behavioral_context,
-                alias_text,
-            }));
+            alias_data.push((
+                id,
+                AmbiguityFingerprint {
+                    edge_mix,
+                    sig_types,
+                    neighborhood_sig,
+                    container_context,
+                    behavioral_context,
+                    alias_text,
+                },
+            ));
         }
 
         for (id, fp) in &alias_data {
@@ -601,51 +653,99 @@ mod tests {
             .unwrap();
 
         let poll_worker = SymbolBuilder::new(
-            fid, "poll".into(), SymbolKind::Method, 
+            fid,
+            "poll".into(),
+            SymbolKind::Method,
             "fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<()>".into(),
             "rust".into(),
-        ).lines(1, 10)
-            .signature("fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()>")
-            .build();
+        )
+        .lines(1, 10)
+        .signature("fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()>")
+        .build();
 
         let poll_reader = SymbolBuilder::new(
-            fid2, "poll".into(), SymbolKind::Method,
+            fid2,
+            "poll".into(),
+            SymbolKind::Method,
             "fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Ready>".into(),
             "rust".into(),
-        ).lines(11, 20)
-            .signature("fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Ready<()>>")
-            .build();
+        )
+        .lines(11, 20)
+        .signature("fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Ready<()>>")
+        .build();
 
         let poll_sem = SymbolBuilder::new(
-            fid3, "poll".into(), SymbolKind::Method,
+            fid3,
+            "poll".into(),
+            SymbolKind::Method,
             "fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Permit>".into(),
             "rust".into(),
-        ).lines(21, 30)
-            .signature("fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Permit>")
-            .build();
+        )
+        .lines(21, 30)
+        .signature("fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Permit>")
+        .build();
 
         let worker_id = db.insert_symbol(&poll_worker).unwrap();
         let reader_id = db.insert_symbol(&poll_reader).unwrap();
         let sem_id = db.insert_symbol(&poll_sem).unwrap();
 
         let park_sym = SymbolBuilder::new(
-            fid, "park".into(), SymbolKind::Function, "fn park()".into(), "rust".into(),
-        ).lines(31, 35).build();
+            fid,
+            "park".into(),
+            SymbolKind::Function,
+            "fn park()".into(),
+            "rust".into(),
+        )
+        .lines(31, 35)
+        .build();
         let read_buf_sym = SymbolBuilder::new(
-            fid2, "read_buffer".into(), SymbolKind::Function, "fn read_buffer()".into(), "rust".into(),
-        ).lines(36, 40).build();
+            fid2,
+            "read_buffer".into(),
+            SymbolKind::Function,
+            "fn read_buffer()".into(),
+            "rust".into(),
+        )
+        .lines(36, 40)
+        .build();
         let acquire_sym = SymbolBuilder::new(
-            fid3, "acquire".into(), SymbolKind::Function, "fn acquire()".into(), "rust".into(),
-        ).lines(41, 45).build();
+            fid3,
+            "acquire".into(),
+            SymbolKind::Function,
+            "fn acquire()".into(),
+            "rust".into(),
+        )
+        .lines(41, 45)
+        .build();
 
         let park_id = db.insert_symbol(&park_sym).unwrap();
         let read_buf_id = db.insert_symbol(&read_buf_sym).unwrap();
         let acquire_id = db.insert_symbol(&acquire_sym).unwrap();
 
         use crate::edge::EdgeKind;
-        db.insert_edge(worker_id, park_id, EdgeKind::Calls, 1.0, serde_json::Value::Null).unwrap();
-        db.insert_edge(reader_id, read_buf_id, EdgeKind::Calls, 1.0, serde_json::Value::Null).unwrap();
-        db.insert_edge(sem_id, acquire_id, EdgeKind::Calls, 1.0, serde_json::Value::Null).unwrap();
+        db.insert_edge(
+            worker_id,
+            park_id,
+            EdgeKind::Calls,
+            1.0,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        db.insert_edge(
+            reader_id,
+            read_buf_id,
+            EdgeKind::Calls,
+            1.0,
+            serde_json::Value::Null,
+        )
+        .unwrap();
+        db.insert_edge(
+            sem_id,
+            acquire_id,
+            EdgeKind::Calls,
+            1.0,
+            serde_json::Value::Null,
+        )
+        .unwrap();
 
         db
     }
@@ -662,7 +762,7 @@ mod tests {
     fn test_alias_text_written_to_hints() {
         let db = build_collision_db();
         compute_structural_aliases(&db).unwrap();
-        
+
         let conn = db.conn();
         let hints: Vec<String> = conn
             .prepare("SELECT search_hints FROM symbols WHERE name = 'poll'")
@@ -677,21 +777,37 @@ mod tests {
             assert!(h.contains("alias:"), "expected alias in hints, got: {}", h);
         }
 
-        let has_io = hints.iter().any(|h| h.contains("io-poll") || h.contains("buffered-read"));
-        let has_parking = hints.iter().any(|h| h.contains("parking-poll") || h.contains("parking"));
-        let has_resource = hints.iter().any(|h| h.contains("resource-poll") || h.contains("semaphore"));
-        assert!(has_io || has_parking || has_resource, "expected distinct behavioral tags across poll symbols");
+        let has_io = hints
+            .iter()
+            .any(|h| h.contains("io-poll") || h.contains("buffered-read"));
+        let has_parking = hints
+            .iter()
+            .any(|h| h.contains("parking-poll") || h.contains("parking"));
+        let has_resource = hints
+            .iter()
+            .any(|h| h.contains("resource-poll") || h.contains("semaphore"));
+        assert!(
+            has_io || has_parking || has_resource,
+            "expected distinct behavioral tags across poll symbols"
+        );
     }
 
     #[test]
     fn test_no_aliases_for_unique_names() {
         let db = GraphDb::open_in_memory().unwrap();
-        let fid = db.upsert_file("src/app.rs", "rust", "abc", 100, 10).unwrap();
-        
+        let fid = db
+            .upsert_file("src/app.rs", "rust", "abc", 100, 10)
+            .unwrap();
+
         let unique_sym = SymbolBuilder::new(
-            fid, "very_unique_name_xyz".into(), SymbolKind::Function,
-            "fn very_unique_name_xyz()".into(), "rust".into(),
-        ).lines(1, 5).build();
+            fid,
+            "very_unique_name_xyz".into(),
+            SymbolKind::Function,
+            "fn very_unique_name_xyz()".into(),
+            "rust".into(),
+        )
+        .lines(1, 5)
+        .build();
         db.insert_symbol(&unique_sym).unwrap();
 
         let stats = compute_structural_aliases(&db).unwrap();
@@ -701,7 +817,9 @@ mod tests {
 
     #[test]
     fn test_extract_type_tokens() {
-        let tokens = extract_type_tokens("fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Ready<()>>");
+        let tokens = extract_type_tokens(
+            "fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Ready<()>>",
+        );
         let token_str = tokens.join(" ");
         assert!(token_str.contains("poll"));
         assert!(token_str.contains("ready"));
@@ -715,9 +833,7 @@ mod tests {
             ("calls".into(), "read_buf".into()),
             ("calls".into(), "flush".into()),
         ];
-        let in_io = vec![
-            ("calls".into(), "process".into()),
-        ];
+        let in_io = vec![("calls".into(), "process".into())];
 
         let out_sched = vec![
             ("calls".into(), "spawn".into()),
@@ -729,7 +845,10 @@ mod tests {
         let mix_io = compute_edge_mix(&out_io, &in_io);
         let mix_sched = compute_edge_mix(&out_sched, &in_sched);
 
-        assert_ne!(mix_io, mix_sched, "different edge patterns should produce different mixes");
+        assert_ne!(
+            mix_io, mix_sched,
+            "different edge patterns should produce different mixes"
+        );
         assert!(mix_io.contains("caller-of"));
         assert!(mix_sched.contains("contains") || mix_sched.contains("caller-of"));
     }

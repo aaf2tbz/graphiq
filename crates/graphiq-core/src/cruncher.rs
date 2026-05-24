@@ -195,7 +195,16 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
              FROM symbols s ORDER BY s.id",
         )
         .map_err(|e| e.to_string())?;
-    let rows: Vec<(i64, String, String, Option<String>, i64, String, Option<String>, String)> = stmt
+    let rows: Vec<(
+        i64,
+        String,
+        String,
+        Option<String>,
+        i64,
+        String,
+        Option<String>,
+        String,
+    )> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -240,7 +249,9 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         .prepare("SELECT id, path FROM files")
         .map_err(|e| e.to_string())?;
     let file_paths: HashMap<i64, String> = file_stmt
-        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(|e| e.to_string())?
         .flatten()
         .collect();
@@ -378,8 +389,7 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
             if outgoing[i].is_empty() {
                 return 0.0;
             }
-            let self_terms: HashSet<&str> =
-                term_sets[i].terms.keys().map(|s| s.as_str()).collect();
+            let self_terms: HashSet<&str> = term_sets[i].terms.keys().map(|s| s.as_str()).collect();
             let mut novel_count = 0usize;
             let mut total_terms = 0usize;
             for edge in outgoing[i].iter().take(20) {
@@ -500,8 +510,8 @@ pub fn term_match_score(query_terms: &[QueryTerm], term_set: &TermSet) -> (f64, 
                     continue;
                 }
                 if term.contains(variant) || variant.contains(term.as_str()) {
-                    let ratio = variant.len().min(term.len()) as f64
-                        / variant.len().max(term.len()) as f64;
+                    let ratio =
+                        variant.len().min(term.len()) as f64 / variant.len().max(term.len()) as f64;
                     best = best.max(w * ratio);
                 }
             }
@@ -527,8 +537,8 @@ pub fn name_coverage(query_terms: &[QueryTerm], name_terms: &HashSet<String>) ->
             }
             for nt in name_terms {
                 if nt.contains(variant) || variant.contains(nt.as_str()) {
-                    let ratio = variant.len().min(nt.len()) as f64
-                        / variant.len().max(nt.len()) as f64;
+                    let ratio =
+                        variant.len().min(nt.len()) as f64 / variant.len().max(nt.len()) as f64;
                     score += qt.idf * 2.0 * ratio;
                     matched += 1;
                     break;
@@ -539,10 +549,7 @@ pub fn name_coverage(query_terms: &[QueryTerm], name_terms: &HashSet<String>) ->
     (score, matched)
 }
 
-pub fn compute_name_overlap(
-    query_terms: &[QueryTerm],
-    name_terms: &HashSet<String>,
-) -> f64 {
+pub fn compute_name_overlap(query_terms: &[QueryTerm], name_terms: &HashSet<String>) -> f64 {
     let query_name_set: HashSet<String> = query_terms
         .iter()
         .flat_map(|qt| qt.variants.iter().cloned())
@@ -561,10 +568,7 @@ pub fn compute_name_overlap(
     intersection as f64 / min_size as f64
 }
 
-pub fn neighbor_match_score(
-    query_terms: &[QueryTerm],
-    neighbor_terms: &HashSet<String>,
-) -> f64 {
+pub fn neighbor_match_score(query_terms: &[QueryTerm], neighbor_terms: &HashSet<String>) -> f64 {
     if neighbor_terms.is_empty() {
         return 0.0;
     }
@@ -599,8 +603,8 @@ pub fn alias_match_score(
             }
             for at in alias_terms {
                 if at.contains(variant) || variant.contains(at.as_str()) {
-                    let ratio = variant.len().min(at.len()) as f64
-                        / variant.len().max(at.len()) as f64;
+                    let ratio =
+                        variant.len().min(at.len()) as f64 / variant.len().max(at.len()) as f64;
                     score += qt.idf * ratio;
                     matched += 1;
                     break;
@@ -625,8 +629,8 @@ pub fn per_term_match(term_set: &TermSet, qt: &QueryTerm) -> f64 {
                 continue;
             }
             if term.contains(variant) || variant.contains(term.as_str()) {
-                let ratio = variant.len().min(term.len()) as f64
-                    / variant.len().max(term.len()) as f64;
+                let ratio =
+                    variant.len().min(term.len()) as f64 / variant.len().max(term.len()) as f64;
                 best = best.max(w * ratio);
             }
         }
@@ -734,7 +738,12 @@ pub fn negentropy(channels: &SecChannelVec) -> f64 {
     let mean = sum / n;
     let variance = scores.iter().map(|s| (s - mean).powi(2)).sum::<f64>() / n;
     let kurtosis = if variance > 1e-15 {
-        scores.iter().map(|s| ((s - mean) / variance.sqrt()).powi(4)).sum::<f64>() / n - 3.0
+        scores
+            .iter()
+            .map(|s| ((s - mean) / variance.sqrt()).powi(4))
+            .sum::<f64>()
+            / n
+            - 3.0
     } else {
         0.0
     };
@@ -742,11 +751,7 @@ pub fn negentropy(channels: &SecChannelVec) -> f64 {
     ng + kurtosis.max(0.0) * 0.3
 }
 
-pub fn channel_coherence(
-    query_terms: &[QueryTerm],
-    idx: &CruncherIndex,
-    sym_i: usize,
-) -> f64 {
+pub fn channel_coherence(query_terms: &[QueryTerm], idx: &CruncherIndex, sym_i: usize) -> f64 {
     if query_terms.len() < 2 {
         return 0.0;
     }
@@ -831,10 +836,16 @@ mod fuzz_tests {
             ("validate_token", SymbolKind::Function, 31, 40),
             ("rate_limit", SymbolKind::Function, 41, 50),
         ] {
-            let sym = SymbolBuilder::new(fid, name.into(), kind, format!("fn {}()", name), "rust".into())
-                .lines(start, end)
-                .signature(format!("fn {}(x: i32) -> bool", name))
-                .build();
+            let sym = SymbolBuilder::new(
+                fid,
+                name.into(),
+                kind,
+                format!("fn {}()", name),
+                "rust".into(),
+            )
+            .lines(start, end)
+            .signature(format!("fn {}(x: i32) -> bool", name))
+            .build();
             db.insert_symbol(&sym).unwrap();
         }
         db
@@ -854,11 +865,14 @@ mod fuzz_tests {
             if let Some(&i) = ci.id_to_idx.get(&id) {
                 let _ = term_match_score(&query_terms, &ci.term_sets[i]);
                 let _ = name_coverage(&query_terms, &ci.term_sets[i].name_terms);
-                let _ = per_term_match(&ci.term_sets[i], query_terms.first().unwrap_or(&QueryTerm {
-                    text: "x".into(),
-                    variants: vec!["x".into()],
-                    idf: 1.0,
-                }));
+                let _ = per_term_match(
+                    &ci.term_sets[i],
+                    query_terms.first().unwrap_or(&QueryTerm {
+                        text: "x".into(),
+                        variants: vec!["x".into()],
+                        idf: 1.0,
+                    }),
+                );
                 let channels = compute_sec_channels(&query_terms, &ci, i);
                 let _ = negentropy(&channels);
                 let _ = channel_coherence(&query_terms, &ci, i);
@@ -920,13 +934,8 @@ mod fuzz_tests {
     #[test]
     fn fuzz_unicode() {
         let db = build_tiny_db();
-        for q in &[
-            "парсить",
-            "解析設定",
-            "구성분석",
-            "🦀 rust",
-            "parse_конфиг",
-        ] {
+        for q in &["парсить", "解析設定", "구성분석", "🦀 rust", "parse_конфиг"]
+        {
             run_fuzz_query(&db, q);
         }
     }
@@ -934,7 +943,10 @@ mod fuzz_tests {
     #[test]
     fn fuzz_very_long_query() {
         let db = build_tiny_db();
-        let long = (0..1000).map(|i| format!("term{}", i)).collect::<Vec<_>>().join(" ");
+        let long = (0..1000)
+            .map(|i| format!("term{}", i))
+            .collect::<Vec<_>>()
+            .join(" ");
         run_fuzz_query(&db, &long);
     }
 

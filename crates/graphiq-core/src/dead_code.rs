@@ -86,9 +86,7 @@ pub fn detect_dead_code(db: &GraphDb) -> Result<DeadCodeResult, String> {
         .collect();
 
     let mut stmt_extends_target = conn
-        .prepare(
-            "SELECT target_id FROM edges WHERE kind IN ('extends', 'implements')",
-        )
+        .prepare("SELECT target_id FROM edges WHERE kind IN ('extends', 'implements')")
         .map_err(|e| format!("query extends edges: {e}"))?;
 
     let extends_targets: HashSet<i64> = stmt_extends_target
@@ -170,7 +168,10 @@ pub fn detect_dead_code(db: &GraphDb) -> Result<DeadCodeResult, String> {
             .flatten()
             .unwrap_or_else(|| format!("file_id:{}", file_id));
 
-        let dead_loc: u32 = syms.iter().map(|s| s.line_end.saturating_sub(s.line_start).max(1)).sum();
+        let dead_loc: u32 = syms
+            .iter()
+            .map(|s| s.line_end.saturating_sub(s.line_start).max(1))
+            .sum();
         total_dead_loc += dead_loc;
 
         let mut names: Vec<String> = syms.iter().map(|s| s.name.clone()).collect();
@@ -247,15 +248,15 @@ fn is_exempt(
 
 fn load_role_hints(db: &GraphDb) -> HashSet<i64> {
     let conn = db.conn();
-    let mut stmt = match conn.prepare(
-        "SELECT symbol_id FROM symbol_structural_roles WHERE roles LIKE '%entry_point%'",
-    ) {
+    let mut stmt = match conn
+        .prepare("SELECT symbol_id FROM symbol_structural_roles WHERE roles LIKE '%entry_point%'")
+    {
         Ok(s) => s,
         Err(_) => {
             let fallback = HashSet::new();
-            let mut s2 = match conn.prepare(
-                "SELECT s.id FROM symbols s WHERE s.search_hints LIKE '%entry point%'",
-            ) {
+            let mut s2 = match conn
+                .prepare("SELECT s.id FROM symbols s WHERE s.search_hints LIKE '%entry point%'")
+            {
                 Ok(st) => st,
                 Err(_) => return fallback,
             };
@@ -347,9 +348,15 @@ mod tests {
     use crate::symbol::{Symbol, SymbolBuilder, Visibility};
 
     fn make_symbol(id: i64, name: &str, kind: SymbolKind) -> Symbol {
-        SymbolBuilder::new(1, name.into(), kind, format!("fn {}() {{}}", name), "rust".into())
-            .lines(1, 5)
-            .build()
+        SymbolBuilder::new(
+            1,
+            name.into(),
+            kind,
+            format!("fn {}() {{}}", name),
+            "rust".into(),
+        )
+        .lines(1, 5)
+        .build()
     }
 
     #[test]
@@ -375,13 +382,22 @@ mod tests {
         let db = GraphDb::open_in_memory().unwrap();
         let file_id = db.upsert_file("src/lib.rs", "rust", "abc", 0, 10).unwrap();
 
-        let sym = SymbolBuilder::new(file_id, "MyTrait".into(), SymbolKind::Trait, "trait MyTrait {}".into(), "rust".into())
-            .lines(1, 3)
-            .build();
+        let sym = SymbolBuilder::new(
+            file_id,
+            "MyTrait".into(),
+            SymbolKind::Trait,
+            "trait MyTrait {}".into(),
+            "rust".into(),
+        )
+        .lines(1, 3)
+        .build();
         db.insert_symbol(&sym).unwrap();
 
         let result = detect_dead_code(&db).unwrap();
-        assert_eq!(result.total_dead_symbols, 0, "trait definitions should be exempt");
+        assert_eq!(
+            result.total_dead_symbols, 0,
+            "trait definitions should be exempt"
+        );
     }
 
     #[test]
@@ -389,24 +405,41 @@ mod tests {
         let db = GraphDb::open_in_memory().unwrap();
         let file_id = db.upsert_file("src/lib.rs", "rust", "abc", 0, 10).unwrap();
 
-        let sym = SymbolBuilder::new(file_id, "new".into(), SymbolKind::Constructor, "fn new() -> Self".into(), "rust".into())
-            .lines(1, 3)
-            .build();
+        let sym = SymbolBuilder::new(
+            file_id,
+            "new".into(),
+            SymbolKind::Constructor,
+            "fn new() -> Self".into(),
+            "rust".into(),
+        )
+        .lines(1, 3)
+        .build();
         db.insert_symbol(&sym).unwrap();
 
         let result = detect_dead_code(&db).unwrap();
-        assert_eq!(result.total_dead_symbols, 0, "constructors should be exempt");
+        assert_eq!(
+            result.total_dead_symbols, 0,
+            "constructors should be exempt"
+        );
     }
 
     #[test]
     fn test_uncalled_function_detected() {
         let db = GraphDb::open_in_memory().unwrap();
-        let file_id = db.upsert_file("src/legacy.rs", "rust", "abc", 0, 10).unwrap();
+        let file_id = db
+            .upsert_file("src/legacy.rs", "rust", "abc", 0, 10)
+            .unwrap();
 
-        let sym = SymbolBuilder::new(file_id, "unused_fn".into(), SymbolKind::Function, "fn unused_fn() {}".into(), "rust".into())
-            .lines(1, 5)
-            .visibility(Visibility::Private)
-            .build();
+        let sym = SymbolBuilder::new(
+            file_id,
+            "unused_fn".into(),
+            SymbolKind::Function,
+            "fn unused_fn() {}".into(),
+            "rust".into(),
+        )
+        .lines(1, 5)
+        .visibility(Visibility::Private)
+        .build();
         db.insert_symbol(&sym).unwrap();
 
         let result = detect_dead_code(&db).unwrap();
@@ -419,22 +452,43 @@ mod tests {
         let db = GraphDb::open_in_memory().unwrap();
         let file_id = db.upsert_file("src/lib.rs", "rust", "abc", 0, 10).unwrap();
 
-        let caller = SymbolBuilder::new(file_id, "caller".into(), SymbolKind::Function, "fn caller() {}".into(), "rust".into())
-            .lines(1, 5)
-            .visibility(Visibility::Public)
-            .build();
-        let callee = SymbolBuilder::new(file_id, "callee".into(), SymbolKind::Function, "fn callee() {}".into(), "rust".into())
-            .lines(6, 10)
-            .visibility(Visibility::Private)
-            .build();
+        let caller = SymbolBuilder::new(
+            file_id,
+            "caller".into(),
+            SymbolKind::Function,
+            "fn caller() {}".into(),
+            "rust".into(),
+        )
+        .lines(1, 5)
+        .visibility(Visibility::Public)
+        .build();
+        let callee = SymbolBuilder::new(
+            file_id,
+            "callee".into(),
+            SymbolKind::Function,
+            "fn callee() {}".into(),
+            "rust".into(),
+        )
+        .lines(6, 10)
+        .visibility(Visibility::Private)
+        .build();
 
         let caller_id = db.insert_symbol(&caller).unwrap();
         let callee_id = db.insert_symbol(&callee).unwrap();
-        db.insert_edge(caller_id, callee_id, EdgeKind::Calls, 1.0, serde_json::json!({}))
-            .unwrap();
+        db.insert_edge(
+            caller_id,
+            callee_id,
+            EdgeKind::Calls,
+            1.0,
+            serde_json::json!({}),
+        )
+        .unwrap();
 
         let result = detect_dead_code(&db).unwrap();
-        assert_eq!(result.total_dead_symbols, 0, "called function should not be dead");
+        assert_eq!(
+            result.total_dead_symbols, 0,
+            "called function should not be dead"
+        );
     }
 
     #[test]
@@ -442,13 +496,22 @@ mod tests {
         let db = GraphDb::open_in_memory().unwrap();
         let file_id = db.upsert_file("src/lib.rs", "rust", "abc", 0, 10).unwrap();
 
-        let sym = SymbolBuilder::new(file_id, "public_api".into(), SymbolKind::Function, "fn public_api() {}".into(), "rust".into())
-            .lines(1, 5)
-            .visibility(Visibility::Public)
-            .build();
+        let sym = SymbolBuilder::new(
+            file_id,
+            "public_api".into(),
+            SymbolKind::Function,
+            "fn public_api() {}".into(),
+            "rust".into(),
+        )
+        .lines(1, 5)
+        .visibility(Visibility::Public)
+        .build();
         db.insert_symbol(&sym).unwrap();
 
         let result = detect_dead_code(&db).unwrap();
-        assert_eq!(result.total_dead_symbols, 0, "public functions should be exempt");
+        assert_eq!(
+            result.total_dead_symbols, 0,
+            "public functions should be exempt"
+        );
     }
 }

@@ -48,7 +48,7 @@ pub fn query_constants(
     let mut sym_stmt = conn.prepare(
         "SELECT s.id, s.name, s.source, s.kind, s.line_start, f.path \
          FROM symbols s JOIN files f ON s.file_id = f.id \
-         WHERE s.visibility = 'public'"
+         WHERE s.visibility = 'public'",
     )?;
 
     let symbols: Vec<(i64, String, String, String, u32, String)> = sym_stmt
@@ -72,10 +72,13 @@ pub fn query_constants(
     for (id, name, source, kind, line, file) in &symbols {
         let literals = extract_numeric_literals(source);
         for lit in &literals {
-            literal_map
-                .entry(lit.clone())
-                .or_default()
-                .push((*id, name.clone(), kind.clone(), *line, file.clone()));
+            literal_map.entry(lit.clone()).or_default().push((
+                *id,
+                name.clone(),
+                kind.clone(),
+                *line,
+                file.clone(),
+            ));
         }
     }
 
@@ -145,13 +148,15 @@ pub struct NumericBridgeStats {
     pub bridge_edges_created: usize,
 }
 
-pub fn compute_numeric_bridges(db: &GraphDb) -> Result<NumericBridgeStats, Box<dyn std::error::Error>> {
+pub fn compute_numeric_bridges(
+    db: &GraphDb,
+) -> Result<NumericBridgeStats, Box<dyn std::error::Error>> {
     let conn = db.conn();
 
     let mut sym_stmt = conn.prepare(
         "SELECT s.id, s.name, s.source, s.kind, f.path \
          FROM symbols s JOIN files f ON s.file_id = f.id \
-         WHERE s.visibility = 'public'"
+         WHERE s.visibility = 'public'",
     )?;
 
     let symbols: Vec<SymInfo> = sym_stmt
@@ -202,7 +207,7 @@ pub fn compute_numeric_bridges(db: &GraphDb) -> Result<NumericBridgeStats, Box<d
 
     let mut insert_stmt = conn.prepare(
         "INSERT OR IGNORE INTO edges (source_id, target_id, kind, weight, metadata)
-         VALUES (?1, ?2, ?3, ?4, ?5)"
+         VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
 
     for (literal, sym_entries) in &literal_to_symbols {
@@ -221,10 +226,8 @@ pub fn compute_numeric_bridges(db: &GraphDb) -> Result<NumericBridgeStats, Box<d
             continue;
         }
 
-        let unique_files: std::collections::HashSet<&str> = sym_entries
-            .iter()
-            .map(|(_, f)| f.as_str())
-            .collect();
+        let unique_files: std::collections::HashSet<&str> =
+            sym_entries.iter().map(|(_, f)| f.as_str()).collect();
         let cross_module_bonus = if unique_files.len() > 1 { 1.5 } else { 0.5 };
         let final_weight = weight * cross_module_bonus;
         if final_weight < 0.08 {
@@ -252,7 +255,8 @@ pub fn compute_numeric_bridges(db: &GraphDb) -> Result<NumericBridgeStats, Box<d
                     (ids[j], ids[i])
                 };
                 insert_stmt.execute(params![
-                    a, b,
+                    a,
+                    b,
                     EdgeKind::SharesConstant.as_str(),
                     final_weight,
                     metadata.to_string(),
@@ -265,7 +269,7 @@ pub fn compute_numeric_bridges(db: &GraphDb) -> Result<NumericBridgeStats, Box<d
 
     let mut const_ref_stmt = conn.prepare(
         "INSERT OR IGNORE INTO edges (source_id, target_id, kind, weight, metadata)
-         VALUES (?1, ?2, ?3, ?4, ?5)"
+         VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
 
     let mut name_to_ids: HashMap<&str, Vec<i64>> = HashMap::new();
@@ -282,7 +286,8 @@ pub fn compute_numeric_bridges(db: &GraphDb) -> Result<NumericBridgeStats, Box<d
             for user_id in users {
                 if user_id != const_id {
                     const_ref_stmt.execute(params![
-                        user_id, const_id,
+                        user_id,
+                        const_id,
                         EdgeKind::ReferencesConstant.as_str(),
                         EdgeKind::ReferencesConstant.path_weight(),
                         metadata.to_string(),
@@ -421,11 +426,7 @@ fn extract_constant_value(source: &str) -> Option<String> {
     if let Some(colon_pos) = trimmed.rfind(':') {
         let after_colon = trimmed[colon_pos + 1..].trim();
         if after_colon.starts_with('=') {
-            let value_part = after_colon[1..]
-                .split(';')
-                .next()
-                .unwrap_or("")
-                .trim();
+            let value_part = after_colon[1..].split(';').next().unwrap_or("").trim();
             let literals = extract_numeric_literals(value_part);
             if !literals.is_empty() {
                 return Some(literals[0].clone());
@@ -436,10 +437,7 @@ fn extract_constant_value(source: &str) -> Option<String> {
     None
 }
 
-fn find_constant_usage(
-    symbols: &[SymInfo],
-    const_name: &str,
-) -> Option<Vec<i64>> {
+fn find_constant_usage(symbols: &[SymInfo], const_name: &str) -> Option<Vec<i64>> {
     let upper = const_name.to_uppercase();
     let lower = const_name.to_lowercase();
     let mut users = Vec::new();
@@ -522,21 +520,38 @@ mod tests {
         let common_idf: f64 = (n / 500.0_f64).ln().max(0.1);
         let rare_w = 0.3 * rare_idf;
         let common_w = 0.3 * common_idf;
-        assert!(rare_w > common_w, "rare literal {} should weigh more than common {}", rare_w, common_w);
-        assert!(common_w < 0.5, "very common literal should have low weight: {}", common_w);
+        assert!(
+            rare_w > common_w,
+            "rare literal {} should weigh more than common {}",
+            rare_w,
+            common_w
+        );
+        assert!(
+            common_w < 0.5,
+            "very common literal should have low weight: {}",
+            common_w
+        );
     }
 
     #[test]
     fn test_edge_kind_roundtrip() {
-        assert_eq!(EdgeKind::from_str("shares_constant"), Some(EdgeKind::SharesConstant));
-        assert_eq!(EdgeKind::from_str("references_constant"), Some(EdgeKind::ReferencesConstant));
+        assert_eq!(
+            EdgeKind::from_str("shares_constant"),
+            Some(EdgeKind::SharesConstant)
+        );
+        assert_eq!(
+            EdgeKind::from_str("references_constant"),
+            Some(EdgeKind::ReferencesConstant)
+        );
         assert_eq!(EdgeKind::SharesConstant.as_str(), "shares_constant");
         assert_eq!(EdgeKind::ReferencesConstant.as_str(), "references_constant");
     }
 
     #[test]
     fn test_path_weights_sensible() {
-        assert!(EdgeKind::ReferencesConstant.path_weight() > EdgeKind::SharesConstant.path_weight());
+        assert!(
+            EdgeKind::ReferencesConstant.path_weight() > EdgeKind::SharesConstant.path_weight()
+        );
         assert!(EdgeKind::SharesConstant.path_weight() < EdgeKind::References.path_weight());
     }
 
@@ -544,27 +559,62 @@ mod tests {
     fn test_compute_bridges_end_to_end() {
         let db = GraphDb::open_in_memory().unwrap();
 
-        let file_a = db.upsert_file("handler.rs", "rust", "abc123", 0, 10).unwrap();
-        let file_b = db.upsert_file("responder.rs", "rust", "def456", 0, 10).unwrap();
-        let file_c = db.upsert_file("checker.rs", "rust", "ghi789", 0, 10).unwrap();
+        let file_a = db
+            .upsert_file("handler.rs", "rust", "abc123", 0, 10)
+            .unwrap();
+        let file_b = db
+            .upsert_file("responder.rs", "rust", "def456", 0, 10)
+            .unwrap();
+        let file_c = db
+            .upsert_file("checker.rs", "rust", "ghi789", 0, 10)
+            .unwrap();
 
-        db.insert_symbol(&crate::symbol::SymbolBuilder::new(
-            file_a, "handler".into(), crate::symbol::SymbolKind::Function,
-            "fn handler() { send(429); retry(3); log(200); }".into(), "rust".into(),
-        ).lines(1, 1).build()).unwrap();
+        db.insert_symbol(
+            &crate::symbol::SymbolBuilder::new(
+                file_a,
+                "handler".into(),
+                crate::symbol::SymbolKind::Function,
+                "fn handler() { send(429); retry(3); log(200); }".into(),
+                "rust".into(),
+            )
+            .lines(1, 1)
+            .build(),
+        )
+        .unwrap();
 
-        db.insert_symbol(&crate::symbol::SymbolBuilder::new(
-            file_b, "responder".into(), crate::symbol::SymbolKind::Function,
-            "fn responder() { respond(429); log(200); }".into(), "rust".into(),
-        ).lines(1, 1).build()).unwrap();
+        db.insert_symbol(
+            &crate::symbol::SymbolBuilder::new(
+                file_b,
+                "responder".into(),
+                crate::symbol::SymbolKind::Function,
+                "fn responder() { respond(429); log(200); }".into(),
+                "rust".into(),
+            )
+            .lines(1, 1)
+            .build(),
+        )
+        .unwrap();
 
-        db.insert_symbol(&crate::symbol::SymbolBuilder::new(
-            file_c, "checker".into(), crate::symbol::SymbolKind::Function,
-            "fn checker() { validate(200); }".into(), "rust".into(),
-        ).lines(1, 1).build()).unwrap();
+        db.insert_symbol(
+            &crate::symbol::SymbolBuilder::new(
+                file_c,
+                "checker".into(),
+                crate::symbol::SymbolKind::Function,
+                "fn checker() { validate(200); }".into(),
+                "rust".into(),
+            )
+            .lines(1, 1)
+            .build(),
+        )
+        .unwrap();
 
         let stats = compute_numeric_bridges(&db).unwrap();
         assert!(stats.literals_found > 0, "should find numeric literals");
-        assert!(stats.bridge_edges_created > 0, "should create bridge edges for shared literals: got {} edges from {} literals", stats.bridge_edges_created, stats.literals_found);
+        assert!(
+            stats.bridge_edges_created > 0,
+            "should create bridge edges for shared literals: got {} edges from {} literals",
+            stats.bridge_edges_created,
+            stats.literals_found
+        );
     }
 }

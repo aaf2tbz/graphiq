@@ -15,7 +15,11 @@ use crate::db::GraphDb;
 use crate::fts::{FtsConfig, FtsSearch};
 use crate::query_family::QueryFamily;
 
-pub fn bm25_seeds<'a>(db: &'a GraphDb, query: &str, family: QueryFamily) -> (Vec<(i64, f64)>, FtsSearch<'a>) {
+pub fn bm25_seeds<'a>(
+    db: &'a GraphDb,
+    query: &str,
+    family: QueryFamily,
+) -> (Vec<(i64, f64)>, FtsSearch<'a>) {
     let fts = match family {
         QueryFamily::NaturalAbstract
         | QueryFamily::NaturalDescriptive
@@ -42,15 +46,16 @@ pub fn per_term_fts_expansion(
     let terms: Vec<String> = query
         .split_whitespace()
         .map(|t| t.to_lowercase())
-        .filter(|t| t.len() >= 3 && ![
-            "the", "are", "was", "were", "has", "had", "does",
-            "how", "what", "which", "when", "where", "why",
-            "all", "each", "every", "any", "some", "not",
-            "and", "but", "for", "from", "with", "that",
-            "this", "does", "can", "after", "before",
-            "during", "between", "through", "into", "over",
-            "under", "without",
-        ].contains(&t.as_str()))
+        .filter(|t| {
+            t.len() >= 3
+                && ![
+                    "the", "are", "was", "were", "has", "had", "does", "how", "what", "which",
+                    "when", "where", "why", "all", "each", "every", "any", "some", "not", "and",
+                    "but", "for", "from", "with", "that", "this", "does", "can", "after", "before",
+                    "during", "between", "through", "into", "over", "under", "without",
+                ]
+                .contains(&t.as_str())
+        })
         .collect();
 
     if terms.is_empty() {
@@ -94,7 +99,11 @@ pub fn per_term_fts_expansion(
         .map(|(id, total_score)| (id, total_score / n_terms))
         .filter(|(_, score)| *score > 0.0)
         .collect();
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    results.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
     results
 }
 
@@ -118,7 +127,8 @@ pub fn graph_aware_expansion(
         _ => return Vec::new(),
     };
 
-    let kind_filter = edge_kinds.iter()
+    let kind_filter = edge_kinds
+        .iter()
         .map(|k| format!("'{}'", k))
         .collect::<Vec<_>>()
         .join(", ");
@@ -147,7 +157,11 @@ pub fn graph_aware_expansion(
     }
 
     let mut results: Vec<(i64, f64)> = candidates.into_iter().collect();
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    results.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
     results.truncate(50);
     results
 }
@@ -160,11 +174,19 @@ pub fn numeric_bridge_seeds(
     let numbers: Vec<String> = query
         .split(|c: char| !c.is_ascii_digit() && c != '.' && c != 'x' && c != 'X')
         .filter(|s| {
-            if s.is_empty() { return false; }
-            if s.len() == 1 { return false; }
+            if s.is_empty() {
+                return false;
+            }
+            if s.len() == 1 {
+                return false;
+            }
             let s_lower = s.to_lowercase();
-            if s_lower.starts_with("0x") && s.len() > 2 { return true; }
-            if s.contains('.') { return true; }
+            if s_lower.starts_with("0x") && s.len() > 2 {
+                return true;
+            }
+            if s.contains('.') {
+                return true;
+            }
             s.parse::<u64>().map_or(false, |n| n > 1)
         })
         .map(|s| s.to_lowercase())
@@ -183,10 +205,14 @@ pub fn numeric_bridge_seeds(
         if let Ok(mut stmt) = conn.prepare(
             "SELECT source_id, target_id, weight FROM edges \
              WHERE kind IN ('shares_constant', 'references_constant') \
-             AND metadata LIKE ?1"
+             AND metadata LIKE ?1",
         ) {
             if let Ok(rows) = stmt.query_map([&pattern], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, f64>(2)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, f64>(2)?,
+                ))
             }) {
                 for (src, tgt, w) in rows.filter_map(|r| r.ok()) {
                     for &id in &[src, tgt] {
@@ -200,7 +226,11 @@ pub fn numeric_bridge_seeds(
     }
 
     let mut results: Vec<(i64, f64)> = candidates.into_iter().collect();
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    results.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
     results
 }
 
@@ -214,11 +244,12 @@ pub struct SeedConfig {
 
 impl SeedConfig {
     pub fn for_family(family: QueryFamily) -> Self {
-        let is_nl = matches!(family,
+        let is_nl = matches!(
+            family,
             QueryFamily::NaturalAbstract
-            | QueryFamily::NaturalDescriptive
-            | QueryFamily::ErrorDebug
-            | QueryFamily::CrossCuttingSet
+                | QueryFamily::NaturalDescriptive
+                | QueryFamily::ErrorDebug
+                | QueryFamily::CrossCuttingSet
         );
         Self {
             family,
@@ -239,23 +270,45 @@ pub fn source_scan_seeds(
     let words: Vec<&str> = query.split_whitespace().collect();
 
     let error_signals: &[&str] = &[
-        "error", "panic", "failed", "failure", "deadlock", "timeout", "crash",
-        "exception", "abort", "refused", "overflow", "underflow",
-        "detected", "leaked", "mismatch", "conflict", "invalid",
+        "error",
+        "panic",
+        "failed",
+        "failure",
+        "deadlock",
+        "timeout",
+        "crash",
+        "exception",
+        "abort",
+        "refused",
+        "overflow",
+        "underflow",
+        "detected",
+        "leaked",
+        "mismatch",
+        "conflict",
+        "invalid",
     ];
 
     let generic: HashSet<&str> = [
-        "the", "a", "an", "is", "are", "was", "to", "when", "after",
-        "during", "with", "without", "inside", "via", "in", "for",
-        "from", "of", "and", "or", "not", "async", "task", "context",
-    ].iter().copied().collect();
+        "the", "a", "an", "is", "are", "was", "to", "when", "after", "during", "with", "without",
+        "inside", "via", "in", "for", "from", "of", "and", "or", "not", "async", "task", "context",
+    ]
+    .iter()
+    .copied()
+    .collect();
 
     let mut phrases: Vec<String> = Vec::new();
 
-    for cap in regex::Regex::new(r#""([^"]{3,})""#).unwrap().captures_iter(query) {
+    for cap in regex::Regex::new(r#""([^"]{3,})""#)
+        .unwrap()
+        .captures_iter(query)
+    {
         phrases.push(cap[1].to_string());
     }
-    for cap in regex::Regex::new(r"'([^']{3,})'").unwrap().captures_iter(query) {
+    for cap in regex::Regex::new(r"'([^']{3,})'")
+        .unwrap()
+        .captures_iter(query)
+    {
         phrases.push(cap[1].to_string());
     }
 
@@ -272,8 +325,7 @@ pub fn source_scan_seeds(
             let window = &words[start..end];
             let has_specific = window.iter().any(|w| {
                 let wl = w.to_lowercase();
-                !generic.contains(wl.as_str())
-                    && !error_signals.iter().any(|s| wl.contains(s))
+                !generic.contains(wl.as_str()) && !error_signals.iter().any(|s| wl.contains(s))
             });
             if has_specific {
                 let phrase = window.join(" ");
@@ -297,9 +349,9 @@ pub fn source_scan_seeds(
     for phrase in &phrases {
         let escaped = phrase.replace('%', "\\%").replace('_', "\\_");
         let pat = format!("%{}%", escaped);
-        if let Ok(mut stmt) = conn.prepare(
-            "SELECT id FROM symbols WHERE source LIKE ?1 ESCAPE '\\' LIMIT 50"
-        ) {
+        if let Ok(mut stmt) =
+            conn.prepare("SELECT id FROM symbols WHERE source LIKE ?1 ESCAPE '\\' LIMIT 50")
+        {
             if let Ok(rows) = stmt.query_map([&pat], |row| row.get::<_, i64>(0)) {
                 for id in rows.filter_map(|r| r.ok()) {
                     if !existing_ids.contains(&id) {
@@ -311,7 +363,11 @@ pub fn source_scan_seeds(
     }
 
     let mut results: Vec<(i64, f64)> = candidates.into_iter().collect();
-    results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+    results.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
     results
 }
 

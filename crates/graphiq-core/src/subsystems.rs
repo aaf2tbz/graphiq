@@ -164,7 +164,8 @@ pub fn detect_subsystems(db: &GraphDb) -> Result<SubsystemIndex, String> {
         for (src, tgt, kind_str, metadata_json) in &rows {
             edge_kinds.insert((*src, *tgt, kind_str.clone()));
 
-            let weight = if let Ok(meta) = serde_json::from_str::<serde_json::Value>(metadata_json) {
+            let weight = if let Ok(meta) = serde_json::from_str::<serde_json::Value>(metadata_json)
+            {
                 let evidence_kind = meta
                     .get("evidence")
                     .and_then(|e| e.get("kind"))
@@ -203,10 +204,8 @@ pub fn detect_subsystems(db: &GraphDb) -> Result<SubsystemIndex, String> {
             boundary_edge_count: 0,
             cohesion: 1.0,
         };
-        let symbol_to_subsystem: HashMap<i64, usize> = all_symbol_ids
-            .iter()
-            .map(|&sid| (sid, 0))
-            .collect();
+        let symbol_to_subsystem: HashMap<i64, usize> =
+            all_symbol_ids.iter().map(|&sid| (sid, 0)).collect();
         return Ok(SubsystemIndex {
             subsystems: vec![subsystem],
             symbol_to_subsystem,
@@ -349,13 +348,11 @@ pub fn detect_subsystems(db: &GraphDb) -> Result<SubsystemIndex, String> {
         let has_internal = edge_kinds
             .iter()
             .any(|(src, tgt, _)| member_set.contains(src) && member_set.contains(tgt));
-        let has_boundary = edge_kinds
-            .iter()
-            .any(|(src, tgt, _)| {
-                let src_in = member_set.contains(src);
-                let tgt_in = member_set.contains(tgt);
-                src_in ^ tgt_in
-            });
+        let has_boundary = edge_kinds.iter().any(|(src, tgt, _)| {
+            let src_in = member_set.contains(src);
+            let tgt_in = member_set.contains(tgt);
+            src_in ^ tgt_in
+        });
         if !has_internal && !has_boundary {
             orphan_labels.push(label);
         }
@@ -763,8 +760,7 @@ pub fn materialize_structural_roles(
                     if !member_set.contains(&src) {
                         ext_callers += 1;
                         if !outgoing.get(&src).map_or(false, |o| o.contains(&sid))
-                            || !out
-                                .map_or(false, |o| o.iter().any(|t| *t == src))
+                            || !out.map_or(false, |o| o.iter().any(|t| *t == src))
                         {
                         }
                     }
@@ -800,12 +796,7 @@ pub fn materialize_structural_roles(
             None => continue,
         };
 
-        let max_internal = stats
-            .internal_degrees
-            .values()
-            .copied()
-            .max()
-            .unwrap_or(0) as f64;
+        let max_internal = stats.internal_degrees.values().copied().max().unwrap_or(0) as f64;
         let avg_internal = if !stats.internal_degrees.is_empty() {
             stats.internal_degrees.values().copied().sum::<usize>() as f64
                 / stats.internal_degrees.len() as f64
@@ -856,9 +847,9 @@ pub fn materialize_structural_roles(
                     .map(|outs| {
                         outs.iter()
                             .filter(|t| {
-                                per_subsystem_stats.get(&sub.id).map_or(false, |st| {
-                                    st.internal_degrees.contains_key(t)
-                                })
+                                per_subsystem_stats
+                                    .get(&sub.id)
+                                    .map_or(false, |st| st.internal_degrees.contains_key(t))
                             })
                             .copied()
                             .collect()
@@ -880,13 +871,15 @@ pub fn materialize_structural_roles(
                 roles.push(StructuralRole::Hub);
             }
 
-            roles.sort_by_key(|r| std::cmp::Reverse(match r {
-                StructuralRole::EntryPoint => 5,
-                StructuralRole::Orchestrator => 4,
-                StructuralRole::Hub => 3,
-                StructuralRole::Boundary => 2,
-                StructuralRole::Leaf => 1,
-            }));
+            roles.sort_by_key(|r| {
+                std::cmp::Reverse(match r {
+                    StructuralRole::EntryPoint => 5,
+                    StructuralRole::Orchestrator => 4,
+                    StructuralRole::Hub => 3,
+                    StructuralRole::Boundary => 2,
+                    StructuralRole::Leaf => 1,
+                })
+            });
 
             results.push(SymbolStructuralRole {
                 symbol_id: sid,
@@ -904,10 +897,7 @@ pub fn materialize_structural_roles(
     Ok(results)
 }
 
-pub fn store_structural_roles(
-    db: &GraphDb,
-    roles: &[SymbolStructuralRole],
-) -> Result<(), String> {
+pub fn store_structural_roles(db: &GraphDb, roles: &[SymbolStructuralRole]) -> Result<(), String> {
     let conn = db.conn();
 
     conn.execute(
@@ -985,32 +975,56 @@ fn setup_test_db() -> GraphDb {
         .unwrap();
 
     let s1 = SymbolBuilder::new(
-        f1, "authenticate".into(), SymbolKind::Function, "fn auth()".into(), "rust".into(),
+        f1,
+        "authenticate".into(),
+        SymbolKind::Function,
+        "fn auth()".into(),
+        "rust".into(),
     )
     .lines(1, 10)
     .build();
     let s2 = SymbolBuilder::new(
-        f1, "validate_token".into(), SymbolKind::Function, "fn val()".into(), "rust".into(),
+        f1,
+        "validate_token".into(),
+        SymbolKind::Function,
+        "fn val()".into(),
+        "rust".into(),
     )
     .lines(12, 20)
     .build();
     let s3 = SymbolBuilder::new(
-        f2, "create_session".into(), SymbolKind::Function, "fn sess()".into(), "rust".into(),
+        f2,
+        "create_session".into(),
+        SymbolKind::Function,
+        "fn sess()".into(),
+        "rust".into(),
     )
     .lines(1, 10)
     .build();
     let s4 = SymbolBuilder::new(
-        f2, "destroy_session".into(), SymbolKind::Function, "fn destroy()".into(), "rust".into(),
+        f2,
+        "destroy_session".into(),
+        SymbolKind::Function,
+        "fn destroy()".into(),
+        "rust".into(),
     )
     .lines(12, 20)
     .build();
     let s5 = SymbolBuilder::new(
-        f3, "hash_password".into(), SymbolKind::Function, "fn hash()".into(), "rust".into(),
+        f3,
+        "hash_password".into(),
+        SymbolKind::Function,
+        "fn hash()".into(),
+        "rust".into(),
     )
     .lines(1, 10)
     .build();
     let s6 = SymbolBuilder::new(
-        f3, "verify_password".into(), SymbolKind::Function, "fn verify()".into(), "rust".into(),
+        f3,
+        "verify_password".into(),
+        SymbolKind::Function,
+        "fn verify()".into(),
+        "rust".into(),
     )
     .lines(12, 20)
     .build();
@@ -1058,7 +1072,10 @@ mod tests {
         );
 
         let total_symbols: usize = index.subsystems.iter().map(|s| s.symbol_ids.len()).sum();
-        assert_eq!(total_symbols, 6, "total symbols across subsystems should be 6");
+        assert_eq!(
+            total_symbols, 6,
+            "total symbols across subsystems should be 6"
+        );
     }
 
     #[test]
@@ -1204,7 +1221,11 @@ mod tests {
             .upsert_file("src/alone.rs", "rust", "a", 1000, 10)
             .unwrap();
         let s1 = SymbolBuilder::new(
-            f1, "solo".into(), SymbolKind::Function, "fn solo()".into(), "rust".into(),
+            f1,
+            "solo".into(),
+            SymbolKind::Function,
+            "fn solo()".into(),
+            "rust".into(),
         )
         .lines(1, 5)
         .build();
@@ -1232,10 +1253,12 @@ mod tests {
 
         if !auth_roles.is_empty() {
             let ar = &auth_roles[0];
-            let has_significant_role = ar
-                .roles
-                .iter()
-                .any(|r| matches!(r, StructuralRole::Hub | StructuralRole::EntryPoint | StructuralRole::Boundary));
+            let has_significant_role = ar.roles.iter().any(|r| {
+                matches!(
+                    r,
+                    StructuralRole::Hub | StructuralRole::EntryPoint | StructuralRole::Boundary
+                )
+            });
             assert!(
                 has_significant_role,
                 "authenticate should have a significant structural role, got {:?}",

@@ -815,6 +815,14 @@ impl GraphDb {
 
     // --- Stats ---
 
+    pub fn all_content_hashes(&self) -> Result<Vec<Vec<u8>>, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT content_hash FROM files ORDER BY path")?;
+        let rows = stmt.query_map([], |row| row.get::<_, Vec<u8>>(0))?;
+        rows.collect::<SqlResult<Vec<_>>>().map_err(DbError::from)
+    }
+
     pub fn stats(&self) -> Result<DbStats, DbError> {
         Ok(DbStats {
             files: self.file_count()?,
