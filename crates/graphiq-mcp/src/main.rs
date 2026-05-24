@@ -9,6 +9,7 @@
 //! → background_warm (full index if empty, else prewarm cache + build cruncher)
 //! → handle JSON-RPC messages (tool calls, initialize, shutdown).
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -923,6 +924,10 @@ fn tools_list() -> Value {
                         "subsystem": {
                             "type": "string",
                             "description": "Focus on a specific subsystem"
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "Structured pattern query: hub, bridge, leaf, entry_point, orchestrator, boundary, container, validator, error_handler"
                         }
                     },
                     "required": ["question"]
@@ -1238,6 +1243,8 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
     ));
     lines.push(String::new());
 
+    let subsystems = graphiq_core::subsystems::load_subsystems(&state.db).ok();
+
     for (i, scored) in result.results.iter().enumerate() {
         let sym = &scored.symbol;
         let file = scored.file_path.as_deref().unwrap_or("?");
@@ -1265,8 +1272,23 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
         } else {
             format!(" [{}]", role_tag)
         };
+        let subsystem_str = subsystems
+            .as_ref()
+            .and_then(|si| {
+                si.symbol_to_subsystem
+                    .get(&sym.id)
+                    .map(|&idx| si.subsystems.get(idx))
+                    .flatten()
+            })
+            .map(|s| s.name.clone())
+            .unwrap_or_default();
+        let subsystem_tag = if subsystem_str.is_empty() {
+            String::new()
+        } else {
+            format!(" subsystem: {}", subsystem_str)
+        };
         lines.push(format!(
-            "#{} [{:.2}] {}:{}  {}::{} ({}L){}",
+            "#{} [{:.2}] {}:{}  {}::{} ({}L){}{}",
             i + 1,
             scored.score,
             file,
@@ -1275,6 +1297,7 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
             sym.name,
             line_count,
             role_str,
+            subsystem_tag,
         ));
         if let Some(ref sig) = sym.signature {
             let short = sig.lines().next().unwrap_or("");
@@ -1282,6 +1305,14 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
         }
 
         if let Some(ref n) = neighborhood {
+            let incoming = n.callers.len();
+            let outgoing = n.callees.len();
+            if incoming > 0 || outgoing > 0 {
+                lines.push(format!(
+                    "  edges: {} incoming, {} outgoing",
+                    incoming, outgoing
+                ));
+            }
             let caller_names: Vec<String> = n
                 .callers
                 .iter()
@@ -1318,6 +1349,28 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
 
     if result.results.is_empty() {
         lines.push("No results found.".into());
+    } else {
+        let name_counts: HashMap<String, usize> =
+            result.results.iter().fold(HashMap::new(), |mut acc, r| {
+                *acc.entry(r.symbol.name.clone()).or_insert(0) += 1;
+                acc
+            });
+        let ambiguous: Vec<&str> = name_counts
+            .iter()
+            .filter(|(_, &count)| count > 1)
+            .map(|(name, _)| name.as_str())
+            .collect();
+        if !ambiguous.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Note: {} — use context with file path or qualified name for specific result.",
+                ambiguous
+                    .iter()
+                    .map(|n| format!("'{}' appears multiple times", n))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
     }
 
     tool_ok(lines.join("\n"))
@@ -1405,11 +1458,21 @@ fn tool_blast(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     };
 
     match graphiq_core::blast::compute_blast_radius(db, sym.id, depth, direction, None) {
-        Ok(radius) => tool_ok(format!(
-            "{}{}",
-            disambig,
-            graphiq_core::blast::format_blast_report(&radius)
-        )),
+        Ok(radius) => {
+            let total = radius.forward_count() + radius.backward_count();
+            let mut output = format!(
+                "{}{}",
+                disambig,
+                graphiq_core::blast::format_blast_report(&radius)
+            );
+            if total > 50 {
+                output.push_str(&format!(
+                    "\n\nLarge blast radius ({} symbols affected). Consider using topology with a smaller depth for focused analysis.",
+                    total
+                ));
+            }
+            tool_ok(output)
+        }
         Err(e) => tool_error(&format!("blast computation failed: {e}")),
     }
 }
@@ -2000,6 +2063,7 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     };
 
     let focus_subsystem = args.get("subsystem").and_then(|v| v.as_str());
+    let pattern = args.get("pattern").and_then(|v| v.as_str());
 
     let subsystems = match graphiq_core::subsystems::load_subsystems(db) {
         Ok(s) if !s.subsystems.is_empty() => s,
@@ -2358,6 +2422,92 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
                     .map(|s| s.name.as_str())
                     .unwrap_or("?");
                 lines.push(format!("  {} [{}]: {} leaders", sub_name, roles, cnt));
+            }
+        }
+    }
+
+    if let Some(pat) = pattern {
+        let pat_lower = pat.to_lowercase().replace('_', " ");
+        let role_filter = match pat_lower.as_str() {
+            "hub" | "hub symbols" | "hubs" => "roles LIKE '%hub%'",
+            "bridge" | "bridge symbols" | "bridges" => "roles LIKE '%bridge%'",
+            "leaf" | "leaf symbols" | "leaves" => "roles LIKE '%leaf%'",
+            "entry point" | "entry points" | "entry_points" | "entry" => {
+                "roles LIKE '%entry_point%'"
+            }
+            "orchestrator" | "orchestrators" => "roles LIKE '%orchestrator%'",
+            "boundary" | "boundary symbols" => "roles LIKE '%boundary%'",
+            "container" | "containers" => "roles LIKE '%container%'",
+            "validator" | "validators" | "validation" => {
+                "(symbol_name LIKE '%valid%' OR symbol_name LIKE '%check%' OR symbol_name LIKE '%verify%')"
+            }
+            "error handler" | "error handlers" | "error_handlers" | "error handling" => {
+                "(symbol_name LIKE '%error%' OR symbol_name LIKE '%fail%' OR symbol_name LIKE '%handle%' OR symbol_name LIKE '%catch%')"
+            }
+            _ => {
+                lines.push(format!("Unknown pattern: '{}'. Available: hub, bridge, leaf, entry_point, orchestrator, boundary, container, validator, error_handler", pat));
+                return tool_ok(lines.join("\n"));
+            }
+        };
+
+        if !roles_available {
+            lines.push(
+                "Structural roles not computed. Run `graphiq subsystems --roles` first.".into(),
+            );
+            return tool_ok(lines.join("\n"));
+        }
+
+        let sub_filter = if let Some(focus) = focus_subsystem {
+            let focus_id = subsystems
+                .subsystems
+                .iter()
+                .find(|s| s.name.to_lowercase().contains(&focus.to_lowercase()))
+                .map(|s| s.id as i64);
+            match focus_id {
+                Some(id) => format!("AND subsystem_id = {}", id),
+                None => String::new(),
+            }
+        } else {
+            String::new()
+        };
+
+        let sql = format!(
+            "SELECT symbol_name, roles, subsystem_id, external_callers, internal_degree
+             FROM symbol_structural_roles
+             WHERE {} {}
+             ORDER BY external_callers DESC
+             LIMIT 50",
+            role_filter, sub_filter
+        );
+
+        let conn = db.conn();
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            let rows: Vec<(String, String, i64, i64, i64)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
+                .ok()
+                .map(|r| r.flatten().collect())
+                .unwrap_or_default();
+
+            lines.push(format!("\nPattern '{}' ({} results):", pat, rows.len()));
+            for (name, roles, sub_id, ext_callers, int_deg) in &rows {
+                let sub_name = subsystems
+                    .subsystems
+                    .iter()
+                    .find(|s| s.id == *sub_id as usize)
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("?");
+                lines.push(format!(
+                    "  {} [{}] (roles: {}, {} callers, {} internal)",
+                    name, sub_name, roles, ext_callers, int_deg
+                ));
             }
         }
     }
