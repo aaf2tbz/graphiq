@@ -82,6 +82,8 @@ enum Commands {
         ephemeral: bool,
         #[arg(long)]
         harness: Option<String>,
+        #[arg(long)]
+        dry_run: bool,
     },
     Doctor {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
@@ -167,11 +169,13 @@ fn main() {
             skip_index,
             ephemeral,
             harness,
+            dry_run,
         } => cmd_setup(
             project.as_deref(),
             skip_index,
             ephemeral,
             harness.as_deref(),
+            dry_run,
         ),
         Commands::Doctor { db } => cmd_doctor(&db),
         Commands::UpgradeIndex { db } => cmd_upgrade_index(&db),
@@ -610,16 +614,22 @@ fn cmd_roles(db_path: &std::path::Path, subsystem_filter: Option<usize>, top: us
         std::process::exit(1);
     }
 
-    let query = if let Some(sub_id) = subsystem_filter {
-        format!("SELECT symbol_name, roles, subsystem_id, internal_degree, boundary_degree, external_callers, external_callees FROM symbol_structural_roles WHERE subsystem_id = {} ORDER BY external_callers DESC, internal_degree DESC LIMIT {}", sub_id, top)
-    } else {
-        format!("SELECT symbol_name, roles, subsystem_id, internal_degree, boundary_degree, external_callers, external_callees FROM symbol_structural_roles ORDER BY external_callers DESC, internal_degree DESC LIMIT {}", top)
-    };
+    use rusqlite::params;
 
     let conn = db.conn();
-    let mut stmt = conn.prepare(&query).unwrap();
-    let rows: Vec<(String, String, i64, i64, i64, i64, i64)> = stmt
-        .query_map([], |row| {
+    let rows: Vec<(String, String, i64, i64, i64, i64, i64)> = if let Some(sub_id) =
+        subsystem_filter
+    {
+        let mut stmt = conn
+            .prepare(
+                "SELECT symbol_name, roles, subsystem_id, internal_degree, boundary_degree, external_callers, external_callees
+                 FROM symbol_structural_roles
+                 WHERE subsystem_id = ?
+                 ORDER BY external_callers DESC, internal_degree DESC
+                 LIMIT ?",
+            )
+            .unwrap();
+        stmt.query_map(params![sub_id as i64, top as i64], |row| {
             Ok((
                 row.get(0)?,
                 row.get(1)?,
@@ -632,7 +642,31 @@ fn cmd_roles(db_path: &std::path::Path, subsystem_filter: Option<usize>, top: us
         })
         .unwrap()
         .flatten()
-        .collect();
+        .collect()
+    } else {
+        let mut stmt = conn
+            .prepare(
+                "SELECT symbol_name, roles, subsystem_id, internal_degree, boundary_degree, external_callers, external_callees
+                 FROM symbol_structural_roles
+                 ORDER BY external_callers DESC, internal_degree DESC
+                 LIMIT ?",
+            )
+            .unwrap();
+        stmt.query_map(params![top as i64], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+            ))
+        })
+        .unwrap()
+        .flatten()
+        .collect()
+    };
 
     println!("\n=== Structural Roles (top {}) ===\n", rows.len().min(top));
     println!(
@@ -912,6 +946,7 @@ fn cmd_setup(
     skip_index: bool,
     ephemeral: bool,
     harness_filter: Option<&str>,
+    dry_run: bool,
 ) {
     use serde_json::{json, Value};
 
@@ -962,9 +997,29 @@ fn cmd_setup(
     println!("  Project: {}", project_path.display());
     println!();
 
+    let graphiq_bin = which_graphiq();
+    if graphiq_bin.is_none() {
+        let found = std::process::Command::new("which")
+            .arg("graphiq-mcp")
+            .output()
+            .ok()
+            .filter(|o| o.status.success());
+        if found.is_none() {
+            eprintln!("  error: graphiq-mcp not found on PATH.");
+            eprintln!("  Install with: cargo install --path . --bin graphiq-mcp");
+            eprintln!("  Or add it to PATH and re-run setup.");
+            std::process::exit(1);
+        }
+    }
+
+    if dry_run {
+        println!("  [dry-run] No files will be written.");
+        println!();
+    }
+
     let mut configured: Vec<String> = Vec::new();
     let mut skipped: Vec<String> = Vec::new();
-    let graphiq_bin = which_graphiq();
+    let mut failed: Vec<String> = Vec::new();
 
     let harness_filter_lower = harness_filter.map(|h| h.to_lowercase());
 
@@ -1048,6 +1103,7 @@ fn cmd_setup(
                     }
                     Err(e) => {
                         eprintln!("  Claude Desktop: failed to write config: {e}");
+                        failed.push("Claude Desktop".to_string());
                     }
                 }
             }
@@ -1111,6 +1167,7 @@ fn cmd_setup(
                 }
                 Err(e) => {
                     eprintln!("  Claude Code:   failed to write config: {e}");
+                    failed.push("Claude Code".to_string());
                 }
             }
         }
@@ -1177,6 +1234,7 @@ fn cmd_setup(
                 }
                 Err(e) => {
                     eprintln!("  opencode:      failed to write config: {e}");
+                    failed.push("opencode".to_string());
                 }
             }
         }
@@ -1211,6 +1269,7 @@ fn cmd_setup(
                     }
                     Err(e) => {
                         eprintln!("  Codex:         failed to read config: {e}");
+                        failed.push("Codex".to_string());
                         return;
                     }
                 }
@@ -1230,6 +1289,7 @@ fn cmd_setup(
                 }
                 Err(e) => {
                     eprintln!("  Codex:         failed to write config: {e}");
+                    failed.push("Codex".to_string());
                 }
             }
         }
@@ -1280,6 +1340,7 @@ fn cmd_setup(
                     }
                     Err(e) => {
                         eprintln!("  Hermes:        failed to read config: {e}");
+                        failed.push("Hermes".to_string());
                         return;
                     }
                 }
@@ -1299,6 +1360,7 @@ fn cmd_setup(
                 }
                 Err(e) => {
                     eprintln!("  Hermes:        failed to write config: {e}");
+                    failed.push("Hermes".to_string());
                 }
             }
         }
@@ -1356,6 +1418,7 @@ fn cmd_setup(
             }
             Err(e) => {
                 eprintln!("  Cursor:        failed to write config: {e}");
+                failed.push("Cursor".to_string());
             }
         }
     } else {
@@ -1412,6 +1475,7 @@ fn cmd_setup(
             }
             Err(e) => {
                 eprintln!("  Windsurf:      failed to write config: {e}");
+                failed.push("Windsurf".to_string());
             }
         }
     } else {
@@ -1469,6 +1533,7 @@ fn cmd_setup(
                 }
                 Err(e) => {
                     eprintln!("  Gemini CLI:    failed to write config: {e}");
+                    failed.push("Gemini CLI".to_string());
                 }
             }
         }
@@ -1492,6 +1557,7 @@ fn cmd_setup(
                 }
                 Err(e) => {
                     eprintln!("  Aider:         failed to write config: {e}");
+                    failed.push("Aider".to_string());
                 }
             }
         } else {
@@ -1514,12 +1580,14 @@ fn cmd_setup(
     println!();
 
     let graphiq_dir = project_path.join(".graphiq");
-    if !ephemeral {
+    if !ephemeral && !dry_run {
         let _ = std::fs::create_dir_all(&graphiq_dir);
         write_agents_md(&graphiq_dir);
+    } else if dry_run {
+        println!("  [dry-run] Would create {}", graphiq_dir.display());
     }
 
-    if !skip_index && !ephemeral {
+    if !skip_index && !ephemeral && !dry_run {
         let db_path = graphiq_dir.join("graphiq.db");
 
         if db_path.exists() {
@@ -1557,6 +1625,9 @@ fn cmd_setup(
     }
     if !skipped.is_empty() {
         println!("  Skipped (use --harness <name>): {}", skipped.join(", "));
+    }
+    if !failed.is_empty() {
+        eprintln!("  Failed: {}", failed.join(", "));
     }
 
     println!();

@@ -1208,6 +1208,7 @@ dependencies = [
  "dirs",
  "graphiq-core",
  "regex",
+ "rusqlite",
  "serde_json",
 ]
 
