@@ -1129,6 +1129,55 @@ fn cmd_setup(
         serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
     }
 
+    fn write_mcp_json_config(
+        config_path: &std::path::Path,
+        project_str: &str,
+        ephemeral: bool,
+        label: &str,
+        top_level_key: &str,
+    ) -> Result<bool, String> {
+        let mut args = vec![project_str.to_string()];
+        if ephemeral {
+            args.push("--ephemeral".to_string());
+        }
+        let entry = json!({
+            "command": "graphiq-mcp",
+            "args": args
+        });
+
+        let (config, written) = if config_path.exists() {
+            match std::fs::read_to_string(config_path) {
+                Ok(content) => {
+                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
+                    let servers = parsed
+                        .as_object_mut()
+                        .unwrap()
+                        .entry(top_level_key)
+                        .or_insert_with(|| json!({}))
+                        .as_object_mut()
+                        .unwrap();
+                    let already = servers.contains_key("graphiq");
+                    servers.insert("graphiq".into(), entry);
+                    (pretty(&parsed), !already)
+                }
+                Err(_) => {
+                    let obj = json!({ top_level_key: { "graphiq": entry } });
+                    (pretty(&obj), true)
+                }
+            }
+        } else {
+            let obj = json!({ top_level_key: { "graphiq": entry } });
+            (pretty(&obj), true)
+        };
+
+        if let Some(parent) = config_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(config_path, &config)
+            .map_err(|e| format!("{}: failed to write config: {e}", label))?;
+        Ok(written)
+    }
+
     println!("╭──────────────────────────────────────────────╮");
     println!("│            GraphIQ Setup                      │");
     println!("╰──────────────────────────────────────────────╯");
@@ -1224,63 +1273,20 @@ fn cmd_setup(
         if let Some(ref config_path) = claude_config {
             if config_path.exists() || config_path.parent().map_or(false, |p| p.exists()) {
                 let project_str = project_path.display().to_string();
-                let mut args = vec![project_str.clone()];
-                if ephemeral {
-                    args.push("--ephemeral".to_string());
-                }
-                let entry = json!({
-                    "command": "graphiq-mcp",
-                    "args": args
-                });
-
-                let (config, written) = if config_path.exists() {
-                    match std::fs::read_to_string(config_path) {
-                        Ok(content) => {
-                            let mut parsed: Value =
-                                serde_json::from_str(&content).unwrap_or(json!({}));
-                            let servers = parsed
-                                .as_object_mut()
-                                .unwrap()
-                                .entry("mcpServers")
-                                .or_insert_with(|| json!({}))
-                                .as_object_mut()
-                                .unwrap();
-                            let already = servers
-                                .get("graphiq")
-                                .and_then(|v| v.get("args"))
-                                .and_then(|a| a.as_array())
-                                .and_then(|arr| arr.first())
-                                .and_then(|v| v.as_str())
-                                .map_or(false, |s| s == project_str);
-                            if already {
-                                servers.insert("graphiq".into(), entry);
-                                (pretty(&parsed), false)
-                            } else {
-                                servers.insert("graphiq".into(), entry);
-                                (pretty(&parsed), true)
-                            }
-                        }
-                        Err(_) => {
-                            let obj = json!({"mcpServers": {"graphiq": entry}});
-                            (pretty(&obj), true)
-                        }
-                    }
-                } else {
-                    let obj = json!({"mcpServers": {"graphiq": entry}});
-                    (pretty(&obj), true)
-                };
-
-                if let Some(parent) = config_path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                match std::fs::write(config_path, &config) {
-                    Ok(()) => {
+                match write_mcp_json_config(
+                    config_path,
+                    &project_str,
+                    ephemeral,
+                    "Claude Desktop",
+                    "mcpServers",
+                ) {
+                    Ok(written) => {
                         let status = if written { "configured" } else { "updated" };
                         println!("  Claude Desktop: {} {}", status, config_path.display());
                         configured.push("Claude Desktop".to_string());
                     }
                     Err(e) => {
-                        eprintln!("  Claude Desktop: failed to write config: {e}");
+                        eprintln!("  {}", e);
                         failed.push("Claude Desktop".to_string());
                     }
                 }
@@ -1293,60 +1299,26 @@ fn cmd_setup(
     // Claude Code
     if should_configure("claude-code") {
         let claude_code_config = project_path.join(".claude").join(".mcp.json");
-        {
-            let project_str = project_path.display().to_string();
-            let mut args = vec![project_str.clone()];
-            if ephemeral {
-                args.push("--ephemeral".to_string());
+        let project_str = project_path.display().to_string();
+        match write_mcp_json_config(
+            &claude_code_config,
+            &project_str,
+            ephemeral,
+            "Claude Code",
+            "mcpServers",
+        ) {
+            Ok(written) => {
+                let status = if written { "configured" } else { "updated" };
+                println!(
+                    "  Claude Code:   {} {}",
+                    status,
+                    claude_code_config.display()
+                );
+                configured.push("Claude Code".to_string());
             }
-            let entry = json!({
-                "command": "graphiq-mcp",
-                "args": args
-            });
-
-            if let Some(parent) = claude_code_config.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-
-            let (config, written) = if claude_code_config.exists() {
-                match std::fs::read_to_string(&claude_code_config) {
-                    Ok(content) => {
-                        let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
-                        let servers = parsed
-                            .as_object_mut()
-                            .unwrap()
-                            .entry("mcpServers")
-                            .or_insert_with(|| json!({}))
-                            .as_object_mut()
-                            .unwrap();
-                        let already = servers.contains_key("graphiq");
-                        servers.insert("graphiq".into(), entry);
-                        (pretty(&parsed), !already)
-                    }
-                    Err(_) => {
-                        let obj = json!({"mcpServers": {"graphiq": entry}});
-                        (pretty(&obj), true)
-                    }
-                }
-            } else {
-                let obj = json!({"mcpServers": {"graphiq": entry}});
-                (pretty(&obj), true)
-            };
-
-            match std::fs::write(&claude_code_config, &config) {
-                Ok(()) => {
-                    let status = if written { "configured" } else { "updated" };
-                    println!(
-                        "  Claude Code:   {} {}",
-                        status,
-                        claude_code_config.display()
-                    );
-                    configured.push("Claude Code".to_string());
-                }
-                Err(e) => {
-                    eprintln!("  Claude Code:   failed to write config: {e}");
-                    failed.push("Claude Code".to_string());
-                }
+            Err(e) => {
+                eprintln!("  {}", e);
+                failed.push("Claude Code".to_string());
             }
         }
     } else {
@@ -1550,52 +1522,20 @@ fn cmd_setup(
     if should_configure("cursor") {
         let cursor_config = project_path.join(".cursor").join("mcp.json");
         let project_str = project_path.display().to_string();
-        let mut args = vec![project_str.clone()];
-        if ephemeral {
-            args.push("--ephemeral".to_string());
-        }
-        let entry = json!({
-            "command": "graphiq-mcp",
-            "args": args
-        });
-
-        if let Some(parent) = cursor_config.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        let (config, written) = if cursor_config.exists() {
-            match std::fs::read_to_string(&cursor_config) {
-                Ok(content) => {
-                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
-                    let servers = parsed
-                        .as_object_mut()
-                        .unwrap()
-                        .entry("mcpServers")
-                        .or_insert_with(|| json!({}))
-                        .as_object_mut()
-                        .unwrap();
-                    let already = servers.contains_key("graphiq");
-                    servers.insert("graphiq".into(), entry);
-                    (pretty(&parsed), !already)
-                }
-                Err(_) => {
-                    let obj = json!({"mcpServers": {"graphiq": entry}});
-                    (pretty(&obj), true)
-                }
-            }
-        } else {
-            let obj = json!({"mcpServers": {"graphiq": entry}});
-            (pretty(&obj), true)
-        };
-
-        match std::fs::write(&cursor_config, &config) {
-            Ok(()) => {
+        match write_mcp_json_config(
+            &cursor_config,
+            &project_str,
+            ephemeral,
+            "Cursor",
+            "mcpServers",
+        ) {
+            Ok(written) => {
                 let status = if written { "configured" } else { "updated" };
                 println!("  Cursor:        {} {}", status, cursor_config.display());
                 configured.push("Cursor".to_string());
             }
             Err(e) => {
-                eprintln!("  Cursor:        failed to write config: {e}");
+                eprintln!("  {}", e);
                 failed.push("Cursor".to_string());
             }
         }
@@ -1607,52 +1547,20 @@ fn cmd_setup(
     if should_configure("windsurf") {
         let windsurf_config = project_path.join(".windsurf").join("mcp.json");
         let project_str = project_path.display().to_string();
-        let mut args = vec![project_str.clone()];
-        if ephemeral {
-            args.push("--ephemeral".to_string());
-        }
-        let entry = json!({
-            "command": "graphiq-mcp",
-            "args": args
-        });
-
-        if let Some(parent) = windsurf_config.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-
-        let (config, written) = if windsurf_config.exists() {
-            match std::fs::read_to_string(&windsurf_config) {
-                Ok(content) => {
-                    let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
-                    let servers = parsed
-                        .as_object_mut()
-                        .unwrap()
-                        .entry("mcpServers")
-                        .or_insert_with(|| json!({}))
-                        .as_object_mut()
-                        .unwrap();
-                    let already = servers.contains_key("graphiq");
-                    servers.insert("graphiq".into(), entry);
-                    (pretty(&parsed), !already)
-                }
-                Err(_) => {
-                    let obj = json!({"mcpServers": {"graphiq": entry}});
-                    (pretty(&obj), true)
-                }
-            }
-        } else {
-            let obj = json!({"mcpServers": {"graphiq": entry}});
-            (pretty(&obj), true)
-        };
-
-        match std::fs::write(&windsurf_config, &config) {
-            Ok(()) => {
+        match write_mcp_json_config(
+            &windsurf_config,
+            &project_str,
+            ephemeral,
+            "Windsurf",
+            "mcpServers",
+        ) {
+            Ok(written) => {
                 let status = if written { "configured" } else { "updated" };
                 println!("  Windsurf:      {} {}", status, windsurf_config.display());
                 configured.push("Windsurf".to_string());
             }
             Err(e) => {
-                eprintln!("  Windsurf:      failed to write config: {e}");
+                eprintln!("  {}", e);
                 failed.push("Windsurf".to_string());
             }
         }
