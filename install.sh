@@ -100,8 +100,9 @@ verify_checksum() {
     fi
 
     if [ -z "$expected" ]; then
-        warn "no checksum found in release metadata, skipping verification"
-        return 0
+        error "no checksum found in release metadata — cannot verify integrity"
+        error "this may indicate a corrupted or incomplete release"
+        exit 1
     fi
 
     local actual
@@ -110,8 +111,9 @@ verify_checksum() {
     elif command -v shasum >/dev/null 2>&1; then
         actual=$(shasum -a 256 "$archive" | awk '{print $1}')
     else
-        warn "no sha256sum or shasum found, skipping verification"
-        return 0
+        error "no sha256sum or shasum found — cannot verify integrity"
+        error "install coreutils (Linux) or Xcode Command Line Tools (macOS)"
+        exit 1
     fi
 
     if [ "$expected" != "$actual" ]; then
