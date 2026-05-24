@@ -4,7 +4,8 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "graphiq",
-    about = "Code intelligence with structural retrieval"
+    about = "Code intelligence with structural retrieval",
+    version
 )]
 struct Cli {
     #[command(subcommand)]
@@ -3195,8 +3196,8 @@ fn fetch_latest_version(_client: &str) -> Result<String, String> {
                 .nth(1)
                 .unwrap_or("")
                 .trim()
-                .trim_matches('"')
                 .trim_matches(',')
+                .trim_matches('"')
                 .trim()
                 .to_string();
             if !version.is_empty() {
