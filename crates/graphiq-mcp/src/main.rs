@@ -12,7 +12,8 @@
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use serde_json::{json, Value};
 
@@ -20,16 +21,12 @@ const SERVER_NAME: &str = "graphiq";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
-/// Mutable state for the MCP server, shared across tool calls.
-/// Holds the project root, database connection, search cache, and
-/// optional CruncherIndex for GraphWalk mode.
 struct ServerState {
     project_root: PathBuf,
     db_path: PathBuf,
     db: graphiq_core::db::GraphDb,
     cache: graphiq_core::cache::HotCache,
     cruncher_index: Option<graphiq_core::cruncher::CruncherIndex>,
-    indexing: bool,
     watching: bool,
     last_cruncher_rebuild_at: Option<std::time::Instant>,
 }
@@ -108,12 +105,13 @@ fn resolve_db_path(project_root: &Path) -> PathBuf {
     project_root.join(".graphiq").join("graphiq.db")
 }
 
-fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool, bool) {
+fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool, bool, Option<String>) {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut db_override: Option<PathBuf> = None;
     let mut project_arg: Option<PathBuf> = None;
     let mut ephemeral = false;
     let mut watch = false;
+    let mut session_id: Option<String> = None;
 
     if let Ok(val) = std::env::var("GRAPHIQ_DB") {
         if !val.is_empty() {
@@ -138,6 +136,15 @@ fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool, bool) {
                 ephemeral = true;
                 i += 1;
             }
+            "--session-id" => {
+                if i + 1 < args.len() {
+                    session_id = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    log_err("--session-id requires an ID argument");
+                    i += 1;
+                }
+            }
             "--watch" => {
                 watch = true;
                 i += 1;
@@ -151,7 +158,7 @@ fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool, bool) {
         }
     }
 
-    (project_arg, db_override, ephemeral, watch)
+    (project_arg, db_override, ephemeral, watch, session_id)
 }
 
 fn db_is_empty(db: &graphiq_core::db::GraphDb) -> bool {
@@ -229,7 +236,7 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
 }
 
 fn main() {
-    let (project_arg, db_override, ephemeral, watch) = parse_args();
+    let (project_arg, db_override, ephemeral, watch, session_id) = parse_args();
 
     let explicit = project_arg.is_some();
     let raw_arg = project_arg
@@ -239,7 +246,11 @@ fn main() {
 
     let project_root = resolve_project_root(&raw_arg, explicit);
 
-    let ephemeral_dir: Option<PathBuf> = if ephemeral {
+    let ephemeral_dir: Option<PathBuf> = if let Some(ref sid) = session_id {
+        let dir = std::env::temp_dir().join(format!("graphiq-session-{}", sid));
+        log_err(&format!("session mode: {} (id: {})", dir.display(), sid));
+        Some(dir)
+    } else if ephemeral {
         let dir = std::env::temp_dir().join(format!(
             "graphiq-{:x}",
             std::time::SystemTime::now()
@@ -379,12 +390,12 @@ fn main() {
         db,
         cache: graphiq_core::cache::HotCache::with_defaults(),
         cruncher_index: None,
-        indexing: false,
         watching: watch,
         last_cruncher_rebuild_at: None,
     }));
 
     let running = Arc::new(AtomicBool::new(true));
+    let indexing = Arc::new(AtomicBool::new(false));
 
     if ephemeral {
         let edir_clone = ephemeral_dir.clone();
@@ -412,8 +423,9 @@ fn main() {
     if watch {
         let watch_root = project_root.clone();
         let watch_state = Arc::clone(&state);
+        let watch_indexing = Arc::clone(&indexing);
         std::thread::spawn(move || {
-            run_watcher(&watch_root, &watch_state);
+            run_watcher(&watch_root, &watch_state, &watch_indexing);
         });
         log_err("watcher started");
     }
@@ -448,7 +460,7 @@ fn main() {
             }
         };
 
-        if let Err(e) = handle_message(&msg, &state, &running, &mut stdout) {
+        if let Err(e) = handle_message(&msg, &state, &indexing, &running, &mut stdout) {
             log_err(&format!("handler error: {e}"));
         }
     }
@@ -459,7 +471,7 @@ fn main() {
     }
 }
 
-fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>) {
+fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>, indexing: &Arc<AtomicBool>) {
     use notify::{Config, Event, PollWatcher, RecursiveMode, Watcher};
 
     let watch_path = match std::fs::canonicalize(project_root) {
@@ -510,10 +522,7 @@ fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>) {
         "bun.lock",
     ];
 
-    let debounce = std::time::Duration::from_secs(2);
-    let mut last_event = std::time::Instant::now()
-        .checked_sub(debounce)
-        .unwrap_or(std::time::Instant::now());
+    let merge_window = std::time::Duration::from_millis(500);
 
     loop {
         match rx.recv_timeout(std::time::Duration::from_millis(500)) {
@@ -555,33 +564,29 @@ fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>) {
                     continue;
                 }
 
-                let now = std::time::Instant::now();
-                if now.duration_since(last_event) < debounce {
-                    continue;
-                }
-                last_event = now;
+                while let Ok(Ok(_)) = rx.recv_timeout(merge_window) {}
 
                 log_err("watcher: file change detected, reindexing...");
+                if indexing.load(Ordering::Relaxed) {
+                    log_err("watcher: index already in progress, skipping");
+                    continue;
+                }
+                indexing.store(true, Ordering::Relaxed);
                 let mut s = match state.lock() {
                     Ok(s) => s,
                     Err(e) => {
                         log_err(&format!("watcher: lock failed: {e}"));
+                        indexing.store(false, Ordering::Relaxed);
                         continue;
                     }
                 };
 
-                if s.indexing {
-                    log_err("watcher: index already in progress, skipping");
-                    continue;
-                }
-
-                s.indexing = true;
                 if let Err(e) = do_index(&mut s) {
                     log_err(&format!("watcher: reindex failed: {e}"));
                 } else {
                     log_err("watcher: reindex complete");
                 }
-                s.indexing = false;
+                indexing.store(false, Ordering::Relaxed);
             }
             Ok(Err(e)) => {
                 log_err(&format!("watcher: error: {e}"));
@@ -646,7 +651,7 @@ fn ensure_cruncher_fresh(state: &mut ServerState) -> Option<String> {
     }
 }
 
-fn background_warm(state: &Arc<Mutex<ServerState>>) {
+fn background_warm(state: &Arc<Mutex<ServerState>>, indexing: &Arc<AtomicBool>) {
     let needs_full_index = {
         match state.lock() {
             Ok(s) => db_is_empty(&s.db),
@@ -655,19 +660,20 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
     };
 
     if needs_full_index {
+        indexing.store(true, Ordering::Relaxed);
         let mut s = match state.lock() {
             Ok(s) => s,
             Err(e) => {
                 log_err(&format!("warm: lock failed: {e}"));
+                indexing.store(false, Ordering::Relaxed);
                 return;
             }
         };
-        s.indexing = true;
         log_err("warm: database empty, starting full index...");
         if let Err(e) = do_index(&mut s) {
             log_err(&format!("warm: full index failed: {e}"));
         }
-        s.indexing = false;
+        indexing.store(false, Ordering::Relaxed);
         log_err("warm: full index complete");
         return;
     }
@@ -699,6 +705,7 @@ fn background_warm(state: &Arc<Mutex<ServerState>>) {
 fn handle_message(
     msg: &Value,
     state: &Arc<Mutex<ServerState>>,
+    indexing: &Arc<AtomicBool>,
     running: &Arc<AtomicBool>,
     out: &mut impl Write,
 ) -> Result<(), String> {
@@ -747,8 +754,9 @@ fn handle_message(
             });
             send_response(id, &result, out)?;
             let state_c = Arc::clone(state);
+            let indexing_c = Arc::clone(indexing);
             std::thread::spawn(move || {
-                background_warm(&state_c);
+                background_warm(&state_c, &indexing_c);
             });
         }
         "initialized" => {}
@@ -769,7 +777,7 @@ fn handle_message(
         }
         "tools/call" => {
             let params = msg.get("params").cloned().unwrap_or(json!({}));
-            let result = handle_tool_call(state, params);
+            let result = handle_tool_call(state, indexing, params);
             send_response(id, &result, out)?;
         }
         "shutdown" => {
@@ -1039,7 +1047,11 @@ fn tools_list() -> Value {
     })
 }
 
-fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
+fn handle_tool_call(
+    state: &Arc<Mutex<ServerState>>,
+    indexing: &Arc<AtomicBool>,
+    params: Value,
+) -> Value {
     let tool_name = match params.get("name").and_then(|v| v.as_str()) {
         Some(n) => n,
         None => {
@@ -1054,36 +1066,40 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
     }
 
     if tool_name != "index" && tool_name != "status" && tool_name != "doctor" {
-        let (needs_index, currently_indexing) = {
-            match state.lock() {
-                Ok(s) => (db_is_empty(&s.db), s.indexing),
-                Err(_) => (false, false),
-            }
-        };
-        if currently_indexing {
+        if indexing.load(Ordering::Relaxed) {
             return tool_ok("Indexing in progress — please retry in a few seconds.".into());
         }
+        let needs_index = {
+            match state.lock() {
+                Ok(s) => db_is_empty(&s.db),
+                Err(_) => false,
+            }
+        };
         if needs_index {
+            indexing.store(true, Ordering::Relaxed);
             let mut s = match state.lock() {
                 Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
+                Err(e) => {
+                    indexing.store(false, Ordering::Relaxed);
+                    return tool_error(&format!("lock error: {e}"));
+                }
             };
-            s.indexing = true;
-            log_err("auto-indexing (cold start)...");
-            if let Err(e) = do_index(&mut s) {
-                s.indexing = false;
-                return tool_error(&format!("auto-index failed: {e}"));
+            if !db_is_empty(&s.db) {
+                indexing.store(false, Ordering::Relaxed);
+            } else {
+                log_err("auto-indexing (cold start)...");
+                if let Err(e) = do_index(&mut s) {
+                    indexing.store(false, Ordering::Relaxed);
+                    return tool_error(&format!("auto-index failed: {e}"));
+                }
+                indexing.store(false, Ordering::Relaxed);
             }
-            s.indexing = false;
         }
     }
 
     match tool_name {
         "search" => {
-            let mut s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
             let staleness_note = ensure_cruncher_fresh(&mut s);
             let result = tool_search(&s, arguments);
             match staleness_note {
@@ -1104,100 +1120,64 @@ fn handle_tool_call(state: &Arc<Mutex<ServerState>>, params: Value) -> Value {
             }
         }
         "blast" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_blast(&s.db, arguments)
         }
         "context" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_context(&s.db, &s.cache, arguments)
         }
         "status" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_status(&s)
         }
         "index" => {
-            let mut s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
-            match do_index(&mut s) {
+            indexing.store(true, Ordering::Relaxed);
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let result = match do_index(&mut s) {
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
-            }
+            };
+            indexing.store(false, Ordering::Relaxed);
+            result
         }
         "explain" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_explain(&s.db, arguments)
         }
         "topology" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_topology(&s.db, arguments)
         }
         "why" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_why(&s.db, &s.cache, s.cruncher_index.as_ref(), arguments)
         }
         "interrogate" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_interrogate(&s.db, arguments)
         }
         "doctor" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_doctor(&s)
         }
         "upgrade_index" => {
-            let mut s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
             match tool_upgrade_index(&mut s) {
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
             }
         }
         "constants" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_constants(&s.db, arguments)
         }
         "dead_code" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_dead_code(&s.db)
         }
         "briefing" => {
-            let s = match state.lock() {
-                Ok(s) => s,
-                Err(e) => return tool_error(&format!("lock error: {e}")),
-            };
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_briefing(&s.db, arguments)
         }
         _ => tool_error(&format!("unknown tool: {tool_name}")),
