@@ -30,6 +30,7 @@ struct ServerState {
     cruncher_index: Option<graphiq_core::cruncher::CruncherIndex>,
     watching: bool,
     last_cruncher_rebuild_at: Option<std::time::Instant>,
+    last_staleness_check_at: Option<std::time::Instant>,
 }
 
 fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
@@ -393,6 +394,7 @@ fn main() {
         cruncher_index: None,
         watching: watch,
         last_cruncher_rebuild_at: None,
+        last_staleness_check_at: None,
     }));
 
     let running = Arc::new(AtomicBool::new(true));
@@ -616,6 +618,13 @@ fn sync_project_root_from_db(state: &mut ServerState) {
 }
 
 fn ensure_cruncher_fresh(state: &mut ServerState) -> Option<String> {
+    if let Some(last) = state.last_staleness_check_at {
+        if last.elapsed().as_secs() < 5 {
+            return None;
+        }
+    }
+    state.last_staleness_check_at = Some(std::time::Instant::now());
+
     let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
     let manifest = match graphiq_core::manifest::read_manifest(db_dir) {
         Ok(Some(m)) => m,
