@@ -164,8 +164,18 @@ pub fn read_manifest(db_dir: &Path) -> Result<Option<Manifest>, String> {
     }
     let content = std::fs::read_to_string(&path)
         .map_err(|e| format!("read manifest {}: {e}", path.display()))?;
-    let manifest: Manifest = serde_json::from_str(&content)
+    let mut manifest: Manifest = serde_json::from_str(&content)
         .map_err(|e| format!("parse manifest {}: {e}", path.display()))?;
+
+    if manifest.schema_version < MANIFEST_SCHEMA_VERSION {
+        manifest.freshness.content_hash = None;
+        if manifest.artifacts.cruncher == ArtifactStatus::Ready {
+            manifest.artifacts.cruncher = ArtifactStatus::Stale;
+        }
+        manifest.schema_version = MANIFEST_SCHEMA_VERSION;
+        write_manifest(db_dir, &manifest)?;
+    }
+
     Ok(Some(manifest))
 }
 
