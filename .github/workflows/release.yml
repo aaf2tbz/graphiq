@@ -23,6 +23,9 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
             artifact: graphiq-x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04
+            artifact: graphiq-aarch64-unknown-linux-gnu
 
     runs-on: ${{ matrix.os }}
 
@@ -35,8 +38,13 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Install build dependencies (Linux)
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: sudo apt-get update && sudo apt-get install -y build-essential
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          fi
 
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }}

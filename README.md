@@ -106,6 +106,11 @@ cd graphiq
 cargo build --release
 ```
 
+<p align="center">
+Requirements: <strong>Rust 1.75+</strong>, a <strong>C compiler</strong> (gcc/clang — needed by tree-sitter grammar compilation), and <code>pkg-config</code>. SQLite is bundled. No external runtime dependencies.<br>
+macOS: <code>xcode-select --install</code> &nbsp;|&nbsp; Ubuntu/Debian: <code>sudo apt install build-essential pkg-config</code>
+</p>
+
 <p align="center">Installs <code>graphiq</code>, <code>graphiq-mcp</code>, and <code>graphiq-bench</code>.</p>
 
 <h2 align="center">Why it works</h2>

@@ -941,6 +941,184 @@ fn cmd_briefing(db_path: &std::path::Path, compact: bool) {
     }
 }
 
+struct DepCheck {
+    name: &'static str,
+    cmd: &'static str,
+    args: &'static [&'static str],
+    hint_macos: &'static str,
+    hint_linux: &'static str,
+    required: bool,
+}
+
+fn cmd_exists(cmd: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(cmd)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+        || std::process::Command::new("command")
+            .args(["-v", cmd])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+}
+
+fn confirm(prompt: &str) -> bool {
+    use std::io::{self, Write};
+    print!("{} [y/N] ", prompt);
+    let _ = io::stdout().flush();
+    let mut input = String::new();
+    if io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
+}
+
+fn check_build_dependencies() {
+    let is_macos = cfg!(target_os = "macos");
+
+    let deps = [
+        DepCheck {
+            name: "C compiler (cc/gcc/clang)",
+            cmd: "cc",
+            args: &["--version"],
+            hint_macos: "xcode-select --install",
+            hint_linux:
+                "sudo apt install build-essential  (or: sudo dnf install gcc / sudo pacman -S gcc)",
+            required: true,
+        },
+        DepCheck {
+            name: "Rust toolchain",
+            cmd: "rustc",
+            args: &["--version"],
+            hint_macos: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+            hint_linux: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+            required: false,
+        },
+        DepCheck {
+            name: "pkg-config",
+            cmd: "pkg-config",
+            args: &["--version"],
+            hint_macos: "brew install pkg-config",
+            hint_linux: "sudo apt install pkg-config  (or: sudo dnf install pkgconfig)",
+            required: !is_macos,
+        },
+        DepCheck {
+            name: "cmake",
+            cmd: "cmake",
+            args: &["--version"],
+            hint_macos: "brew install cmake",
+            hint_linux:
+                "sudo apt install cmake  (or: sudo dnf install cmake / sudo pacman -S cmake)",
+            required: false,
+        },
+    ];
+
+    let mut missing_required: Vec<&DepCheck> = Vec::new();
+    let mut missing_optional: Vec<&DepCheck> = Vec::new();
+
+    for dep in &deps {
+        if cmd_exists(dep.cmd) {
+            if let Ok(output) = std::process::Command::new(dep.cmd).args(dep.args).output() {
+                if output.status.success() {
+                    let ver = String::from_utf8_lossy(&output.stdout);
+                    let first_line = ver.lines().next().unwrap_or("");
+                    let short = if first_line.len() > 60 {
+                        format!("{}...", &first_line[..57])
+                    } else {
+                        first_line.to_string()
+                    };
+                    println!("  ✓ {} — {}", dep.name, short);
+                    continue;
+                }
+            }
+        }
+
+        if dep.required {
+            missing_required.push(dep);
+        } else {
+            missing_optional.push(dep);
+        }
+    }
+
+    if !missing_required.is_empty() {
+        println!();
+        eprintln!("  Missing required dependencies:");
+        for dep in &missing_required {
+            let hint = if is_macos {
+                dep.hint_macos
+            } else {
+                dep.hint_linux
+            };
+            eprintln!("    {} — install: {}", dep.name, hint);
+        }
+        println!();
+        if confirm("Install missing dependencies now?") {
+            for dep in &missing_required {
+                let hint = if is_macos {
+                    dep.hint_macos
+                } else {
+                    dep.hint_linux
+                };
+                if hint.contains("&&") || hint.contains("|") || hint.contains("curl") {
+                    println!("  Running: {}", hint);
+                    let _ = std::process::Command::new("sh").args(["-c", hint]).status();
+                } else {
+                    println!("  Running: {}", hint);
+                    let parts: Vec<&str> = hint.split_whitespace().collect();
+                    if !parts.is_empty() {
+                        let _ = std::process::Command::new(parts[0])
+                            .args(&parts[1..])
+                            .status();
+                    }
+                }
+            }
+            println!();
+        } else {
+            eprintln!(
+                "  Cannot continue without required dependencies. Install them and re-run setup."
+            );
+            std::process::exit(1);
+        }
+    }
+
+    if !missing_optional.is_empty() {
+        println!();
+        println!("  Optional dependencies not found:");
+        for dep in &missing_optional {
+            let hint = if is_macos {
+                dep.hint_macos
+            } else {
+                dep.hint_linux
+            };
+            println!("    {} — install: {}", dep.name, hint);
+            if dep.name.contains("cmake") {
+                println!(
+                    "      (needed for embed features; not required for core indexing/search)"
+                );
+            }
+        }
+        println!();
+        if confirm("Install optional dependencies now?") {
+            for dep in &missing_optional {
+                let hint = if is_macos {
+                    dep.hint_macos
+                } else {
+                    dep.hint_linux
+                };
+                println!("  Installing {}...", dep.name);
+                let parts: Vec<&str> = hint.split_whitespace().collect();
+                if !parts.is_empty() {
+                    let _ = std::process::Command::new(parts[0])
+                        .args(&parts[1..])
+                        .status();
+                }
+            }
+            println!();
+        }
+    }
+}
+
 fn cmd_setup(
     project: Option<&std::path::Path>,
     skip_index: bool,
@@ -1007,10 +1185,13 @@ fn cmd_setup(
         if found.is_none() {
             eprintln!("  error: graphiq-mcp not found on PATH.");
             eprintln!("  Install with: cargo install --path . --bin graphiq-mcp");
-            eprintln!("  Or add it to PATH and re-run setup.");
+            eprintln!("  Or: curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash");
+            eprintln!("  Then re-run setup.");
             std::process::exit(1);
         }
     }
+
+    check_build_dependencies();
 
     if dry_run {
         println!("  [dry-run] No files will be written.");
