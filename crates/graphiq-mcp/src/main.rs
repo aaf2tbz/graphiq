@@ -2382,14 +2382,11 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
             ];
 
             for (role_key, role_label) in &role_types {
-                let sql = format!(
-                    "SELECT COUNT(*) FROM symbol_structural_roles WHERE roles LIKE '%{}%'",
-                    role_key
-                );
+                let pattern = format!("%{}%", role_key);
                 let count: i64 = conn
-                    .prepare(&sql)
+                    .prepare("SELECT COUNT(*) FROM symbol_structural_roles WHERE roles LIKE ?")
                     .ok()
-                    .and_then(|mut s| s.query_row([], |r| r.get(0)).ok())
+                    .and_then(|mut s| s.query_row(rusqlite::params![pattern], |r| r.get(0)).ok())
                     .unwrap_or(0);
                 if count > 0 {
                     lines.push(format!("  {}: {}", role_label, count));
@@ -2540,45 +2537,71 @@ fn tool_interrogate(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
             return tool_ok(lines.join("\n"));
         }
 
-        let sub_filter = if let Some(focus) = focus_subsystem {
-            let focus_id = subsystems
+        let sub_filter_id = if let Some(focus) = focus_subsystem {
+            subsystems
                 .subsystems
                 .iter()
                 .find(|s| s.name.to_lowercase().contains(&focus.to_lowercase()))
-                .map(|s| s.id as i64);
-            match focus_id {
-                Some(id) => format!("AND subsystem_id = {}", id),
-                None => String::new(),
-            }
+                .map(|s| s.id as i64)
         } else {
-            String::new()
+            None
         };
 
-        let sql = format!(
-            "SELECT symbol_name, roles, subsystem_id, external_callers, internal_degree
-             FROM symbol_structural_roles
-             WHERE {} {}
-             ORDER BY external_callers DESC
-             LIMIT 50",
-            role_filter, sub_filter
-        );
-
         let conn = db.conn();
-        if let Ok(mut stmt) = conn.prepare(&sql) {
-            let rows: Vec<(String, String, i64, i64, i64)> = stmt
-                .query_map([], |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                    ))
-                })
-                .ok()
-                .map(|r| r.flatten().collect())
-                .unwrap_or_default();
 
+        let rows: Vec<(String, String, i64, i64, i64)> = if let Some(sub_id) = sub_filter_id {
+            let sql = format!(
+                "SELECT symbol_name, roles, subsystem_id, external_callers, internal_degree
+                 FROM symbol_structural_roles
+                 WHERE {} AND subsystem_id = ?
+                 ORDER BY external_callers DESC
+                 LIMIT 50",
+                role_filter,
+            );
+            conn.prepare(&sql)
+                .ok()
+                .and_then(|mut stmt| {
+                    stmt.query_map(rusqlite::params![sub_id], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    })
+                    .ok()
+                    .map(|r| r.flatten().collect())
+                })
+                .unwrap_or_default()
+        } else {
+            let sql = format!(
+                "SELECT symbol_name, roles, subsystem_id, external_callers, internal_degree
+                 FROM symbol_structural_roles
+                 WHERE {}
+                 ORDER BY external_callers DESC
+                 LIMIT 50",
+                role_filter,
+            );
+            conn.prepare(&sql)
+                .ok()
+                .and_then(|mut stmt| {
+                    stmt.query_map([], |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    })
+                    .ok()
+                    .map(|r| r.flatten().collect())
+                })
+                .unwrap_or_default()
+        };
+
+        if !rows.is_empty() {
             lines.push(format!("\nPattern '{}' ({} results):", pat, rows.len()));
             for (name, roles, sub_id, ext_callers, int_deg) in &rows {
                 let sub_name = subsystems

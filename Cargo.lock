@@ -1259,6 +1259,7 @@ version = "3.3.0"
 dependencies = [
  "graphiq-core",
  "notify",
+ "rusqlite",
  "serde",
  "serde_json",
  "signal-hook",
