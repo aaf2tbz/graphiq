@@ -14,7 +14,7 @@
     "package": "npm run build && electron-builder"
   },
   "dependencies": {
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^11.8.1",
     "brace-expansion": "^5.0.6",
     "fast-glob": "^3.3.3",
     "lucide-react": "^0.511.0",
@@ -27,7 +27,7 @@
     "@types/react": "^19.1.4",
     "@types/react-dom": "^19.1.5",
     "@vitejs/plugin-react": "^4.5.2",
-    "electron": "^42.2.0",
+    "electron": "^34.5.8",
     "electron-builder": "^26.0.12",
     "electron-vite": "^3.1.0",
     "typescript": "^5.8.3",
