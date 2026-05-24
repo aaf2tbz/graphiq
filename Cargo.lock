@@ -1209,6 +1209,7 @@ dependencies = [
  "regex",
  "rusqlite",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
