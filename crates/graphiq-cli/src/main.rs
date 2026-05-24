@@ -945,8 +945,9 @@ struct DepCheck {
     name: &'static str,
     cmd: &'static str,
     args: &'static [&'static str],
-    hint_macos: &'static str,
-    hint_linux: &'static str,
+    install_cmd_macos: &'static str,
+    install_cmd_linux: &'static str,
+    alt_hint: &'static str,
     required: bool,
 }
 
@@ -982,34 +983,36 @@ fn check_build_dependencies() {
             name: "C compiler (cc/gcc/clang)",
             cmd: "cc",
             args: &["--version"],
-            hint_macos: "xcode-select --install",
-            hint_linux:
-                "sudo apt install build-essential  (or: sudo dnf install gcc / sudo pacman -S gcc)",
+            install_cmd_macos: "xcode-select --install",
+            install_cmd_linux: "sudo apt install -y build-essential",
+            alt_hint: "Linux: sudo dnf install gcc, sudo pacman -S gcc",
             required: true,
         },
         DepCheck {
             name: "Rust toolchain",
             cmd: "rustc",
             args: &["--version"],
-            hint_macos: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
-            hint_linux: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+            install_cmd_macos: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+            install_cmd_linux: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+            alt_hint: "",
             required: false,
         },
         DepCheck {
             name: "pkg-config",
             cmd: "pkg-config",
             args: &["--version"],
-            hint_macos: "brew install pkg-config",
-            hint_linux: "sudo apt install pkg-config  (or: sudo dnf install pkgconfig)",
+            install_cmd_macos: "brew install pkg-config",
+            install_cmd_linux: "sudo apt install -y pkg-config",
+            alt_hint: "Linux: sudo dnf install pkgconfig",
             required: !is_macos,
         },
         DepCheck {
             name: "cmake",
             cmd: "cmake",
             args: &["--version"],
-            hint_macos: "brew install cmake",
-            hint_linux:
-                "sudo apt install cmake  (or: sudo dnf install cmake / sudo pacman -S cmake)",
+            install_cmd_macos: "brew install cmake",
+            install_cmd_linux: "sudo apt install -y cmake",
+            alt_hint: "needed for embed features only; Linux: sudo dnf install cmake, sudo pacman -S cmake",
             required: false,
         },
     ];
@@ -1041,31 +1044,32 @@ fn check_build_dependencies() {
         }
     }
 
+    let install_cmd = |dep: &DepCheck| -> &'static str {
+        if is_macos {
+            dep.install_cmd_macos
+        } else {
+            dep.install_cmd_linux
+        }
+    };
+
     if !missing_required.is_empty() {
         println!();
         eprintln!("  Missing required dependencies:");
         for dep in &missing_required {
-            let hint = if is_macos {
-                dep.hint_macos
-            } else {
-                dep.hint_linux
-            };
-            eprintln!("    {} — install: {}", dep.name, hint);
+            eprintln!("    {} — install: {}", dep.name, install_cmd(dep));
+            if !dep.alt_hint.is_empty() {
+                eprintln!("      {}", dep.alt_hint);
+            }
         }
         println!();
         if confirm("Install missing dependencies now?") {
             for dep in &missing_required {
-                let hint = if is_macos {
-                    dep.hint_macos
+                let cmd = install_cmd(dep);
+                println!("  Running: {}", cmd);
+                if cmd.contains('|') || cmd.contains("curl") {
+                    let _ = std::process::Command::new("sh").args(["-c", cmd]).status();
                 } else {
-                    dep.hint_linux
-                };
-                if hint.contains("&&") || hint.contains("|") || hint.contains("curl") {
-                    println!("  Running: {}", hint);
-                    let _ = std::process::Command::new("sh").args(["-c", hint]).status();
-                } else {
-                    println!("  Running: {}", hint);
-                    let parts: Vec<&str> = hint.split_whitespace().collect();
+                    let parts: Vec<&str> = cmd.split_whitespace().collect();
                     if !parts.is_empty() {
                         let _ = std::process::Command::new(parts[0])
                             .args(&parts[1..])
@@ -1086,32 +1090,25 @@ fn check_build_dependencies() {
         println!();
         println!("  Optional dependencies not found:");
         for dep in &missing_optional {
-            let hint = if is_macos {
-                dep.hint_macos
-            } else {
-                dep.hint_linux
-            };
-            println!("    {} — install: {}", dep.name, hint);
-            if dep.name.contains("cmake") {
-                println!(
-                    "      (needed for embed features; not required for core indexing/search)"
-                );
+            println!("    {} — install: {}", dep.name, install_cmd(dep));
+            if !dep.alt_hint.is_empty() {
+                println!("      {}", dep.alt_hint);
             }
         }
         println!();
         if confirm("Install optional dependencies now?") {
             for dep in &missing_optional {
-                let hint = if is_macos {
-                    dep.hint_macos
-                } else {
-                    dep.hint_linux
-                };
+                let cmd = install_cmd(dep);
                 println!("  Installing {}...", dep.name);
-                let parts: Vec<&str> = hint.split_whitespace().collect();
-                if !parts.is_empty() {
-                    let _ = std::process::Command::new(parts[0])
-                        .args(&parts[1..])
-                        .status();
+                if cmd.contains('|') || cmd.contains("curl") {
+                    let _ = std::process::Command::new("sh").args(["-c", cmd]).status();
+                } else {
+                    let parts: Vec<&str> = cmd.split_whitespace().collect();
+                    if !parts.is_empty() {
+                        let _ = std::process::Command::new(parts[0])
+                            .args(&parts[1..])
+                            .status();
+                    }
                 }
             }
             println!();
