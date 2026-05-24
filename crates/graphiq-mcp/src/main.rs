@@ -881,6 +881,11 @@ fn tools_list() -> Value {
                         "symbol": {
                             "type": "string",
                             "description": "Symbol name"
+                        },
+                        "context_lines": {
+                            "type": "integer",
+                            "description": "Number of surrounding file lines to include before/after the symbol (default 0)",
+                            "default": 0
                         }
                     },
                     "required": ["symbol"]
@@ -1225,7 +1230,32 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
         q = q.file_filter(f);
     }
 
-    let result = engine.search(&q);
+    let mut result = engine.search(&q);
+
+    let cluster = args
+        .get("cluster")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    if cluster && result.results.len() > 3 {
+        let mut by_file: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, scored) in result.results.iter().enumerate() {
+            let file = scored.file_path.clone().unwrap_or_default();
+            by_file.entry(file).or_default().push(i);
+        }
+        let mut clustered: Vec<usize> = Vec::new();
+        let mut backfill: Vec<usize> = Vec::new();
+        for (_, indices) in &by_file {
+            let take = indices.len().min(3);
+            clustered.extend(indices.iter().take(take));
+            backfill.extend(indices.iter().skip(take));
+        }
+        clustered.extend(backfill);
+        let mut new_results = Vec::with_capacity(clustered.len());
+        for idx in clustered {
+            new_results.push(result.results[idx].clone());
+        }
+        result.results = new_results;
+    }
 
     let mut lines = Vec::new();
     let cap_note = if requested_top_k > 50 {
@@ -1524,7 +1554,60 @@ fn tool_context(
     ));
     lines.push(String::new());
     lines.push("Source:".into());
-    lines.push(sym.source.clone());
+
+    let source_lines: Vec<&str> = sym.source.lines().collect();
+    let total_lines = source_lines.len();
+    let context_lines = args
+        .get("context_lines")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    if total_lines > 50 {
+        let head_n = 10.min(total_lines);
+        let tail_n = 5.min(total_lines.saturating_sub(head_n));
+        for line in source_lines.iter().take(head_n) {
+            lines.push(line.to_string());
+        }
+        if total_lines > head_n + tail_n {
+            lines.push(format!(
+                "    ... ({} lines omitted, showing {} of {})",
+                total_lines - head_n - tail_n,
+                head_n + tail_n,
+                total_lines
+            ));
+        }
+        for line in source_lines.iter().skip(total_lines - tail_n) {
+            lines.push(line.to_string());
+        }
+    } else {
+        lines.push(sym.source.clone());
+    }
+
+    if context_lines > 0 {
+        if let Ok(Some(file_path)) = db.file_path_for_id(sym.file_id) {
+            if let Ok(file_content) = std::fs::read_to_string(&file_path) {
+                let file_lines: Vec<&str> = file_content.lines().collect();
+                let line_start = sym.line_start as usize;
+                let line_end = sym.line_end as usize;
+                let start = line_start.saturating_sub(context_lines + 1);
+                let end = (line_end + context_lines).min(file_lines.len());
+                lines.push(String::new());
+                lines.push(format!(
+                    "Context ({} lines before, {} after):",
+                    line_start.saturating_sub(start + 1),
+                    end.saturating_sub(line_end)
+                ));
+                for (i, line) in file_lines.iter().enumerate().take(end).skip(start) {
+                    let marker = if i + 1 >= line_start && i + 1 <= line_end {
+                        ">"
+                    } else {
+                        " "
+                    };
+                    lines.push(format!("{} {:>4} | {}", marker, i + 1, line));
+                }
+            }
+        }
+    }
 
     if let Some(n) = neighborhood {
         if !n.callers.is_empty() {
@@ -2750,7 +2833,25 @@ fn tool_briefing(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
     };
 
     match result {
-        Ok(text) => tool_ok(text),
+        Ok(text) => {
+            let mut output = text;
+            output.push_str("\n\nQuery families (how to search effectively):\n");
+            output.push_str(
+                "  symbol-exact:     'RateLimiter', 'handleLogin' — exact symbol names\n",
+            );
+            output.push_str("  symbol-partial:   'rate_limit' — partial symbol name matches\n");
+            output.push_str("  file-path:        'src/auth/middleware' — find by file path\n");
+            output.push_str("  error-debug:      'panic: index out of bounds' — error messages\n");
+            output.push_str(
+                "  nl-descriptive:   'how does authentication work' — natural language\n",
+            );
+            output.push_str("  nl-abstract:      'error handling patterns' — abstract concepts\n");
+            output.push_str("  cross-cutting:    'all middleware' — cross-cutting concerns\n");
+            output.push_str(
+                "  relationship:     'callers of authenticateUser' — relationship queries\n",
+            );
+            tool_ok(output)
+        }
         Err(e) => tool_error(&format!("briefing failed: {e}")),
     }
 }
