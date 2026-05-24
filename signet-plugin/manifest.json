@@ -23,7 +23,9 @@
 		"prompt:contribute:user-prompt-submit",
 		"mcp:tool",
 		"cli:command",
-		"connector:capability"
+		"connector:capability",
+		"session:lifecycle",
+		"knowledge:emit"
 	],
 	"surfaces": {
 		"daemonRoutes": [],
@@ -87,7 +89,15 @@
 				"requiredCapabilities": ["mcp:tool", "code:search"]
 			}
 		],
-		"dashboardPanels": [],
+		"dashboardPanels": [
+			{
+				"id": "graphiq-index-health",
+				"title": "GraphIQ Index Health",
+				"summary": "Shows file count, symbol count, freshness, and search mode for the active GraphIQ index",
+				"refreshInterval": 30,
+				"requiredCapabilities": ["code:status"]
+			}
+		],
 		"sdkClients": [],
 		"connectorCapabilities": [
 			{
