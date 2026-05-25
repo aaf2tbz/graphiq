@@ -71,6 +71,7 @@ pub mod embed;
 pub mod files;
 pub mod fts;
 pub mod graph;
+pub mod impact;
 pub mod index;
 pub mod languages;
 pub mod manifest;
