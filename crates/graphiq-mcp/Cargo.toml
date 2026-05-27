@@ -1,6 +1,6 @@
 [package]
 name = "graphiq-mcp"
-version = "4.1.4"
+version = "4.2.0"
 edition = "2021"
 
 [[bin]]
@@ -8,9 +8,10 @@ name = "graphiq-mcp"
 path = "src/main.rs"
 
 [dependencies]
-graphiq-core = { path = "../graphiq-core" }
+graphiq-core = { path = "../graphiq-core", features = ["gpu"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 signal-hook = "0.3"
 notify = { version = "7" }
 rusqlite = { version = "0.34", features = ["bundled"] }
+rayon = "1.10"

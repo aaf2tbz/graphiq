@@ -71,6 +71,7 @@ share the same words.
 ```bash
 graphiq index /path/to/project
 graphiq search "rate limit middleware"
+graphiq impact --project /path/to/project
 ```
 
 <p align="center">Or wire it into an editor/agent harness:</p>
@@ -206,6 +207,7 @@ Current v3.1 benchmarks cover 300 queries across signetai, esbuild, and tokio. F
 <tr><td align="center"><code>search</code></td><td align="center">Ranked symbol search with filters</td></tr>
 <tr><td align="center"><code>context</code></td><td align="center">Source plus structural neighborhood</td></tr>
 <tr><td align="center"><code>blast</code></td><td align="center">Forward/backward impact analysis</td></tr>
+<tr><td align="center"><code>impact</code></td><td align="center">Git diff impact reports — changed symbols, dependents, tests, risk</td></tr>
 <tr><td align="center"><code>interrogate</code></td><td align="center">Deep symbol inspection</td></tr>
 <tr><td align="center"><code>topology</code></td><td align="center">Local code topology</td></tr>
 <tr><td align="center"><code>why</code></td><td align="center">Ranking explanation</td></tr>
@@ -331,6 +333,7 @@ npm run package
 cargo bench
 graphiq index .
 graphiq search "query family router"
+graphiq impact --project .
 ```
 
 <p align="center">Requirements: Rust 1.75+, macOS or Linux.</p>

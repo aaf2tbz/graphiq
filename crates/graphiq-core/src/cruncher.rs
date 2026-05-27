@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::db::GraphDb;
+use crate::gpu_compute::flatten_cruncher_data;
 use crate::tokenize::decompose_identifier;
 use crate::tokenize::extract_terms;
 
@@ -187,6 +188,8 @@ pub fn test_penalty(file_paths: &HashMap<i64, String>, file_id: i64) -> f64 {
 }
 
 pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
+    use rayon::prelude::*;
+
     let conn = db.conn();
 
     let mut stmt = conn
@@ -296,22 +299,18 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         adj.dedup_by(|a, b| b.target == a.target);
     }
 
-    eprintln!("  Cruncher: building per-symbol term sets...");
-    let term_sets: Vec<TermSet> = (0..n)
+    eprintln!("  Cruncher: building per-symbol term sets (parallel)...");
+    let raw_term_lists: Vec<Vec<(String, f64)>> = (0..n)
+        .into_par_iter()
         .map(|i| {
             let name_terms = cr_tokenize(&symbol_names[i]);
-            let name_set: HashSet<String> = name_terms.iter().cloned().collect();
-
             let sig_text = symbol_sigs[i].as_deref().unwrap_or("");
             let sig_terms_vec = cr_tokenize(sig_text);
-            let sig_set: HashSet<String> = sig_terms_vec.iter().cloned().collect();
-
             let hint_terms = cr_tokenize(&symbol_hints[i]);
             let doc_terms = match &symbol_docs[i] {
                 Some(doc) => cr_tokenize(doc),
                 None => Vec::new(),
             };
-
             let src = &symbol_sources[i];
             let src_terms = if src.len() > 4000 {
                 let end = src.floor_char_boundary(4000);
@@ -327,91 +326,89 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
             all_terms.extend(doc_terms);
             all_terms.extend(src_terms);
 
-            let mut tf: HashMap<String, f64> = HashMap::new();
-            let total = all_terms.len() as f64;
+            let mut counts: HashMap<String, f64> = HashMap::new();
             for t in &all_terms {
-                *tf.entry(t.clone()).or_default() += 1.0;
+                *counts.entry(t.clone()).or_default() += 1.0;
             }
-            for v in tf.values_mut() {
-                *v /= total;
-            }
-
-            TermSet {
-                terms: tf,
-                name_terms: name_set,
-                sig_terms: sig_set,
-            }
+            counts.into_iter().collect()
         })
         .collect();
 
-    eprintln!("  Cruncher: computing global IDF...");
-    let mut doc_freq: HashMap<String, usize> = HashMap::new();
-    for ts in &term_sets {
-        for term in ts.terms.keys() {
-            *doc_freq.entry(term.clone()).or_default() += 1;
+    eprintln!("  Cruncher: flattening for GPU/parallel compute...");
+    let flat = flatten_cruncher_data(&raw_term_lists, n, &outgoing);
+
+    let gpu_ctx = gpu_context();
+    let results = {
+        #[cfg(feature = "gpu")]
+        {
+            if let Some(ref ctx) = gpu_ctx {
+                crate::gpu_compute::accelerated_compute_gpu(&flat, n, ctx)
+            } else {
+                crate::gpu_compute::accelerated_compute(&flat, n)
+            }
         }
-    }
-    let n_f = n as f64;
-    let global_idf: HashMap<String, f64> = doc_freq
-        .iter()
-        .map(|(term, &df)| {
-            let idf = (1.0 + n_f / (df as f64 + 1.0)).ln();
-            (term.clone(), idf)
-        })
-        .collect();
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = gpu_ctx;
+            crate::gpu_compute::accelerated_compute(&flat, n)
+        }
+    };
+    eprintln!("  Cruncher: {}", results.stats);
 
-    let term_sets: Vec<TermSet> = term_sets
-        .into_iter()
-        .map(|mut ts| {
-            let mut scored: Vec<(String, f64)> = ts
-                .terms
+    let mut global_idf: HashMap<String, f64> = HashMap::with_capacity(flat.id_to_term.len());
+    for (&id, term) in &flat.id_to_term {
+        let idf = results.idf_values.get(id as usize).copied().unwrap_or(1.0);
+        global_idf.insert(term.clone(), idf as f64);
+    }
+
+    let term_sets: Vec<TermSet> = (0..n)
+        .into_par_iter()
+        .map(|i| {
+            let [start, len] = flat.symbol_offsets[i];
+            let s = start as usize;
+            let l = len as usize;
+            let mut tf: HashMap<String, f64> = HashMap::with_capacity(l);
+            for j in 0..l {
+                let tid = flat.term_ids[s + j];
+                let norm = results.normalized_tf[s + j] as f64;
+                if let Some(term) = flat.id_to_term.get(&tid) {
+                    tf.insert(term.clone(), norm);
+                }
+            }
+            let name_terms = cr_tokenize(&symbol_names[i]).into_iter().collect();
+            let sig_terms = cr_tokenize(symbol_sigs[i].as_deref().unwrap_or(""))
+                .into_iter()
+                .collect();
+
+            let mut scored: Vec<(String, f64)> = tf
                 .iter()
-                .map(|(t, &tf)| {
+                .map(|(t, &tf_val)| {
                     let idf = global_idf.get(t).copied().unwrap_or(1.0);
-                    (t.clone(), tf * idf)
+                    (t.clone(), tf_val * idf)
                 })
                 .collect();
             scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
             scored.truncate(TOP_K_TERMS);
             let mut filtered = HashMap::new();
-            for (t, _score) in scored {
-                let tf = ts.terms.get(&t).copied().unwrap_or(0.0);
-                filtered.insert(t, tf);
+            for (t, _) in scored {
+                let tf_val = tf.get(&t).copied().unwrap_or(0.0);
+                filtered.insert(t, tf_val);
             }
-            ts.terms = filtered;
-            ts
+
+            TermSet {
+                terms: filtered,
+                name_terms,
+                sig_terms,
+            }
         })
         .collect();
 
-    eprintln!("  Cruncher: computing bridging potential...");
-    let bridging: Vec<f64> = (0..n)
-        .map(|i| {
-            if outgoing[i].is_empty() {
-                return 0.0;
-            }
-            let self_terms: HashSet<&str> = term_sets[i].terms.keys().map(|s| s.as_str()).collect();
-            let mut novel_count = 0usize;
-            let mut total_terms = 0usize;
-            for edge in outgoing[i].iter().take(20) {
-                for term in term_sets[edge.target].terms.keys() {
-                    total_terms += 1;
-                    if !self_terms.contains(term.as_str()) {
-                        novel_count += 1;
-                    }
-                }
-            }
-            if total_terms == 0 {
-                return 0.0;
-            }
-            let novel_ratio = novel_count as f64 / total_terms as f64;
-            let degree_boost = (1.0 + outgoing[i].len() as f64).ln_1p() * 0.3;
-            novel_ratio * (1.0 + degree_boost)
-        })
-        .collect();
+    let bridging = results.bridging;
 
     eprintln!("  Cruncher: done ({} symbols)", n);
 
     let structural_degree: Vec<f64> = (0..n)
+        .into_par_iter()
         .map(|i| {
             let out_deg = outgoing[i].len() as f64;
             let in_deg = incoming[i].len() as f64;
@@ -421,6 +418,7 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
 
     eprintln!("  Cruncher: building neighbor term fingerprints...");
     let neighbor_terms: Vec<HashSet<String>> = (0..n)
+        .into_par_iter()
         .map(|i| {
             let mut terms = HashSet::new();
             for edge in outgoing[i].iter().take(30) {
@@ -439,6 +437,7 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
 
     eprintln!("  Cruncher: extracting structural alias terms...");
     let alias_terms: Vec<HashSet<String>> = (0..n)
+        .into_par_iter()
         .map(|i| {
             let hint_text = &symbol_hints[i];
             if let Some(alias_start) = hint_text.find("alias:") {
@@ -477,6 +476,29 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         alias_terms,
         collision_names,
     })
+}
+
+#[cfg(feature = "gpu")]
+fn gpu_context() -> Option<std::sync::Arc<crate::gpu_compute::GpuContext>> {
+    use std::sync::Arc;
+    use std::sync::OnceLock;
+    static CTX: OnceLock<Option<Arc<crate::gpu_compute::GpuContext>>> = OnceLock::new();
+    CTX.get_or_init(|| match crate::gpu_compute::GpuContext::new() {
+        Some(ctx) => {
+            eprintln!("  Cruncher: GPU context initialized (wgpu)");
+            Some(Arc::new(ctx))
+        }
+        None => {
+            eprintln!("  Cruncher: no GPU available, using CPU+rayon");
+            None
+        }
+    })
+    .clone()
+}
+
+#[cfg(not(feature = "gpu"))]
+fn gpu_context() -> Option<()> {
+    None
 }
 
 pub fn build_query_terms(query: &str, idf: &HashMap<String, f64>) -> Vec<QueryTerm> {

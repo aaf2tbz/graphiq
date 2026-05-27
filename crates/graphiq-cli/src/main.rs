@@ -49,6 +49,22 @@ enum Commands {
         #[arg(long, default_value = "both")]
         direction: String,
     },
+    Impact {
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        project: PathBuf,
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+        #[arg(long)]
+        base: Option<String>,
+        #[arg(long)]
+        head: Option<String>,
+        #[arg(short, long, default_value_t = 2)]
+        depth: usize,
+        #[arg(short, long, default_value_t = 30)]
+        top: usize,
+        #[arg(long)]
+        json: bool,
+    },
     Status {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
@@ -171,6 +187,23 @@ fn main() {
             depth,
             direction,
         } => cmd_blast(&symbol, &db, depth, &direction),
+        Commands::Impact {
+            project,
+            db,
+            base,
+            head,
+            depth,
+            top,
+            json,
+        } => cmd_impact(
+            &project,
+            &db,
+            base.as_deref(),
+            head.as_deref(),
+            depth,
+            top,
+            json,
+        ),
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
         Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
@@ -454,6 +487,58 @@ fn cmd_blast(symbol_name: &str, db_path: &std::path::Path, depth: usize, directi
         Ok(radius) => println!("{}", graphiq_core::blast::format_blast_report(&radius)),
         Err(e) => {
             eprintln!("error computing blast radius: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn cmd_impact(
+    project_path: &std::path::Path,
+    db_path: &std::path::Path,
+    base: Option<&str>,
+    head: Option<&str>,
+    depth: usize,
+    top: usize,
+    json: bool,
+) {
+    let project = project_path
+        .canonicalize()
+        .unwrap_or_else(|_| project_path.to_path_buf());
+    let db_path = resolve_db(&project, db_path);
+
+    if !db_path.exists() {
+        eprintln!("database not found: {}", db_path.display());
+        eprintln!("run `graphiq index {}` first", project.display());
+        std::process::exit(1);
+    }
+
+    let db = open_db_or_exit(&db_path);
+    let source = match base {
+        Some(base) => graphiq_core::impact::ChangeSource::BaseRef {
+            base: base.to_string(),
+            head: head.unwrap_or("HEAD").to_string(),
+        },
+        None => graphiq_core::impact::ChangeSource::WorkingTree,
+    };
+    let options = graphiq_core::impact::ImpactOptions {
+        project_root: project,
+        db_path: Some(db_path),
+        source,
+        depth: depth.min(10),
+        top: top.min(200),
+    };
+
+    match graphiq_core::impact::analyze_git_impact(&db, options) {
+        Ok(report) if json => match serde_json::to_string_pretty(&report) {
+            Ok(text) => println!("{text}"),
+            Err(e) => {
+                eprintln!("error serializing impact report: {e}");
+                std::process::exit(1);
+            }
+        },
+        Ok(report) => println!("{}", graphiq_core::impact::format_impact_report(&report)),
+        Err(e) => {
+            eprintln!("impact analysis failed: {e}");
             std::process::exit(1);
         }
     }
@@ -818,6 +903,36 @@ fn cmd_doctor(db_path: &std::path::Path) {
     } else {
         println!("  DIAGNOSIS: all artifacts healthy");
     }
+
+    println!();
+    print!("  GPU: ");
+    if std::env::consts::OS == "macos" {
+        #[cfg(feature = "gpu")]
+        {
+            match graphiq_core::gpu_compute::GpuContext::new() {
+                Some(_) => println!("Metal (initialized OK)"),
+                None => println!("Metal (init failed — will use CPU)"),
+            }
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            println!("Metal (built-in, GPU build not enabled)");
+        }
+    } else if vulkan_available() {
+        #[cfg(feature = "gpu")]
+        {
+            match graphiq_core::gpu_compute::GpuContext::new() {
+                Some(_) => println!("Vulkan (initialized OK)"),
+                None => println!("Vulkan loader found but GPU init failed — will use CPU"),
+            }
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            println!("Vulkan loader found (GPU build not enabled)");
+        }
+    } else {
+        println!("MISSING — install libvulkan1 for GPU acceleration");
+    }
 }
 
 fn cmd_upgrade_index(db_path: &std::path::Path) {
@@ -1029,6 +1144,16 @@ fn check_build_dependencies() {
             required: false,
         },
     ];
+
+    if !is_macos {
+        if vulkan_available() {
+            println!("  ✓ Vulkan loader — GPU acceleration available");
+        } else {
+            println!("  ⚠ Vulkan loader not found — GPU acceleration disabled");
+            println!("    Install: sudo apt install -y libvulkan1");
+            println!("    Or:      sudo dnf install vulkan-loader, sudo pacman -S vulkan-driver");
+        }
+    }
 
     let mut missing_required: Vec<&DepCheck> = Vec::new();
     let mut missing_optional: Vec<&DepCheck> = Vec::new();
@@ -1737,6 +1862,11 @@ fn cmd_setup(
     );
     println!(
         "    graphiq blast RateLimiter --db {}/.graphiq/graphiq.db",
+        project_path.display()
+    );
+    println!("    graphiq impact --project {}", project_path.display());
+    println!(
+        "    graphiq doctor --db {}/.graphiq/graphiq.db",
         project_path.display()
     );
     println!("    graphiq demo");
@@ -2969,6 +3099,29 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
+fn vulkan_available() -> bool {
+    std::path::Path::new("/usr/lib/x86_64-linux-gnu/libvulkan.so.1").exists()
+        || std::path::Path::new("/usr/lib/aarch64-linux-gnu/libvulkan.so.1").exists()
+        || std::process::Command::new("ldconfig")
+            .args(["-p"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("libvulkan.so.1"))
+            .unwrap_or(false)
+}
+
+fn check_gpu_runtime() {
+    if std::env::consts::OS == "macos" {
+        println!("  GPU: Metal available (built-in)");
+    } else if vulkan_available() {
+        println!("  GPU: Vulkan loader found");
+    } else {
+        eprintln!("  GPU: Vulkan loader not found — GPU acceleration disabled");
+        eprintln!("    Install: sudo apt install -y libvulkan1");
+        eprintln!("    Or:      sudo dnf install vulkan-loader");
+    }
+}
+
 fn cmd_update(install_dir: Option<&str>, yes: bool) {
     let install_dir = install_dir
         .map(PathBuf::from)
@@ -3130,6 +3283,8 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
         .unwrap_or_else(|| "unknown".to_string());
 
     println!("  Updated to {}.", new_version);
+
+    check_gpu_runtime();
 
     let mcp_running = std::process::Command::new("pgrep")
         .args(["-x", "graphiq-mcp"])

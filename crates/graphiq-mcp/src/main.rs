@@ -421,6 +421,18 @@ fn main() {
         }
     }
 
+    {
+        let n_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads)
+            .thread_name(|i| format!("graphiq-cpu-{i}"))
+            .build_global()
+            .ok();
+        log_err(&format!("rayon pool: {} threads", n_threads));
+    }
+
     log_err("ready");
 
     if watch {
@@ -926,6 +938,40 @@ fn tools_list() -> Value {
                 }
             },
             {
+                "name": "impact",
+                "description": "Analyze current git changes or a base-ref diff and report changed symbols, affected dependents/dependencies, likely tests, risk, and index warnings. Use before editing, reviewing, or choosing tests for a local change set.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "base": {
+                            "type": "string",
+                            "description": "Optional base ref. When omitted, analyzes staged + unstaged + untracked working tree changes."
+                        },
+                        "head": {
+                            "type": "string",
+                            "description": "Optional head ref for base...head comparison (default HEAD)"
+                        },
+                        "depth": {
+                            "type": "integer",
+                            "description": "Blast traversal depth (default 2, max 10)",
+                            "default": 2
+                        },
+                        "top": {
+                            "type": "integer",
+                            "description": "Max entries per report section (default 30, max 200)",
+                            "default": 30
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["text", "json"],
+                            "description": "Output format (default text)",
+                            "default": "text"
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
                 "name": "interrogate",
                 "description": "Ask a structural question about the codebase architecture — subsystems, entry points, error boundaries, coupling, cohesion, orchestrators. Not a symbol search. Use when you need to understand how things fit together rather than where a specific thing lives.",
                 "inputSchema": {
@@ -1084,7 +1130,11 @@ fn handle_tool_call(
         return tool_error("arguments must be a JSON object");
     }
 
-    if tool_name != "index" && tool_name != "status" && tool_name != "doctor" {
+    if tool_name != "index"
+        && tool_name != "status"
+        && tool_name != "doctor"
+        && tool_name != "impact"
+    {
         if indexing.load(Ordering::Acquire) {
             return tool_ok("Indexing in progress — please retry in a few seconds.".into());
         }
@@ -1141,6 +1191,10 @@ fn handle_tool_call(
         "blast" => {
             let s = state.lock().unwrap_or_else(|e| e.into_inner());
             tool_blast(&s.db, arguments)
+        }
+        "impact" => {
+            let s = state.lock().unwrap_or_else(|e| e.into_inner());
+            tool_impact(&s, arguments)
         }
         "context" => {
             let s = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -1513,6 +1567,56 @@ fn tool_blast(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
             tool_ok(output)
         }
         Err(e) => tool_error(&format!("blast computation failed: {e}")),
+    }
+}
+
+fn tool_impact(state: &ServerState, args: Value) -> Value {
+    if db_is_empty(&state.db) {
+        return tool_error("database is empty; run index before impact analysis");
+    }
+
+    let depth = args
+        .get("depth")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(2)
+        .min(10) as usize;
+    let top = args
+        .get("top")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(30)
+        .min(200) as usize;
+    let format = args
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("text");
+    let source = match args.get("base").and_then(|v| v.as_str()) {
+        Some(base) if !base.trim().is_empty() => graphiq_core::impact::ChangeSource::BaseRef {
+            base: base.to_string(),
+            head: args
+                .get("head")
+                .and_then(|v| v.as_str())
+                .filter(|h| !h.trim().is_empty())
+                .unwrap_or("HEAD")
+                .to_string(),
+        },
+        _ => graphiq_core::impact::ChangeSource::WorkingTree,
+    };
+
+    let options = graphiq_core::impact::ImpactOptions {
+        project_root: state.project_root.clone(),
+        db_path: Some(state.db_path.clone()),
+        source,
+        depth,
+        top,
+    };
+
+    match graphiq_core::impact::analyze_git_impact(&state.db, options) {
+        Ok(report) if format == "json" => match serde_json::to_string_pretty(&report) {
+            Ok(text) => tool_ok(text),
+            Err(e) => tool_error(&format!("impact report serialization failed: {e}")),
+        },
+        Ok(report) => tool_ok(graphiq_core::impact::format_impact_report(&report)),
+        Err(e) => tool_error(&format!("impact analysis failed: {e}")),
     }
 }
 

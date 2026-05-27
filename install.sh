@@ -24,6 +24,12 @@ info()  { echo "${GREEN}  ✓${RESET} $*"; }
 warn()  { echo "${YELLOW}  ⚠${RESET} $*"; }
 error() { echo "${RED}  ✗${RESET} $*" >&2; }
 
+confirm() {
+    printf "  %s [y/N] " "$1"
+    read -r reply
+    [ "$reply" = "y" ] || [ "$reply" = "Y" ] || [ "$reply" = "yes" ]
+}
+
 need_cmd() {
     if ! command -v "$1" >/dev/null 2>&1; then
         error "requires '$1' but it is not installed"
@@ -134,6 +140,27 @@ do_install() {
     need_cmd curl "https://curl.se/"
     need_cmd tar  "system package manager"
 
+    if [ "$(uname -s)" = "Linux" ]; then
+        if ! ldconfig -p 2>/dev/null | grep -q "libvulkan.so.1" && \
+           ! [ -f /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ] && \
+           ! [ -f /usr/lib/aarch64-linux-gnu/libvulkan.so.1 ]; then
+            warn "Vulkan loader (libvulkan) not found — GPU acceleration requires it"
+            if confirm "Install Vulkan loader now?"; then
+                if command -v apt >/dev/null 2>&1; then
+                    sudo apt install -y libvulkan1
+                elif command -v dnf >/dev/null 2>&1; then
+                    sudo dnf install -y vulkan-loader
+                elif command -v pacman >/dev/null 2>&1; then
+                    sudo pacman -S --noconfirm vulkan-driver
+                else
+                    echo "  Install manually: libvulkan1 (apt), vulkan-loader (dnf), vulkan-driver (pacman)"
+                fi
+            fi
+        else
+            info "Vulkan loader found"
+        fi
+    fi
+
     local platform
     platform="$(detect_platform)"
     local version="${GRAPHIQ_VERSION:-$(fetch_latest_version)}"
@@ -227,9 +254,11 @@ do_install() {
 
     echo ""
     echo "${BOLD}  Next steps:${RESET}"
+    echo "    graphiq setup --project /path/to/project"
     echo "    graphiq index /path/to/project"
     echo "    graphiq search \"rate limit middleware\""
-    echo "    graphiq setup --project /path/to/project"
+    echo "    graphiq impact --project /path/to/project"
+    echo "    graphiq doctor"
     echo ""
 }
 

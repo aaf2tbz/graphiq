@@ -1,6 +1,6 @@
 [package]
 name = "graphiq-cli"
-version = "4.1.4"
+version = "4.2.0"
 edition = "2021"
 
 [[bin]]
@@ -19,3 +19,4 @@ tempfile = "3"
 [features]
 default = []
 embed = ["graphiq-core/embed"]
+gpu = ["graphiq-core/gpu"]
