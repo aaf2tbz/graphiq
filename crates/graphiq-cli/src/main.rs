@@ -907,9 +907,29 @@ fn cmd_doctor(db_path: &std::path::Path) {
     println!();
     print!("  GPU: ");
     if std::env::consts::OS == "macos" {
-        println!("Metal (available)");
+        #[cfg(feature = "gpu")]
+        {
+            match graphiq_core::gpu_compute::GpuContext::new() {
+                Some(_) => println!("Metal (initialized OK)"),
+                None => println!("Metal (init failed — will use CPU)"),
+            }
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            println!("Metal (built-in, GPU build not enabled)");
+        }
     } else if vulkan_available() {
-        println!("Vulkan loader found");
+        #[cfg(feature = "gpu")]
+        {
+            match graphiq_core::gpu_compute::GpuContext::new() {
+                Some(_) => println!("Vulkan (initialized OK)"),
+                None => println!("Vulkan loader found but GPU init failed — will use CPU"),
+            }
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            println!("Vulkan loader found (GPU build not enabled)");
+        }
     } else {
         println!("MISSING — install libvulkan1 for GPU acceleration");
     }
@@ -1842,6 +1862,11 @@ fn cmd_setup(
     );
     println!(
         "    graphiq blast RateLimiter --db {}/.graphiq/graphiq.db",
+        project_path.display()
+    );
+    println!("    graphiq impact --project {}", project_path.display());
+    println!(
+        "    graphiq doctor --db {}/.graphiq/graphiq.db",
         project_path.display()
     );
     println!("    graphiq demo");
