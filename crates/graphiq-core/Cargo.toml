@@ -41,10 +41,14 @@ llama-cpp-2 = { version = "0.1", optional = true }
 dirs = { version = "6", optional = true }
 ureq = { version = "3", optional = true }
 
+wgpu = { version = "24", optional = true }
+pollster = { version = "0.4", optional = true }
+
 [features]
 default = []
 embed-candle = ["candle-core", "candle-nn", "candle-transformers", "tokenizers", "hf-hub"]
 embed = ["llama-cpp-2", "dirs", "ureq"]
+gpu = ["wgpu", "pollster"]
 
 [dev-dependencies]
 tempfile = "3"

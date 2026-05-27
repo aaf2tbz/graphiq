@@ -421,6 +421,18 @@ fn main() {
         }
     }
 
+    {
+        let n_threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(n_threads)
+            .thread_name(|i| format!("graphiq-cpu-{i}"))
+            .build_global()
+            .ok();
+        log_err(&format!("rayon pool: {} threads", n_threads));
+    }
+
     log_err("ready");
 
     if watch {

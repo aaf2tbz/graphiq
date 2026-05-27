@@ -70,6 +70,7 @@ pub mod edge_evidence;
 pub mod embed;
 pub mod files;
 pub mod fts;
+pub mod gpu_compute;
 pub mod graph;
 pub mod impact;
 pub mod index;
