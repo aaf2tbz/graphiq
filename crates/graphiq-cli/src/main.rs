@@ -903,6 +903,16 @@ fn cmd_doctor(db_path: &std::path::Path) {
     } else {
         println!("  DIAGNOSIS: all artifacts healthy");
     }
+
+    println!();
+    print!("  GPU: ");
+    if std::env::consts::OS == "macos" {
+        println!("Metal (available)");
+    } else if vulkan_available() {
+        println!("Vulkan loader found");
+    } else {
+        println!("MISSING — install libvulkan1 for GPU acceleration");
+    }
 }
 
 fn cmd_upgrade_index(db_path: &std::path::Path) {
@@ -1114,6 +1124,16 @@ fn check_build_dependencies() {
             required: false,
         },
     ];
+
+    if !is_macos {
+        if vulkan_available() {
+            println!("  ✓ Vulkan loader — GPU acceleration available");
+        } else {
+            println!("  ⚠ Vulkan loader not found — GPU acceleration disabled");
+            println!("    Install: sudo apt install -y libvulkan1");
+            println!("    Or:      sudo dnf install vulkan-loader, sudo pacman -S vulkan-driver");
+        }
+    }
 
     let mut missing_required: Vec<&DepCheck> = Vec::new();
     let mut missing_optional: Vec<&DepCheck> = Vec::new();
@@ -3054,6 +3074,29 @@ fn human_bytes(bytes: u64) -> String {
     }
 }
 
+fn vulkan_available() -> bool {
+    std::path::Path::new("/usr/lib/x86_64-linux-gnu/libvulkan.so.1").exists()
+        || std::path::Path::new("/usr/lib/aarch64-linux-gnu/libvulkan.so.1").exists()
+        || std::process::Command::new("ldconfig")
+            .args(["-p"])
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains("libvulkan.so.1"))
+            .unwrap_or(false)
+}
+
+fn check_gpu_runtime() {
+    if std::env::consts::OS == "macos" {
+        println!("  GPU: Metal available (built-in)");
+    } else if vulkan_available() {
+        println!("  GPU: Vulkan loader found");
+    } else {
+        eprintln!("  GPU: Vulkan loader not found — GPU acceleration disabled");
+        eprintln!("    Install: sudo apt install -y libvulkan1");
+        eprintln!("    Or:      sudo dnf install vulkan-loader");
+    }
+}
+
 fn cmd_update(install_dir: Option<&str>, yes: bool) {
     let install_dir = install_dir
         .map(PathBuf::from)
@@ -3215,6 +3258,8 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
         .unwrap_or_else(|| "unknown".to_string());
 
     println!("  Updated to {}.", new_version);
+
+    check_gpu_runtime();
 
     let mcp_running = std::process::Command::new("pgrep")
         .args(["-x", "graphiq-mcp"])

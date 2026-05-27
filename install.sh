@@ -134,6 +134,15 @@ do_install() {
     need_cmd curl "https://curl.se/"
     need_cmd tar  "system package manager"
 
+    if [ "$(uname -s)" = "Linux" ]; then
+        if ! ldconfig -p 2>/dev/null | grep -q "libvulkan.so.1" && \
+           ! [ -f /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ] && \
+           ! [ -f /usr/lib/aarch64-linux-gnu/libvulkan.so.1 ]; then
+            warn "Vulkan loader (libvulkan) not found — GPU acceleration requires it"
+            echo "  Install: sudo apt install -y libvulkan1  (or: sudo dnf install vulkan-loader)"
+        fi
+    fi
+
     local platform
     platform="$(detect_platform)"
     local version="${GRAPHIQ_VERSION:-$(fetch_latest_version)}"

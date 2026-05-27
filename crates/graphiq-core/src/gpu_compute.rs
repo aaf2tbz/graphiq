@@ -288,13 +288,11 @@ mod wgpu_backend {
         ) -> Option<Vec<f32>> {
             let counts_b = self.storage_init(&super::f32_to_bytes(counts), "tf-c", true);
             let offsets_b = self.storage_init(&super::u32pairs_to_bytes(offsets), "tf-o", false);
-            let params_b = self.uniform_init(
-                &[n_symbols]
-                    .iter()
-                    .flat_map(|v| v.to_ne_bytes())
-                    .collect::<Vec<_>>(),
-                "tf-p",
-            );
+            let params_bytes: Vec<u8> = [n_symbols, 0u32, 0u32, 0u32]
+                .iter()
+                .flat_map(|v| v.to_ne_bytes())
+                .collect();
+            let params_b = self.uniform_init(&params_bytes, "tf-p");
 
             let bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("tf-bg"),

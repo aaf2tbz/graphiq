@@ -19,3 +19,4 @@ tempfile = "3"
 [features]
 default = []
 embed = ["graphiq-core/embed"]
+gpu = ["graphiq-core/gpu"]
