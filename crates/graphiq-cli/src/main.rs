@@ -3123,14 +3123,23 @@ fn check_gpu_runtime() {
 }
 
 fn cmd_update(install_dir: Option<&str>, yes: bool) {
+    let current_bin = which_graphiq().unwrap_or_else(|| {
+        let exe = std::env::current_exe().unwrap_or_else(|_| {
+            eprintln!("  error: cannot determine current executable");
+            std::process::exit(1);
+        });
+        eprintln!(
+            "  warning: graphiq not found on PATH, using {}",
+            exe.display()
+        );
+        exe
+    });
+
+    let current_dir = current_bin.parent().map(PathBuf::from);
     let install_dir = install_dir
         .map(PathBuf::from)
+        .or(current_dir)
         .unwrap_or_else(|| PathBuf::from("/usr/local/bin"));
-
-    let current_bin = which_graphiq().unwrap_or_else(|| {
-        eprintln!("  error: graphiq not found on PATH");
-        std::process::exit(1);
-    });
 
     let current_version = std::process::Command::new(&current_bin)
         .arg("--version")
@@ -3169,6 +3178,7 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
     };
 
     println!("  Update available: {} → {}", current_version, tag);
+    println!("  Installing to:   {}", install_dir.display());
 
     let platform = detect_platform();
     let archive = format!("graphiq-{}.tar.gz", platform);
@@ -3214,10 +3224,7 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
         std::process::exit(1);
     }
 
-    let need_sudo = !install_dir.exists()
-        || std::fs::metadata(&install_dir)
-            .map(|m| m.permissions().readonly())
-            .unwrap_or(true);
+    let need_sudo = !can_write_to_dir(&install_dir);
 
     let mut installed = 0;
     for bin in &["graphiq", "graphiq-mcp", "graphiq-bench"] {
@@ -3229,10 +3236,14 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
         let sudo = if need_sudo { "sudo" } else { "" };
 
         if !install_dir.exists() {
-            let _ = std::process::Command::new("mkdir")
-                .args(["-p"])
-                .arg(&install_dir)
-                .status();
+            if need_sudo {
+                let _ = std::process::Command::new("sudo")
+                    .args(["mkdir", "-p"])
+                    .arg(&install_dir)
+                    .status();
+            } else {
+                let _ = std::fs::create_dir_all(&install_dir);
+            }
         }
 
         let result = if sudo.is_empty() {
@@ -3269,7 +3280,7 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
         std::process::exit(1);
     }
 
-    let new_version = std::process::Command::new(&current_bin)
+    let new_version = std::process::Command::new(install_dir.join("graphiq"))
         .arg("--version")
         .output()
         .ok()
@@ -3366,6 +3377,16 @@ fn fetch_latest_version(_client: &str) -> Result<String, String> {
 
 fn reqwest_or_curl() -> String {
     "curl".to_string()
+}
+
+fn can_write_to_dir(dir: &std::path::Path) -> bool {
+    if !dir.exists() {
+        return false;
+    }
+    let test_file = dir.join(".graphiq_write_test");
+    let can_write = std::fs::write(&test_file, b"t").is_ok();
+    let _ = std::fs::remove_file(&test_file);
+    can_write
 }
 
 fn detect_platform() -> String {

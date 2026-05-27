@@ -22,6 +22,15 @@ RESET='\033[0m'
 
 info()  { echo "${GREEN}  ✓${RESET} $*"; }
 warn()  { echo "${YELLOW}  ⚠${RESET} $*"; }
+_GRAPHIQ_TMPDIR=""
+
+cleanup() {
+    if [ -n "$_GRAPHIQ_TMPDIR" ] && [ -d "$_GRAPHIQ_TMPDIR" ]; then
+        rm -rf "$_GRAPHIQ_TMPDIR"
+    fi
+}
+trap cleanup EXIT
+
 error() { echo "${RED}  ✗${RESET} $*" >&2; }
 
 confirm() {
@@ -168,9 +177,7 @@ do_install() {
     local archive="graphiq-${platform}.tar.gz"
     local url="https://github.com/${REPO}/releases/download/v${version}/${archive}"
 
-    local tmpdir
-    tmpdir="$(mktemp -d)"
-    trap 'rm -rf "$tmpdir"' EXIT
+    _GRAPHIQ_TMPDIR="$(mktemp -d)"
 
     echo "  version:  ${version}"
     echo "  platform: ${platform}"
@@ -186,7 +193,7 @@ do_install() {
     fi
 
     echo "  downloading ${archive}..."
-    if ! curl -fsSL --max-time 60 --retry 3 "$url" -o "${tmpdir}/${archive}"; then
+    if ! curl -fsSL --max-time 60 --retry 3 "$url" -o "${_GRAPHIQ_TMPDIR}/${archive}"; then
         error "failed to download ${url}"
         echo "  The release may not include a binary for ${platform}." >&2
         echo "  Check available releases at:" >&2
@@ -194,10 +201,10 @@ do_install() {
         exit 1
     fi
 
-    verify_checksum "${tmpdir}/${archive}" "$version"
+    verify_checksum "${_GRAPHIQ_TMPDIR}/${archive}" "$version"
 
     echo "  extracting..."
-    tar xzf "${tmpdir}/${archive}" -C "$tmpdir"
+    tar xzf "${_GRAPHIQ_TMPDIR}/${archive}" -C "$_GRAPHIQ_TMPDIR"
 
     local need_sudo=""
     if [ ! -w "$INSTALL_DIR" ]; then
@@ -210,8 +217,8 @@ do_install() {
 
     local installed=0
     for bin in graphiq graphiq-mcp graphiq-bench; do
-        if [ -f "${tmpdir}/${bin}" ]; then
-            $need_sudo cp "${tmpdir}/${bin}" "${INSTALL_DIR}/${bin}"
+        if [ -f "${_GRAPHIQ_TMPDIR}/${bin}" ]; then
+            $need_sudo cp "${_GRAPHIQ_TMPDIR}/${bin}" "${INSTALL_DIR}/${bin}"
             $need_sudo chmod +x "${INSTALL_DIR}/${bin}"
             info "${bin} -> ${INSTALL_DIR}/${bin}"
             installed=$((installed + 1))
