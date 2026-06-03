@@ -70,11 +70,39 @@ GraphIQ state is stored in the Signet workspace:
 $SIGNET_WORKSPACE/.daemon/graphiq/state.json
 ```
 
+The session lifecycle hook updates this file when a Signet session starts:
+
+```json
+{
+  "pluginId": "graphiq",
+  "enabled": true,
+  "activeProject": "/path/to/current/project",
+  "activeSessionId": "session-id",
+  "indexedProjects": ["/path/to/current/project"],
+  "updatedAt": "2026-06-03T00:00:00Z"
+}
+```
+
+GraphIQ desktop reads the same state file and prioritizes the active project in
+the project selector, so switching Signet sessions also switches the workspace
+shown by the app.
+
 Indexed project databases live in each project:
 
 ```
 <project>/.graphiq/graphiq.db
 ```
+
+When the session hook creates a missing index, it runs GraphIQ in background
+mode:
+
+```bash
+GRAPHIQ_INDEX_MODE=background graphiq index "$SIGNET_PROJECT_ROOT"
+```
+
+Background mode keeps the GPU acceleration path available when GraphIQ is built
+with GPU support, while reducing CPU-side source token retention for quieter
+background indexing.
 
 ## Updating the plugin
 

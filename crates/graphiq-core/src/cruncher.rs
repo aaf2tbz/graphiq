@@ -20,6 +20,8 @@ use crate::tokenize::extract_terms;
 
 const TOP_K_TERMS: usize = 30;
 pub const MAX_SEEDS: usize = 30;
+const DEFAULT_SOURCE_TERM_BYTES: usize = 4000;
+const BACKGROUND_SOURCE_TERM_BYTES: usize = 1200;
 
 pub const STOP: &[&str] = &[
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being", "have", "has", "had",
@@ -117,6 +119,28 @@ fn cr_tokenize(text: &str) -> Vec<String> {
     terms.sort_unstable();
     terms.dedup();
     terms
+}
+
+fn background_index_mode() -> bool {
+    std::env::var("GRAPHIQ_INDEX_MODE")
+        .map(|value| {
+            value.eq_ignore_ascii_case("background") || value.eq_ignore_ascii_case("low-memory")
+        })
+        .unwrap_or(false)
+}
+
+fn source_term_byte_limit() -> usize {
+    std::env::var("GRAPHIQ_SOURCE_TERM_LIMIT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| {
+            if background_index_mode() {
+                BACKGROUND_SOURCE_TERM_BYTES
+            } else {
+                DEFAULT_SOURCE_TERM_BYTES
+            }
+        })
 }
 
 fn expand_variants(term: &str) -> Vec<String> {
@@ -299,6 +323,12 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         adj.dedup_by(|a, b| b.target == a.target);
     }
 
+    let source_limit = source_term_byte_limit();
+    if background_index_mode() {
+        eprintln!(
+            "  Cruncher: background mode enabled (source token cap: {source_limit} bytes/symbol)"
+        );
+    }
     eprintln!("  Cruncher: building per-symbol term sets (parallel)...");
     let raw_term_lists: Vec<Vec<(String, f64)>> = (0..n)
         .into_par_iter()
@@ -312,8 +342,8 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
                 None => Vec::new(),
             };
             let src = &symbol_sources[i];
-            let src_terms = if src.len() > 4000 {
-                let end = src.floor_char_boundary(4000);
+            let src_terms = if src.len() > source_limit {
+                let end = src.floor_char_boundary(source_limit);
                 cr_tokenize(&src[..end])
             } else {
                 cr_tokenize(src)
@@ -335,22 +365,24 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         .collect();
 
     eprintln!("  Cruncher: flattening for GPU/parallel compute...");
-    let flat = flatten_cruncher_data(&raw_term_lists, n, &outgoing);
+    let mut flat = flatten_cruncher_data(&raw_term_lists, n, &outgoing);
+    let raw_counts = std::mem::take(&mut flat.raw_counts);
+    drop(raw_term_lists);
 
     let gpu_ctx = gpu_context();
     let results = {
         #[cfg(feature = "gpu")]
         {
             if let Some(ref ctx) = gpu_ctx {
-                crate::gpu_compute::accelerated_compute_gpu(&flat, n, ctx)
+                crate::gpu_compute::accelerated_compute_gpu(&flat, n, raw_counts, ctx)
             } else {
-                crate::gpu_compute::accelerated_compute(&flat, n)
+                crate::gpu_compute::accelerated_compute(&flat, n, raw_counts)
             }
         }
         #[cfg(not(feature = "gpu"))]
         {
             let _ = gpu_ctx;
-            crate::gpu_compute::accelerated_compute(&flat, n)
+            crate::gpu_compute::accelerated_compute(&flat, n, raw_counts)
         }
     };
     eprintln!("  Cruncher: {}", results.stats);

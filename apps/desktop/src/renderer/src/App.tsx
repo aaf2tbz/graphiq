@@ -1994,12 +1994,13 @@ function WorkspacePage({ page, onOpenIndexes }: { page: Exclude<Page, 'settings'
               {indexes.length === 0 ? <option value="">No indexes found yet</option> : null}
               {indexes.map((index) => (
                 <option key={index.projectPath} value={index.projectPath}>
-                  {index.name}
+                  {index.activeWorkspace ? `${index.name} (active session)` : index.name}
                 </option>
               ))}
             </select>
           </label>
           <div className="project-meta">
+            {selectedSummary?.activeWorkspace ? <span className="active-workspace-badge">Active session</span> : null}
             <span>Created: {formatDate(selectedSummary?.createdAt ?? null)}</span>
             <span>Last Access: {formatDate(selectedSummary?.lastAccessedAt ?? null)}</span>
             <span>Mode: {selectedSummary?.activeMode ?? 'Unknown'}</span>
