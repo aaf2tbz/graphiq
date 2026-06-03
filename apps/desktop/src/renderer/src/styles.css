@@ -276,8 +276,21 @@ textarea {
   display: flex;
   flex-wrap: wrap;
   gap: 14px;
+  align-items: center;
   color: var(--muted);
   font-size: 0.92rem;
+}
+
+.active-workspace-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 52%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-soft) 72%, transparent);
+  color: var(--text);
+  font-weight: 700;
 }
 
 .indexes-grid {

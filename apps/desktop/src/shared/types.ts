@@ -13,6 +13,7 @@ export type IndexSummary = {
   activeMode: string | null;
   languages: string[];
   health: 'ready' | 'stale' | 'missing';
+  activeWorkspace: boolean;
 };
 
 export type RankedSymbol = {

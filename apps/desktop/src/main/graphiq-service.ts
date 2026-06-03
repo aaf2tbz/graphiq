@@ -1,6 +1,7 @@
 import { app, shell } from 'electron';
 import fg from 'fast-glob';
 import Database from 'better-sqlite3';
+import nodeFs from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,6 +38,12 @@ type Registry = {
   indexCache: Record<string, RegistryRecord>;
   trackedProjects: string[];
   lastScanAt: string | null;
+};
+
+type SignetGraphiqState = {
+  activeProject: string | null;
+  indexedProjects: string[];
+  updatedAt: string | null;
 };
 
 const REGISTRY_FILE = 'desktop-index-registry.json';
@@ -170,10 +177,74 @@ function friendlyName(projectPath: string): string {
 
 function sortSummaries(summaries: IndexSummary[]): IndexSummary[] {
   return [...summaries].sort((a, b) => {
+    const active = Number(b.activeWorkspace) - Number(a.activeWorkspace);
+    if (active !== 0) {
+      return active;
+    }
     const left = a.lastAccessedAt ?? a.lastIndexedAt ?? a.createdAt ?? '';
     const right = b.lastAccessedAt ?? b.lastIndexedAt ?? b.createdAt ?? '';
     return right.localeCompare(left);
   });
+}
+
+function normalizeProjectPath(projectPath: string): string {
+  try {
+    return nodeFs.realpathSync.native(projectPath);
+  } catch {
+    return path.resolve(projectPath);
+  }
+}
+
+function sameProjectPath(left: string | null | undefined, right: string | null | undefined): boolean {
+  if (!left || !right) {
+    return false;
+  }
+  return normalizeProjectPath(left) === normalizeProjectPath(right);
+}
+
+function signetWorkspaceCandidates(): string[] {
+  const home = os.homedir();
+  return [
+    process.env.SIGNET_WORKSPACE,
+    process.env.SIGNET_DIR,
+    path.join(home, '.signet'),
+    path.join(home, '.agents')
+  ].filter(Boolean) as string[];
+}
+
+async function readSignetGraphiqState(): Promise<SignetGraphiqState> {
+  for (const workspace of signetWorkspaceCandidates()) {
+    const statePath = path.join(workspace, '.daemon', 'graphiq', 'state.json');
+    try {
+      const raw = await fs.readFile(statePath, 'utf8');
+      const parsed = JSON.parse(raw) as {
+        activeProject?: unknown;
+        indexedProjects?: unknown;
+        updatedAt?: unknown;
+      };
+      const activeProject = typeof parsed.activeProject === 'string' ? parsed.activeProject : null;
+      const indexedProjects = Array.isArray(parsed.indexedProjects)
+        ? parsed.indexedProjects.filter((entry): entry is string => typeof entry === 'string')
+        : [];
+      const updatedAt = typeof parsed.updatedAt === 'string' ? parsed.updatedAt : null;
+      return {
+        activeProject: activeProject ? normalizeProjectPath(activeProject) : null,
+        indexedProjects: [...new Set(indexedProjects.map(normalizeProjectPath))],
+        updatedAt
+      };
+    } catch {
+      // Try the next likely Signet workspace.
+    }
+  }
+
+  return { activeProject: null, indexedProjects: [], updatedAt: null };
+}
+
+function markActiveWorkspace(summary: IndexSummary, activeProject: string | null): IndexSummary {
+  return {
+    ...summary,
+    activeWorkspace: sameProjectPath(summary.projectPath, activeProject)
+  };
 }
 
 function withDisambiguatedNames(summaries: IndexSummary[]): IndexSummary[] {
@@ -432,6 +503,7 @@ function deriveHealth(activeMode: string | null): IndexSummary['health'] {
 async function buildIndexSummary(
   manifestPath: string,
   registry: Registry,
+  activeProject: string | null,
   cached?: RegistryRecord
 ): Promise<RegistryRecord | null> {
   const projectPath = path.dirname(path.dirname(manifestPath));
@@ -449,7 +521,8 @@ async function buildIndexSummary(
         ...cached,
         summary: {
           ...cached.summary,
-          lastAccessedAt: registry.lastAccessed[projectPath] ?? cached.summary.lastAccessedAt
+          lastAccessedAt: registry.lastAccessed[projectPath] ?? cached.summary.lastAccessedAt,
+          activeWorkspace: sameProjectPath(projectPath, activeProject)
         }
       };
     }
@@ -489,7 +562,8 @@ async function buildIndexSummary(
       lastAccessedAt: registry.lastAccessed[projectPath] ?? null,
       activeMode: manifest.active_search_mode ?? null,
       languages,
-      health: deriveHealth(manifest.active_search_mode ?? null)
+      health: deriveHealth(manifest.active_search_mode ?? null),
+      activeWorkspace: sameProjectPath(projectPath, activeProject)
     };
 
     return {
@@ -507,6 +581,14 @@ async function buildIndexSummary(
 
 export async function listIndexes(forceRefresh = false): Promise<IndexSummary[]> {
   const registry = await readRegistry();
+  const signetState = await readSignetGraphiqState();
+  registry.trackedProjects = [
+    ...new Set([
+      ...registry.trackedProjects,
+      ...signetState.indexedProjects,
+      ...(signetState.activeProject ? [signetState.activeProject] : [])
+    ])
+  ];
   const now = Date.now();
   const lastScanAge = registry.lastScanAt ? now - new Date(registry.lastScanAt).getTime() : Number.POSITIVE_INFINITY;
 
@@ -514,7 +596,8 @@ export async function listIndexes(forceRefresh = false): Promise<IndexSummary[]>
     const summaries = Object.values(registry.indexCache)
       .map((record) => ({
         ...record.summary,
-        lastAccessedAt: registry.lastAccessed[record.projectPath] ?? record.summary.lastAccessedAt
+        lastAccessedAt: registry.lastAccessed[record.projectPath] ?? record.summary.lastAccessedAt,
+        activeWorkspace: sameProjectPath(record.projectPath, signetState.activeProject)
       }));
     return withDisambiguatedNames(sortSummaries(summaries));
   }
@@ -525,7 +608,7 @@ export async function listIndexes(forceRefresh = false): Promise<IndexSummary[]>
   for (const manifest of manifests) {
     const projectPath = path.dirname(path.dirname(manifest));
     const cached = registry.indexCache[projectPath];
-    const record = await buildIndexSummary(manifest, registry, cached);
+    const record = await buildIndexSummary(manifest, registry, signetState.activeProject, cached);
     if (record) {
       nextCache[record.projectPath] = record;
     }
@@ -835,11 +918,12 @@ function indexTree(db: Database.Database): IndexTreeItem[] {
 
 export async function getIndexDetails(projectPath: string): Promise<IndexDetails> {
   const indexes = await listIndexes();
+  const signetState = await readSignetGraphiqState();
   let summary = indexes.find((entry) => entry.projectPath === projectPath);
   if (!summary) {
     const registry = await readRegistry();
     const manifestPath = path.join(projectPath, '.graphiq', 'manifest.json');
-    const record = await buildIndexSummary(manifestPath, registry, registry.indexCache[projectPath]);
+    const record = await buildIndexSummary(manifestPath, registry, signetState.activeProject, registry.indexCache[projectPath]);
     if (!record) {
       throw new Error(`Index not found for ${projectPath}`);
     }
@@ -848,6 +932,7 @@ export async function getIndexDetails(projectPath: string): Promise<IndexDetails
     await writeRegistry(registry);
     summary = record.summary;
   }
+  summary = markActiveWorkspace(summary, signetState.activeProject);
 
   const db = openDb(summary.dbPath);
   const details: IndexDetails = {
@@ -870,18 +955,20 @@ export async function getIndexDetails(projectPath: string): Promise<IndexDetails
     ...details,
     summary: {
       ...details.summary,
-      lastAccessedAt: registry.lastAccessed[projectPath]
+      lastAccessedAt: registry.lastAccessed[projectPath],
+      activeWorkspace: sameProjectPath(projectPath, signetState.activeProject)
     }
   };
 }
 
-async function runGraphiqCommand(args: string[]): Promise<IndexActionResult> {
+async function runGraphiqCommand(args: string[], env: NodeJS.ProcessEnv = {}): Promise<IndexActionResult> {
   const root = repoRoot();
   const binaryPath = path.join(root, 'target', 'debug', process.platform === 'win32' ? 'graphiq.exe' : 'graphiq');
+  const childEnv = { ...process.env, ...env };
 
   try {
     await fs.stat(binaryPath);
-    const { stdout, stderr } = await execFileAsync(binaryPath, args, { cwd: root });
+    const { stdout, stderr } = await execFileAsync(binaryPath, args, { cwd: root, env: childEnv });
     return {
       ok: true,
       message: stdout.trim() || 'Command completed successfully.',
@@ -890,6 +977,7 @@ async function runGraphiqCommand(args: string[]): Promise<IndexActionResult> {
   } catch {
     const { stdout, stderr } = await execFileAsync('cargo', ['run', '-p', 'graphiq-cli', '--', ...args], {
       cwd: root,
+      env: childEnv,
       maxBuffer: 1024 * 1024 * 16
     });
     return {
@@ -902,9 +990,14 @@ async function runGraphiqCommand(args: string[]): Promise<IndexActionResult> {
 
 export async function indexProject(projectPath: string): Promise<IndexActionResult> {
   try {
-    const result = await runGraphiqCommand(['index', projectPath]);
+    const result = await runGraphiqCommand(['index', projectPath], {
+      GRAPHIQ_INDEX_MODE: 'background',
+      GRAPHIQ_SOURCE_TERM_LIMIT: process.env.GRAPHIQ_SOURCE_TERM_LIMIT ?? '1200',
+      RAYON_NUM_THREADS: process.env.RAYON_NUM_THREADS ?? '2'
+    });
     const registry = await readRegistry();
     registry.trackedProjects = [...new Set([...registry.trackedProjects, projectPath])];
+    registry.lastAccessed[projectPath] = new Date().toISOString();
     registry.lastScanAt = null;
     await writeRegistry(registry);
     return result;

@@ -174,11 +174,20 @@ mod wgpu_backend {
                     force_fallback_adapter: false,
                 }))?;
 
+            let adapter_limits = adapter.limits();
+            if adapter_limits.max_storage_buffers_per_shader_stage < 8 {
+                return None;
+            }
+            let required_limits = wgpu::Limits {
+                max_storage_buffers_per_shader_stage: 8,
+                ..wgpu::Limits::downlevel_defaults()
+            };
+
             let (device, queue) = pollster::block_on(adapter.request_device(
                 &wgpu::DeviceDescriptor {
                     label: Some("graphiq-gpu"),
                     required_features: wgpu::Features::empty(),
-                    required_limits: wgpu::Limits::downlevel_defaults(),
+                    required_limits,
                     ..Default::default()
                 },
                 None,
@@ -781,16 +790,16 @@ pub struct ComputeResults {
     pub stats: GpuStats,
 }
 
-pub fn accelerated_compute(flat: &FlatCruncherData, n_symbols: usize) -> ComputeResults {
+pub fn accelerated_compute(
+    flat: &FlatCruncherData,
+    n_symbols: usize,
+    mut raw_counts: Vec<f32>,
+) -> ComputeResults {
     use std::time::Instant;
     let t0 = Instant::now();
     let n_sym32 = n_symbols as u32;
 
-    let normalized: Vec<f32> = {
-        let mut counts = flat.raw_counts.clone();
-        cpu_normalize_tf(&mut counts, &flat.symbol_offsets);
-        counts
-    };
+    cpu_normalize_tf(&mut raw_counts, &flat.symbol_offsets);
 
     let idf_values: Vec<f32> = cpu_compute_idf(&flat.doc_freq_flat, n_sym32 as f64);
 
@@ -804,7 +813,7 @@ pub fn accelerated_compute(flat: &FlatCruncherData, n_symbols: usize) -> Compute
     let elapsed_ms = t0.elapsed().as_millis() as u64;
 
     ComputeResults {
-        normalized_tf: normalized,
+        normalized_tf: raw_counts,
         idf_values,
         bridging,
         stats: GpuStats {
@@ -820,6 +829,7 @@ pub fn accelerated_compute(flat: &FlatCruncherData, n_symbols: usize) -> Compute
 pub fn accelerated_compute_gpu(
     flat: &FlatCruncherData,
     n_symbols: usize,
+    raw_counts: Vec<f32>,
     gpu: &GpuContext,
 ) -> ComputeResults {
     use std::time::Instant;
@@ -827,11 +837,10 @@ pub fn accelerated_compute_gpu(
     let n_sym32 = n_symbols as u32;
 
     let (normalized, tf_on_gpu) = {
-        let counts = flat.raw_counts.clone();
-        if let Some(result) = gpu.dispatch_tf(&counts, &flat.symbol_offsets, n_sym32) {
+        if let Some(result) = gpu.dispatch_tf(&raw_counts, &flat.symbol_offsets, n_sym32) {
             (result, true)
         } else {
-            let mut c = counts;
+            let mut c = raw_counts;
             cpu_normalize_tf(&mut c, &flat.symbol_offsets);
             (c, false)
         }
@@ -846,7 +855,17 @@ pub fn accelerated_compute_gpu(
     };
 
     let (bridging, bridge_on_gpu) = {
-        if let Some(result) = gpu.dispatch_bridge(
+        if flat.outgoing_flat.is_empty() || flat.term_ids.is_empty() {
+            (
+                cpu_compute_bridging(
+                    &flat.symbol_offsets,
+                    &flat.term_ids,
+                    &flat.outgoing_flat,
+                    &flat.outgoing_offsets,
+                ),
+                false,
+            )
+        } else if let Some(result) = gpu.dispatch_bridge(
             &flat.symbol_offsets,
             &flat.term_ids,
             &flat.outgoing_flat,
