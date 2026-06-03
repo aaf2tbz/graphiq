@@ -1,7 +1,7 @@
 {
 	"id": "signet.graphiq",
 	"name": "GraphIQ Code Retrieval",
-	"version": "4.1.4",
+	"version": "4.2.3",
 	"publisher": "aaf2tbz",
 	"description": "Optional verified managed plugin for fast local structural code retrieval through GraphIQ.",
 	"runtime": {
@@ -200,7 +200,7 @@
 			"mode": "context",
 			"priority": 430,
 			"maxTokens": 100,
-			"content": "When working in an indexed codebase, prefer the signet_code_* tools for code symbol search, structural context, constants, and blast-radius analysis. GraphIQ indexes live in the project .graphiq directory; Signet only tracks the active indexed project."
+			"content": "When working in an indexed codebase, prefer the signet_code_* tools for code symbol search, structural context, constants, and blast-radius analysis. GraphIQ auto-binds the active provider workspace and warms a temp session index unless project-local persistent indexing is explicitly configured."
 		}
 	]
 }

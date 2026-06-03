@@ -95,8 +95,10 @@ enum Commands {
         project: Option<PathBuf>,
         #[arg(long)]
         skip_index: bool,
-        #[arg(long)]
+        #[arg(long, conflicts_with = "persistent")]
         ephemeral: bool,
+        #[arg(long, conflicts_with = "ephemeral")]
+        persistent: bool,
         #[arg(long)]
         harness: Option<String>,
         #[arg(long)]
@@ -213,12 +215,14 @@ fn main() {
             project,
             skip_index,
             ephemeral,
+            persistent,
             harness,
             dry_run,
         } => cmd_setup(
             project.as_deref(),
             skip_index,
             ephemeral,
+            persistent,
             harness.as_deref(),
             dry_run,
         ),
@@ -1258,10 +1262,13 @@ fn cmd_setup(
     project: Option<&std::path::Path>,
     skip_index: bool,
     ephemeral: bool,
+    persistent: bool,
     harness_filter: Option<&str>,
     dry_run: bool,
 ) {
     use serde_json::{json, Value};
+
+    let ephemeral = !persistent || ephemeral;
 
     fn pretty(v: &Value) -> String {
         serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string())
@@ -1357,6 +1364,11 @@ fn cmd_setup(
     };
 
     println!("  Project: {}", project_path.display());
+    if ephemeral {
+        println!("  Index storage: temp MCP database (--persistent opts into .graphiq)");
+    } else {
+        println!("  Index storage: project .graphiq database");
+    }
     println!();
 
     let graphiq_bin = which_graphiq();
@@ -1379,7 +1391,24 @@ fn cmd_setup(
 
     if dry_run {
         println!("  [dry-run] No files will be written.");
+        match harness_filter {
+            Some(harness) => println!("  [dry-run] Would configure harnesses matching: {harness}"),
+            None => println!("  [dry-run] Would configure all supported harnesses"),
+        }
+        if ephemeral {
+            println!("  [dry-run] Would use temp-backed MCP indexes");
+            println!("  [dry-run] Would skip upfront project index");
+        } else {
+            println!(
+                "  [dry-run] Would create {}",
+                project_path.join(".graphiq").display()
+            );
+            println!("  [dry-run] Would rebuild the project-local GraphIQ index");
+        }
         println!();
+        println!("── Ready ──");
+        println!();
+        return;
     }
 
     let mut configured: Vec<String> = Vec::new();
@@ -1807,8 +1836,10 @@ fn cmd_setup(
     if !ephemeral && !dry_run {
         let _ = std::fs::create_dir_all(&graphiq_dir);
         write_agents_md(&graphiq_dir);
-    } else if dry_run {
+    } else if dry_run && !ephemeral {
         println!("  [dry-run] Would create {}", graphiq_dir.display());
+    } else if dry_run {
+        println!("  [dry-run] Would configure temp-backed MCP servers");
     }
 
     if !skip_index && !ephemeral && !dry_run {
@@ -1835,6 +1866,8 @@ fn cmd_setup(
                 eprintln!("  index error: {e}");
             }
         }
+    } else if !skip_index && ephemeral && !dry_run {
+        println!("  Skipping upfront project index (temp MCP servers warm on launch)");
     } else {
         println!("  Skipping index (--skip-index)");
     }
@@ -1856,19 +1889,28 @@ fn cmd_setup(
 
     println!();
     println!("  Try it:");
-    println!(
-        "    graphiq search \"rate limit middleware\" --db {}/.graphiq/graphiq.db",
-        project_path.display()
-    );
-    println!(
-        "    graphiq blast RateLimiter --db {}/.graphiq/graphiq.db",
-        project_path.display()
-    );
-    println!("    graphiq impact --project {}", project_path.display());
-    println!(
-        "    graphiq doctor --db {}/.graphiq/graphiq.db",
-        project_path.display()
-    );
+    if ephemeral {
+        println!("    Restart your harness and call the GraphIQ MCP tools.");
+        println!(
+            "    graphiq-mcp {} --ephemeral --watch",
+            project_path.display()
+        );
+        println!("    graphiq impact --project {}", project_path.display());
+    } else {
+        println!(
+            "    graphiq search \"rate limit middleware\" --db {}/.graphiq/graphiq.db",
+            project_path.display()
+        );
+        println!(
+            "    graphiq blast RateLimiter --db {}/.graphiq/graphiq.db",
+            project_path.display()
+        );
+        println!("    graphiq impact --project {}", project_path.display());
+        println!(
+            "    graphiq doctor --db {}/.graphiq/graphiq.db",
+            project_path.display()
+        );
+    }
     println!("    graphiq demo");
 
     if let Some(ref bin_path) = graphiq_bin {
@@ -3213,6 +3255,24 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
         }
     }
 
+    match fetch_release_digest(&tag, &archive)
+        .and_then(|expected| sha256_file(&archive_path).map(|actual| (expected, actual)))
+    {
+        Ok((expected, actual)) if expected == actual => {
+            println!("  ✓ checksum verified");
+        }
+        Ok((expected, actual)) => {
+            eprintln!("  error: SHA256 checksum mismatch");
+            eprintln!("    expected: {expected}");
+            eprintln!("    actual:   {actual}");
+            std::process::exit(1);
+        }
+        Err(e) => {
+            eprintln!("  error: checksum verification failed: {e}");
+            std::process::exit(1);
+        }
+    }
+
     println!("  Extracting...");
     let extract_status = std::process::Command::new("tar")
         .args(["xzf", archive_path.to_str().unwrap_or("")])
@@ -3224,7 +3284,14 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
         std::process::exit(1);
     }
 
-    let need_sudo = !can_write_to_dir(&install_dir);
+    let need_sudo = if install_dir.exists() {
+        !can_write_to_dir(&install_dir)
+    } else {
+        install_dir
+            .parent()
+            .map(|p| !can_write_to_dir(p))
+            .unwrap_or(true)
+    };
 
     let mut installed = 0;
     for bin in &["graphiq", "graphiq-mcp", "graphiq-bench"] {
@@ -3233,41 +3300,27 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
             continue;
         }
         let dst = install_dir.join(bin);
-        let sudo = if need_sudo { "sudo" } else { "" };
 
         if !install_dir.exists() {
             if need_sudo {
-                let _ = std::process::Command::new("sudo")
+                let status = std::process::Command::new("sudo")
                     .args(["mkdir", "-p"])
                     .arg(&install_dir)
                     .status();
+                if !matches!(status, Ok(s) if s.success()) {
+                    eprintln!("  error: failed to create {}", install_dir.display());
+                    std::process::exit(1);
+                }
             } else {
-                let _ = std::fs::create_dir_all(&install_dir);
+                std::fs::create_dir_all(&install_dir).unwrap_or_else(|e| {
+                    eprintln!("  error: failed to create {}: {e}", install_dir.display());
+                    std::process::exit(1);
+                });
             }
         }
 
-        let result = if sudo.is_empty() {
-            std::fs::copy(&src, &dst)
-        } else {
-            std::process::Command::new("sudo")
-                .args(["cp", src.to_str().unwrap_or(""), dst.to_str().unwrap_or("")])
-                .status()
-                .map(|_| 0u64)
-                .map_err(|e| std::io::Error::other(e.to_string()))
-        };
-
-        match result {
-            Ok(_) => {
-                if !sudo.is_empty() {
-                    let _ = std::process::Command::new("sudo")
-                        .args(["chmod", "+x", dst.to_str().unwrap_or("")])
-                        .status();
-                } else {
-                    let _ = std::fs::set_permissions(
-                        &dst,
-                        std::os::unix::fs::PermissionsExt::from_mode(0o755),
-                    );
-                }
+        match install_binary(&src, &dst, need_sudo) {
+            Ok(()) => {
                 println!("  ✓ {} → {}", bin, dst.display());
                 installed += 1;
             }
@@ -3294,6 +3347,22 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
         .unwrap_or_else(|| "unknown".to_string());
 
     println!("  Updated to {}.", new_version);
+
+    if let Some(path_bin) = which_graphiq() {
+        if path_bin != install_dir.join("graphiq") {
+            eprintln!(
+                "  warning: {} shadows the updated binary at {}",
+                path_bin.display(),
+                install_dir.join("graphiq").display()
+            );
+            eprintln!(
+                "  Put {} earlier in PATH or remove the old binary manually.",
+                install_dir.display()
+            );
+        }
+    } else {
+        eprintln!("  warning: {} is not on PATH", install_dir.display());
+    }
 
     check_gpu_runtime();
 
@@ -3337,6 +3406,135 @@ fn restart_mcp() {
     } else {
         println!("  graphiq-mcp was not running or already stopped.");
     }
+}
+
+fn fetch_release_digest(tag: &str, asset_name: &str) -> Result<String, String> {
+    let url = format!("https://api.github.com/repos/aaf2tbz/graphiq/releases/tags/{tag}");
+    let output = std::process::Command::new("curl")
+        .args(["-fsSL", "--max-time", "15", &url])
+        .output()
+        .map_err(|e| format!("curl failed: {e}"))?;
+
+    if !output.status.success() {
+        return Err(format!("failed to fetch release metadata for {tag}"));
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("invalid release metadata: {e}"))?;
+    let assets = parsed
+        .get("assets")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "release metadata has no assets array".to_string())?;
+
+    for asset in assets {
+        let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
+        if name != asset_name {
+            continue;
+        }
+        let digest = asset.get("digest").and_then(|v| v.as_str()).unwrap_or("");
+        let digest = digest.strip_prefix("sha256:").unwrap_or(digest).trim();
+        if digest.is_empty() {
+            return Err(format!(
+                "{asset_name} has no sha256 digest in release metadata"
+            ));
+        }
+        return Ok(digest.to_string());
+    }
+
+    Err(format!(
+        "{asset_name} not found in release metadata for {tag}"
+    ))
+}
+
+fn sha256_file(path: &std::path::Path) -> Result<String, String> {
+    let mut command = if cmd_exists("sha256sum") {
+        let mut cmd = std::process::Command::new("sha256sum");
+        cmd.arg(path);
+        cmd
+    } else if cmd_exists("shasum") {
+        let mut cmd = std::process::Command::new("shasum");
+        cmd.args(["-a", "256"]).arg(path);
+        cmd
+    } else {
+        return Err("no sha256sum or shasum found".to_string());
+    };
+
+    let output = command
+        .output()
+        .map_err(|e| format!("failed to compute sha256: {e}"))?;
+    if !output.status.success() {
+        return Err("sha256 command failed".to_string());
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout
+        .split_whitespace()
+        .next()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "sha256 command produced no digest".to_string())
+}
+
+fn install_binary(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    need_sudo: bool,
+) -> Result<(), String> {
+    let tmp = dst.with_file_name(format!(
+        "{}.tmp.{}",
+        dst.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("graphiq-bin"),
+        std::process::id()
+    ));
+
+    if need_sudo {
+        let copy = std::process::Command::new("sudo")
+            .arg("cp")
+            .arg(src)
+            .arg(&tmp)
+            .status()
+            .map_err(|e| format!("sudo cp failed: {e}"))?;
+        if !copy.success() {
+            return Err("sudo cp failed".to_string());
+        }
+
+        let chmod = std::process::Command::new("sudo")
+            .args(["chmod", "755"])
+            .arg(&tmp)
+            .status()
+            .map_err(|e| format!("sudo chmod failed: {e}"))?;
+        if !chmod.success() {
+            let _ = std::process::Command::new("sudo")
+                .arg("rm")
+                .arg(&tmp)
+                .status();
+            return Err("sudo chmod failed".to_string());
+        }
+
+        let mv = std::process::Command::new("sudo")
+            .arg("mv")
+            .arg(&tmp)
+            .arg(dst)
+            .status()
+            .map_err(|e| format!("sudo mv failed: {e}"))?;
+        if !mv.success() {
+            let _ = std::process::Command::new("sudo")
+                .arg("rm")
+                .arg(&tmp)
+                .status();
+            return Err("sudo mv failed".to_string());
+        }
+        return Ok(());
+    }
+
+    std::fs::copy(src, &tmp).map_err(|e| format!("copy failed: {e}"))?;
+    std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+        .map_err(|e| format!("chmod failed: {e}"))?;
+    std::fs::rename(&tmp, dst).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        format!("rename failed: {e}")
+    })?;
+    Ok(())
 }
 
 fn fetch_latest_version(_client: &str) -> Result<String, String> {
