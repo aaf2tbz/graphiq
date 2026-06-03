@@ -21,6 +21,19 @@ use serde_json::{json, Value};
 const SERVER_NAME: &str = "graphiq";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "2024-11-05";
+const PROVIDER_PROJECT_ENV_VARS: &[&str] = &[
+    "GRAPHIQ_PROJECT_ROOT",
+    "SIGNET_PROJECT_ROOT",
+    "CODEX_WORKSPACE_ROOT",
+    "CODEX_PROJECT_ROOT",
+    "CODEX_CWD",
+    "CLAUDE_PROJECT_DIR",
+    "WORKSPACE_ROOT",
+    "PROJECT_ROOT",
+    "AGENT_WORKSPACE_ROOT",
+    "INIT_CWD",
+    "PWD",
+];
 
 struct ServerState {
     project_root: PathBuf,
@@ -33,28 +46,121 @@ struct ServerState {
     last_staleness_check_at: Option<std::time::Instant>,
 }
 
-fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
-    let mut path = PathBuf::from(raw);
-
+fn db_file_to_project_path(path: &Path) -> Option<PathBuf> {
     if path.exists() && path.is_file() && path.extension().map_or(false, |e| e == "db") {
         if let Some(parent) = path.parent() {
             if parent.file_name().map_or(false, |n| n == ".graphiq") {
                 if let Some(project) = parent.parent() {
-                    path = project.to_path_buf();
+                    return Some(project.to_path_buf());
                 }
             }
         }
     }
+    None
+}
 
-    let resolved = if path.is_absolute() {
+fn nearest_git_root(path: &Path) -> Option<PathBuf> {
+    let mut candidate = path.to_path_buf();
+    loop {
+        if candidate.join(".git").exists() {
+            return Some(candidate);
+        }
+        if !candidate.pop() {
+            return None;
+        }
+    }
+}
+
+fn single_child_git_root(path: &Path) -> Option<PathBuf> {
+    let mut git_children: Vec<PathBuf> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() && p.join(".git").exists() {
+                git_children.push(p);
+            }
+        }
+    }
+
+    if git_children.len() == 1 {
+        Some(git_children.remove(0))
+    } else {
+        None
+    }
+}
+
+fn absolute_or_cwd(path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
         path
     } else {
         match std::env::current_dir() {
-            Ok(cwd) => cwd.join(&path),
+            Ok(cwd) => cwd.join(path),
             Err(_) => path,
         }
-    };
+    }
+}
 
+fn looks_like_hook_workspace(path: &Path) -> bool {
+    if path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map_or(false, |n| n.starts_with("graphiq-hook-"))
+    {
+        return true;
+    }
+
+    let marker = path.join("src").join("lib.rs");
+    std::fs::read_to_string(marker)
+        .map(|content| content.contains("hook_workspace_marker"))
+        .unwrap_or(false)
+}
+
+fn project_root_from_env_value(value: &str) -> Option<PathBuf> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    let mut path = absolute_or_cwd(PathBuf::from(value));
+    if let Some(project) = db_file_to_project_path(&path) {
+        path = project;
+    }
+
+    let resolved = path.canonicalize().unwrap_or(path);
+    if !resolved.exists() {
+        return None;
+    }
+
+    let root = nearest_git_root(&resolved)
+        .or_else(|| single_child_git_root(&resolved))
+        .unwrap_or(resolved);
+
+    if looks_like_hook_workspace(&root) {
+        None
+    } else {
+        Some(root)
+    }
+}
+
+fn provider_project_root_from_env(env: &[(String, String)]) -> Option<(String, PathBuf)> {
+    for key in PROVIDER_PROJECT_ENV_VARS {
+        if let Some((_, value)) = env.iter().find(|(k, _)| k == key) {
+            if let Some(root) = project_root_from_env_value(value) {
+                return Some(((*key).to_string(), root));
+            }
+        }
+    }
+    None
+}
+
+fn resolve_project_root_base(raw: &str, explicit: bool) -> PathBuf {
+    let mut path = PathBuf::from(raw);
+
+    if let Some(project) = db_file_to_project_path(&path) {
+        path = project;
+    }
+
+    let resolved = absolute_or_cwd(path);
     let resolved = resolved.canonicalize().unwrap_or(resolved);
 
     if !resolved.exists() {
@@ -62,15 +168,9 @@ fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
     }
 
     if !explicit {
-        let mut candidate = resolved.clone();
-        loop {
-            if candidate.join(".git").exists() {
-                log_err(&format!("detected git root: {}", candidate.display()));
-                return candidate;
-            }
-            if !candidate.pop() {
-                break;
-            }
+        if let Some(root) = nearest_git_root(&resolved) {
+            log_err(&format!("detected git root: {}", root.display()));
+            return root;
         }
         log_err(&format!("no git root found, using: {}", resolved.display()));
         return resolved;
@@ -81,26 +181,64 @@ fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
         return resolved;
     }
 
-    let mut git_children: Vec<PathBuf> = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&resolved) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.join(".git").exists() && p.is_dir() {
-                git_children.push(p);
-            }
-        }
-    }
-
-    if git_children.len() == 1 {
+    if let Some(root) = single_child_git_root(&resolved) {
         log_err(&format!(
             "project root (single child repo): {}",
-            git_children[0].display()
+            root.display()
         ));
-        return git_children.remove(0);
+        return root;
     }
 
     log_err(&format!("project root (explicit): {}", resolved.display()));
     resolved
+}
+
+fn resolve_project_root_with_env(raw: &str, explicit: bool, env: &[(String, String)]) -> PathBuf {
+    let base = resolve_project_root_base(raw, explicit);
+    let provider_root = provider_project_root_from_env(env);
+
+    if looks_like_hook_workspace(&base) {
+        if let Some((key, root)) = provider_root {
+            log_err(&format!(
+                "auto-bound provider workspace from {}: {}",
+                key,
+                root.display()
+            ));
+            return root;
+        }
+        log_err(&format!(
+            "warning: {} looks like a GraphIQ hook workspace, but no provider workspace env resolved",
+            base.display()
+        ));
+        return base;
+    }
+
+    if !explicit {
+        if let Some((key, root)) = provider_root {
+            if root != base {
+                log_err(&format!(
+                    "auto-bound provider workspace from {}: {}",
+                    key,
+                    root.display()
+                ));
+            }
+            return root;
+        }
+    }
+
+    base
+}
+
+fn resolve_project_root(raw: &str, explicit: bool) -> PathBuf {
+    let env = PROVIDER_PROJECT_ENV_VARS
+        .iter()
+        .filter_map(|key| {
+            std::env::var(key)
+                .ok()
+                .map(|value| ((*key).to_string(), value))
+        })
+        .collect::<Vec<_>>();
+    resolve_project_root_with_env(raw, explicit, &env)
 }
 
 fn resolve_db_path(project_root: &Path) -> PathBuf {
@@ -125,6 +263,15 @@ fn parse_args() -> (Option<PathBuf>, Option<PathBuf>, bool, bool, Option<String>
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--project" => {
+                if i + 1 < args.len() {
+                    project_arg = Some(PathBuf::from(&args[i + 1]));
+                    i += 2;
+                } else {
+                    log_err("--project requires a path argument");
+                    i += 1;
+                }
+            }
             "--db" => {
                 if i + 1 < args.len() {
                     db_override = Some(PathBuf::from(&args[i + 1]));
@@ -294,20 +441,12 @@ fn main() {
             if let Ok(Some(stored)) = temp_db.get_meta("project_root") {
                 let stored_path = PathBuf::from(&stored);
                 if stored_path != project_root && stored_path.exists() && project_root.exists() {
-                    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
-                    let manifest = graphiq_core::manifest::read_manifest(db_dir).ok().flatten();
-                    let current_hash = graphiq_core::manifest::FreshnessHash::from_db(&temp_db);
-                    let manifest_stale = manifest
-                        .as_ref()
-                        .map_or(true, |m| m.freshness.is_stale_vs(&current_hash));
-                    if manifest_stale {
-                        log_err(&format!(
-                            "DB was indexed from {} but server was given {}. Manifest stale. Clearing DB for reindex.",
-                            stored_path.display(),
-                            project_root.display()
-                        ));
-                        needs_reindex = true;
-                    }
+                    log_err(&format!(
+                        "DB was indexed from {} but server is bound to {}. Clearing DB for reindex.",
+                        stored_path.display(),
+                        project_root.display()
+                    ));
+                    needs_reindex = true;
                     project_root
                 } else if stored_path != project_root && !stored_path.exists() {
                     log_err(&format!(
@@ -400,7 +539,7 @@ fn main() {
     let running = Arc::new(AtomicBool::new(true));
     let indexing = Arc::new(AtomicBool::new(false));
 
-    if ephemeral {
+    if ephemeral_dir.is_some() {
         let edir_clone = ephemeral_dir.clone();
         unsafe {
             let _ = signal_hook::low_level::register(signal_hook::consts::SIGTERM, move || {
@@ -2989,5 +3128,84 @@ fn tool_briefing(db: &graphiq_core::db::GraphDb, args: Value) -> Value {
             tool_ok(output)
         }
         Err(e) => tool_error(&format!("briefing failed: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("graphiq-test-{name}-{nanos}"))
+    }
+
+    fn make_repo(path: &Path) {
+        fs::create_dir_all(path.join(".git")).unwrap();
+    }
+
+    #[test]
+    fn hook_workspace_auto_binds_to_provider_project_root() {
+        let hook = temp_path("hook");
+        let hook = hook.with_file_name(format!(
+            "graphiq-hook-{}",
+            hook.file_name().unwrap().to_string_lossy()
+        ));
+        let real = temp_path("real");
+        make_repo(&hook);
+        make_repo(&real);
+        fs::create_dir_all(hook.join("src")).unwrap();
+        fs::write(
+            hook.join("src").join("lib.rs"),
+            "pub fn hook_workspace_marker() {}",
+        )
+        .unwrap();
+
+        let env = vec![(
+            "CODEX_WORKSPACE_ROOT".to_string(),
+            real.to_string_lossy().into_owned(),
+        )];
+        let resolved = resolve_project_root_with_env(&hook.to_string_lossy(), true, &env);
+
+        assert_eq!(resolved, real.canonicalize().unwrap());
+        let _ = fs::remove_dir_all(hook);
+        let _ = fs::remove_dir_all(real);
+    }
+
+    #[test]
+    fn explicit_real_project_is_not_overridden_by_provider_env() {
+        let explicit = temp_path("explicit");
+        let provider = temp_path("provider");
+        make_repo(&explicit);
+        make_repo(&provider);
+
+        let env = vec![(
+            "CODEX_WORKSPACE_ROOT".to_string(),
+            provider.to_string_lossy().into_owned(),
+        )];
+        let resolved = resolve_project_root_with_env(&explicit.to_string_lossy(), true, &env);
+
+        assert_eq!(resolved, explicit.canonicalize().unwrap());
+        let _ = fs::remove_dir_all(explicit);
+        let _ = fs::remove_dir_all(provider);
+    }
+
+    #[test]
+    fn implicit_launch_prefers_provider_project_root() {
+        let provider = temp_path("provider-implicit");
+        make_repo(&provider);
+
+        let env = vec![(
+            "CODEX_WORKSPACE_ROOT".to_string(),
+            provider.to_string_lossy().into_owned(),
+        )];
+        let resolved = resolve_project_root_with_env(".", false, &env);
+
+        assert_eq!(resolved, provider.canonicalize().unwrap());
+        let _ = fs::remove_dir_all(provider);
     }
 }

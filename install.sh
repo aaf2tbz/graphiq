@@ -6,13 +6,20 @@
 #   curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash -s -- uninstall
 #
 # Environment variables:
-#   GRAPHIQ_INSTALL_DIR  — installation directory (default: /usr/local/bin)
+#   GRAPHIQ_INSTALL_DIR  — installation directory (default: existing graphiq dir, then /usr/local/bin)
 #   GRAPHIQ_VERSION      — specific version to install (default: latest)
 set -euo pipefail
 
 REPO="aaf2tbz/graphiq"
-INSTALL_DIR="${GRAPHIQ_INSTALL_DIR:-/usr/local/bin}"
 COMMAND="${1:-install}"
+
+if [ -n "${GRAPHIQ_INSTALL_DIR:-}" ]; then
+    INSTALL_DIR="$GRAPHIQ_INSTALL_DIR"
+elif command -v graphiq >/dev/null 2>&1; then
+    INSTALL_DIR="$(dirname "$(command -v graphiq)")"
+else
+    INSTALL_DIR="/usr/local/bin"
+fi
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -47,6 +54,17 @@ need_cmd() {
         fi
         exit 1
     fi
+}
+
+install_file() {
+    local src="$1"
+    local dst="$2"
+    local tmp="${dst}.tmp.$$"
+    local need_sudo="${3:-}"
+
+    $need_sudo cp "$src" "$tmp"
+    $need_sudo chmod 755 "$tmp"
+    $need_sudo mv "$tmp" "$dst"
 }
 
 detect_platform() {
@@ -207,19 +225,24 @@ do_install() {
     tar xzf "${_GRAPHIQ_TMPDIR}/${archive}" -C "$_GRAPHIQ_TMPDIR"
 
     local need_sudo=""
-    if [ ! -w "$INSTALL_DIR" ]; then
-        need_sudo="sudo"
-        if [ ! -d "$INSTALL_DIR" ]; then
-            echo "  creating ${INSTALL_DIR}..."
-            $need_sudo mkdir -p "$INSTALL_DIR"
+    if [ -d "$INSTALL_DIR" ]; then
+        if [ ! -w "$INSTALL_DIR" ]; then
+            need_sudo="sudo"
         fi
+    else
+        local parent
+        parent="$(dirname "$INSTALL_DIR")"
+        if [ ! -w "$parent" ]; then
+            need_sudo="sudo"
+        fi
+        echo "  creating ${INSTALL_DIR}..."
+        $need_sudo mkdir -p "$INSTALL_DIR"
     fi
 
     local installed=0
     for bin in graphiq graphiq-mcp graphiq-bench; do
         if [ -f "${_GRAPHIQ_TMPDIR}/${bin}" ]; then
-            $need_sudo cp "${_GRAPHIQ_TMPDIR}/${bin}" "${INSTALL_DIR}/${bin}"
-            $need_sudo chmod +x "${INSTALL_DIR}/${bin}"
+            install_file "${_GRAPHIQ_TMPDIR}/${bin}" "${INSTALL_DIR}/${bin}" "$need_sudo"
             info "${bin} -> ${INSTALL_DIR}/${bin}"
             installed=$((installed + 1))
         else
@@ -234,22 +257,29 @@ do_install() {
 
     echo ""
 
-    # Verify installation
+    # Verify installation — run the binary we just installed, not whatever is on PATH
     local fail=0
+    local ver
+    ver=$("${INSTALL_DIR}/graphiq" --version 2>/dev/null || echo "?")
+    info "graphiq ${ver} at ${INSTALL_DIR}/graphiq"
+
+    # Detect shadowing without deleting user-managed binaries.
     if command -v graphiq >/dev/null 2>&1; then
-        local ver
-        ver=$(graphiq --version 2>/dev/null || echo "?")
-        info "graphiq ${ver}"
+        local on_path
+        on_path="$(command -v graphiq)"
+        if [ "$on_path" != "${INSTALL_DIR}/graphiq" ]; then
+            warn "another graphiq at ${on_path} shadows the new install"
+            echo "  Put ${INSTALL_DIR} earlier in PATH or remove the old binary manually." >&2
+        fi
     else
-        error "graphiq not found on PATH after install"
-        error "ensure ${INSTALL_DIR} is in your PATH"
+        warn "${INSTALL_DIR} is not on PATH"
         fail=1
     fi
 
-    if command -v graphiq-mcp >/dev/null 2>&1; then
+    if [ -x "${INSTALL_DIR}/graphiq-mcp" ]; then
         info "graphiq-mcp available"
     else
-        warn "graphiq-mcp not found on PATH (needed for MCP server mode)"
+        warn "graphiq-mcp not found in ${INSTALL_DIR}"
         fail=1
     fi
 

@@ -78,6 +78,10 @@ graphiq setup --project /path/to/project
 graphiq setup --harness codex
 ```
 
+`setup` configures MCP servers with temp-backed indexes by default so large
+indexes do not land in the project checkout. Use `--persistent` when you
+explicitly want a project-local `.graphiq` database.
+
 Supported harnesses include Claude Code, Claude Desktop, OpenCode, Codex CLI,
 Cursor, Windsurf, Gemini CLI, Hermes Agent, and Aider.
 
@@ -103,6 +107,10 @@ Run the MCP server against a project:
 ```bash
 graphiq-mcp /path/to/project --watch
 ```
+
+The MCP server auto-binds supported provider workspace roots, lazily builds its
+index on first search, and detects/recreates corrupted or wrong-project
+databases automatically.
 
 Common MCP tools:
 
