@@ -94,6 +94,14 @@ enum Commands {
         #[arg(long, help = "Output machine-readable JSON instead of a table")]
         json: bool,
     },
+    Git {
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        project: PathBuf,
+        #[arg(long, help = "Number of recent commits to show", default_value_t = 10)]
+        commits: usize,
+        #[arg(long, help = "Output machine-readable JSON")]
+        json: bool,
+    },
     Subsystems {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
@@ -230,6 +238,11 @@ fn main() {
         Commands::Clear { db, yes } => cmd_clear(&db, yes),
         Commands::Sync { project, harness } => cmd_sync(project.as_deref(), harness.as_deref()),
         Commands::Discover { json } => cmd_discover(json),
+        Commands::Git {
+            project,
+            commits,
+            json,
+        } => cmd_git(&project, commits, json),
         Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
         Commands::Roles { db, subsystem, top } => cmd_roles(&db, subsystem, top),
         Commands::Demo => cmd_demo(),
@@ -2134,6 +2147,246 @@ fn cmd_discover(json: bool) {
     println!("    graphiq setup --project <path>");
     println!("  Then verify with:");
     println!("    graphiq sync");
+}
+
+// ─── graphiq git: current project scope for agents ───────────────────────────
+//
+// The plan wants graphiq to "index every pushed commit, and sync it back with
+// the local harness so search results are accurate and up-to-date with the
+// current project scope". In practice an agent needs to KNOW the scope first —
+// branch, clean/dirty state, ahead/behind, recent commits, active changes —
+// then re-index as needed. `graphiq git` surfaces exactly that from git itself.
+// It is read-only (never mutates the repo) and works in any git project.
+
+/// A recent commit in the project history.
+#[derive(Debug, Clone)]
+struct RecentCommit {
+    sha: String,
+    subject: String,
+    author: String,
+    date: String,
+}
+
+/// Run git in a project dir and return its UTF-8 stdout, or an error message.
+/// Kept in the CLI (not core) so the pure parsers below can be unit-tested
+/// without a real repo: they take the already-fetched string output.
+fn git_in(project: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(project)
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git {:?} failed", args)
+        } else {
+            stderr
+        });
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("git output was not valid UTF-8: {e}"))
+}
+
+/// Parse `git status -b --porcelain` branch line into branch name + ahead/behind.
+/// Pure: takes the porcelain output string.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct BranchStatus {
+    branch: String,
+    ahead: usize,
+    behind: usize,
+    /// true if HEAD is detached (no branch checked out).
+    detached: bool,
+}
+
+fn parse_branch_status(status_b_output: &str) -> BranchStatus {
+    let first = status_b_output.lines().next().unwrap_or("").trim();
+    let line = first.strip_prefix("## ").unwrap_or(first);
+    let mut bs = BranchStatus::default();
+    if line.starts_with("HEAD (no branch)") {
+        bs.detached = true;
+        bs.branch = "(detached)".to_string();
+    } else if line.starts_with("No commits yet on ") {
+        bs.branch = line.trim_start_matches("No commits yet on ").to_string();
+    } else {
+        let branch_end = line.find("...").unwrap_or_else(|| line.len());
+        bs.branch = line[..branch_end]
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
+    }
+    if let Some(open) = line.rfind('[') {
+        if let Some(close) = line[open..].find(']') {
+            let bracket = &line[open + 1..open + close];
+            for tok in bracket.split(',') {
+                let tok = tok.trim();
+                if let Some(rest) = tok.strip_prefix("ahead ") {
+                    bs.ahead = rest.parse().unwrap_or(0);
+                } else if let Some(rest) = tok.strip_prefix("behind ") {
+                    bs.behind = rest.parse().unwrap_or(0);
+                }
+            }
+        }
+    }
+    bs
+}
+
+/// Count working-tree changes from `git status --porcelain` output. Pure.
+/// Returns (staged, unstaged, untracked) counts.
+fn count_changes(porcelain_output: &str) -> (usize, usize, usize) {
+    let mut staged = 0usize;
+    let mut unstaged = 0usize;
+    let mut untracked = 0usize;
+    for line in porcelain_output.lines() {
+        if line.len() < 2 {
+            continue;
+        }
+        let x = line.as_bytes()[0];
+        let y = line.as_bytes()[1];
+        if x == b'?' && y == b'?' {
+            untracked += 1;
+            continue;
+        }
+        if x != b' ' && x != b'?' {
+            staged += 1;
+        }
+        if y != b' ' && y != b'?' {
+            unstaged += 1;
+        }
+    }
+    (staged, unstaged, untracked)
+}
+
+/// Parse `git log --format=%H%x00%s%x00%an%x00%ad --date=short` output into
+/// commits. Fields are NUL-separated. Pure.
+fn parse_commits(log_output: &str, limit: usize) -> Vec<RecentCommit> {
+    log_output
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split('\u{0}').collect();
+            if parts.len() < 4 {
+                return None;
+            }
+            Some(RecentCommit {
+                sha: parts[0].to_string(),
+                subject: parts[1].to_string(),
+                author: parts[2].to_string(),
+                date: parts[3].to_string(),
+            })
+        })
+        .take(limit)
+        .collect()
+}
+
+/// Summarize working-tree state as a single human word. Pure.
+fn tree_state_label(staged: usize, unstaged: usize, untracked: usize) -> &'static str {
+    if staged + unstaged + untracked == 0 {
+        "clean"
+    } else {
+        "dirty"
+    }
+}
+
+fn cmd_git(project: &std::path::Path, commits: usize, json: bool) {
+    use serde_json::json;
+
+    if git_in(project, &["rev-parse", "--is-inside-work-tree"]).is_err() {
+        eprintln!("error: {} is not inside a git work tree", project.display());
+        std::process::exit(1);
+    }
+
+    let remote_url = git_in(project, &["remote", "get-url", "origin"])
+        .ok()
+        .map(|s| s.trim().to_string());
+    let status_b = git_in(project, &["status", "-b", "--porcelain"]).unwrap_or_default();
+    let porcelain = git_in(project, &["status", "--porcelain"]).unwrap_or_default();
+    let head_sha = git_in(project, &["rev-parse", "--short", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let log = git_in(
+        project,
+        &[
+            "log",
+            "--format=%H%x00%s%x00%an%x00%ad",
+            "--date=short",
+            &format!("-n{}", commits.max(1)),
+        ],
+    )
+    .unwrap_or_default();
+
+    let branch = parse_branch_status(&status_b);
+    let (staged, unstaged, untracked) = count_changes(&porcelain);
+    let recent = parse_commits(&log, commits.max(1));
+    let state = tree_state_label(staged, unstaged, untracked);
+
+    if json {
+        let commits_json: Vec<_> = recent
+            .iter()
+            .map(|c| {
+                json!({ "sha": c.sha, "subject": c.subject, "author": c.author, "date": c.date })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "project": project.display().to_string(),
+                "remote": remote_url,
+                "branch": branch.branch,
+                "detached": branch.detached,
+                "head": head_sha,
+                "ahead": branch.ahead,
+                "behind": branch.behind,
+                "treeState": state,
+                "changes": { "staged": staged, "unstaged": unstaged, "untracked": untracked },
+                "commits": commits_json,
+            }))
+            .unwrap_or_default()
+        );
+        return;
+    }
+
+    println!("╭──────────────────────────────────────────────╮");
+    println!("│            GraphIQ Git Scope                 │");
+    println!("╰──────────────────────────────────────────────╯");
+    println!("  Project: {}", project.display());
+    if let Some(r) = &remote_url {
+        println!("  Remote:  {}", r);
+    }
+    if branch.detached {
+        println!("  HEAD:    {} (detached)", head_sha);
+    } else {
+        let ab = match (branch.ahead, branch.behind) {
+            (0, 0) => String::new(),
+            (a, 0) => format!(" (ahead {a})"),
+            (0, b) => format!(" (behind {b})"),
+            (a, b) => format!(" (ahead {a}, behind {b})"),
+        };
+        println!("  Branch:  {}{}", branch.branch, ab);
+        println!("  HEAD:    {}", head_sha);
+    }
+    println!("  Tree:    {}", state);
+    if staged + unstaged + untracked > 0 {
+        println!(
+            "  Changes: {} staged, {} unstaged, {} untracked",
+            staged, unstaged, untracked
+        );
+    }
+    if !recent.is_empty() {
+        println!();
+        println!("  Recent commits:");
+        for c in &recent {
+            let short_sha = &c.sha[..c.sha.len().min(7)];
+            let subj = if c.subject.len() > 64 {
+                format!("{}…", &c.subject[..62])
+            } else {
+                c.subject.clone()
+            };
+            println!("    {} {} — {} ({})", short_sha, subj, c.author, c.date);
+        }
+    }
+    println!();
+    println!("  Keep search in sync with the current scope:");
+    println!("    graphiq index {} --force-reindex", project.display());
 }
 
 fn cmd_setup(
@@ -4997,5 +5250,75 @@ mod tests {
             macos_app: "",
         };
         assert_eq!(config_dir_path(std::path::Path::new("/h"), &sig2), None);
+    }
+
+    // ── graphiq git tests (pure parsers) ─────────────────────────────────
+
+    #[test]
+    fn git_parse_branch_status_normal() {
+        let s = parse_branch_status("## main...origin/main");
+        assert_eq!(s.branch, "main");
+        assert_eq!((s.ahead, s.behind), (0, 0));
+        assert!(!s.detached);
+    }
+
+    #[test]
+    fn git_parse_branch_status_ahead_behind() {
+        let s = parse_branch_status("## feat/x...origin/feat/x [ahead 2, behind 1]");
+        assert_eq!(s.branch, "feat/x");
+        assert_eq!((s.ahead, s.behind), (2, 1));
+    }
+
+    #[test]
+    fn git_parse_branch_status_detached_and_nocommits() {
+        let s = parse_branch_status("## HEAD (no branch)");
+        assert!(s.detached);
+        assert_eq!(s.branch, "(detached)");
+        let s2 = parse_branch_status("## No commits yet on main");
+        assert_eq!(s2.branch, "main");
+    }
+
+    #[test]
+    fn git_count_changes_classifies_staged_unstaged_untracked() {
+        // XY porcelain: X=index, Y=worktree. ?? = untracked.
+        let p = "M  modified-staged-only\n M modified-worktree-only\nMM modified-both\n?? untracked\nA  added-staged\n";
+        let (staged, unstaged, untracked) = count_changes(p);
+        // staged (X != ' '/'?'): M, M(both), A => 3
+        assert_eq!(staged, 3);
+        // unstaged (Y != ' '/'?'): M(worktree-only), M(both) => 2
+        assert_eq!(unstaged, 2);
+        // untracked: ??
+        assert_eq!(untracked, 1);
+    }
+
+    #[test]
+    fn git_count_changes_empty_is_clean() {
+        assert_eq!(count_changes(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn git_parse_commits_nul_separated() {
+        // %H%x00%s%x00%an%x00%ad
+        let log = "abc123\u{0}feat: add x\u{0}Alex\u{0}2026-06-22\ndef456\u{0}fix: y\u{0}Sam\u{0}2026-06-21\n";
+        let c = parse_commits(log, 10);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].sha, "abc123");
+        assert_eq!(c[0].subject, "feat: add x");
+        assert_eq!(c[0].author, "Alex");
+        assert_eq!(c[1].sha, "def456");
+    }
+
+    #[test]
+    fn git_parse_commits_respects_limit() {
+        let log = "a\u{0}s\u{0}n\u{0}d\nb\u{0}s\u{0}n\u{0}d\nc\u{0}s\u{0}n\u{0}d\n";
+        assert_eq!(parse_commits(log, 2).len(), 2);
+    }
+
+    #[test]
+    fn git_tree_state_label() {
+        assert_eq!(tree_state_label(0, 0, 0), "clean");
+        assert_eq!(tree_state_label(1, 0, 0), "dirty");
+        assert_eq!(tree_state_label(0, 5, 0), "dirty");
+        assert_eq!(tree_state_label(0, 0, 3), "dirty");
     }
 }

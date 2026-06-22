@@ -130,6 +130,7 @@ Common MCP tools:
 | `clear` | Delete the index, leaving a fresh empty database |
 | `sync` | Verify harness attach + write the graphiq registry |
 | `discover` | Scan the system for installed agent harnesses |
+| `git` | Current project scope: branch, working tree, recent commits |
 
 ## What Gets Indexed
 
