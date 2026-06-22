@@ -6,6 +6,17 @@ use crate::chunker::{
 };
 use crate::symbol::{SymbolKind, Visibility};
 
+/// Strip generic parameters from a Rust type path so an impl on a generic
+/// type resolves to the bare struct/trait name. `Engine<'a>` -> `Engine`,
+/// `Vec<u8>` -> `Vec`, `std::vec::Vec<T>` -> `std::vec::Vec`.
+fn strip_generics(name: &str) -> String {
+    if let Some(i) = name.find('<') {
+        name[..i].trim().to_string()
+    } else {
+        name.trim().to_string()
+    }
+}
+
 /// Collect the names of methods/constants defined inside an `impl_item` node,
 /// so we can emit `contains` relations linking the impl's type to its members.
 fn impl_member_names(impl_node: &tree_sitter::Node, source: &str) -> Vec<String> {
@@ -331,12 +342,15 @@ impl LanguageChunker for RustChunker {
                     // The impl's type (e.g. `Foo` in `impl Foo` / `impl T for Foo`),
                     // used for both `implements` (when a trait is present) and
                     // `contains` (linking the type to each of its methods).
+                    // Generics are stripped so `impl<'a> Engine<'a>` resolves to
+                    // `Engine`, matching the struct declaration.
                     let type_name = type_node
                         .as_ref()
                         .and_then(|n| n.utf8_text(source.as_bytes()).ok())
                         .unwrap_or("")
                         .trim()
                         .to_string();
+                    let type_name = strip_generics(&type_name);
                     if let (Some(trait_n), Some(type_n)) = (trait_node, type_node) {
                         let trait_name = trait_n
                             .utf8_text(source.as_bytes())
@@ -628,5 +642,29 @@ impl Display for RateLimiter {
             .any(|r| r.rel_type == "implements"
                 && r.source_name == "RateLimiter"
                 && r.target_name == "Display"));
+    }
+
+    #[test]
+    fn test_rust_generic_impl_type_strips_lifetimes() {
+        // `impl<'a> Engine<'a>` must resolve to `Engine` so its methods link to
+        // the struct declaration (named `Engine`, no generics).
+        let source = r#"
+pub struct Engine<'a> { x: &'a str }
+impl<'a> Engine<'a> {
+    pub fn run(&self) {}
+}
+"#;
+        let chunker = RustChunker::new();
+        let result = chunker.parse(source, "src/e.rs");
+        assert!(
+            result
+                .structural_rels
+                .iter()
+                .any(|r| r.rel_type == "contains"
+                    && r.source_name == "Engine"
+                    && r.target_name == "run"),
+            "generic impl should link to bare struct name: {:?}",
+            result.structural_rels
+        );
     }
 }
