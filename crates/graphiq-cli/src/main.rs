@@ -102,6 +102,12 @@ enum Commands {
         #[arg(long, help = "Output machine-readable JSON")]
         json: bool,
     },
+    Projects {
+        #[arg(long, help = "Output machine-readable JSON")]
+        json: bool,
+        #[arg(long, help = "Forget a project by path (or 'all')")]
+        forget: Option<String>,
+    },
     Subsystems {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
@@ -243,6 +249,7 @@ fn main() {
             commits,
             json,
         } => cmd_git(&project, commits, json),
+        Commands::Projects { json, forget } => cmd_projects(json, forget.as_deref()),
         Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
         Commands::Roles { db, subsystem, top } => cmd_roles(&db, subsystem, top),
         Commands::Demo => cmd_demo(),
@@ -344,6 +351,11 @@ fn cmd_index(
     if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
         eprintln!("  warning: failed to write manifest: {e}");
     }
+
+    // Record this project in the persistent multi-project registry so
+    // `graphiq projects` can list it and the user/agent can return to it without
+    // re-indexing. Best-effort: never let a registry write fail the index.
+    let _ = record_indexed_project(path, &db);
 
     if do_embed {
         #[cfg(feature = "embed")]
@@ -2387,6 +2399,264 @@ fn cmd_git(project: &std::path::Path, commits: usize, json: bool) {
     println!();
     println!("  Keep search in sync with the current scope:");
     println!("    graphiq index {} --force-reindex", project.display());
+}
+
+// ─── graphiq projects: multi-project tracking across sessions ────────────────
+//
+// The plan: graphiq must "move around reliably during each session, with each
+// user project... retain existing information for when a user calls back to
+// that project again in a new session". Project-local .graphiq/graphiq.db
+// already retains each index; this command adds the missing piece — a central,
+// persistent registry of every project graphiq has indexed, so agents and users
+// can list them, see which still have a fresh index, and return to one without
+// re-indexing from scratch.
+
+/// One tracked project in the registry.
+#[derive(Debug, Clone)]
+struct TrackedProject {
+    path: String,
+    /// ISO-8601 timestamp of when it was last indexed (or first seen).
+    last_indexed_at: String,
+    /// File-count snapshot at last index time (0 if unknown).
+    files: u64,
+    /// Symbol-count snapshot at last index time.
+    symbols: u64,
+}
+
+/// Pure: parse the projects registry JSON into a list. Tolerates missing/
+/// malformed files (returns empty). Sorted by path for stable output.
+fn parse_projects_registry(content: &str) -> Vec<TrackedProject> {
+    let v: serde_json::Value = match serde_json::from_str(content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if let Some(arr) = v.get("projects").and_then(|p| p.as_array()) {
+        for entry in arr {
+            let path = entry
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("")
+                .to_string();
+            if path.is_empty() {
+                continue;
+            }
+            out.push(TrackedProject {
+                path,
+                last_indexed_at: entry
+                    .get("lastIndexedAt")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                files: entry.get("files").and_then(|f| f.as_u64()).unwrap_or(0),
+                symbols: entry.get("symbols").and_then(|s| s.as_u64()).unwrap_or(0),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+/// Pure: upsert a project into a registry list (replace if same path, else add).
+/// Returns the new list sorted by path.
+fn upsert_project(mut projects: Vec<TrackedProject>, p: TrackedProject) -> Vec<TrackedProject> {
+    if let Some(existing) = projects.iter_mut().find(|t| t.path == p.path) {
+        *existing = p;
+    } else {
+        projects.push(p);
+    }
+    projects.sort_by(|a, b| a.path.cmp(&b.path));
+    projects
+}
+
+/// Pure: remove a project by exact path. Returns the filtered list.
+fn forget_project(projects: Vec<TrackedProject>, path: &str) -> Vec<TrackedProject> {
+    projects.into_iter().filter(|t| t.path != path).collect()
+}
+
+/// Pure: serialize the registry list to pretty JSON.
+fn serialize_projects_registry(projects: &[TrackedProject]) -> String {
+    use serde_json::json;
+    let entries: Vec<_> = projects
+        .iter()
+        .map(|p| {
+            json!({
+                "path": p.path,
+                "lastIndexedAt": p.last_indexed_at,
+                "files": p.files,
+                "symbols": p.symbols,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&json!({ "projects": entries }))
+        .unwrap_or_else(|_| "{\"projects\":[]}".to_string())
+}
+
+/// Location of the persistent multi-project registry.
+fn projects_registry_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("graphiq").join("projects.json"))
+}
+
+/// Load the current registry from disk (empty if absent/malformed).
+fn load_projects_registry() -> Vec<TrackedProject> {
+    match projects_registry_path().and_then(|p| std::fs::read_to_string(p).ok()) {
+        Some(content) => parse_projects_registry(&content),
+        None => Vec::new(),
+    }
+}
+
+/// Does a project still have a usable on-disk index?
+fn project_index_health(project_path: &std::path::Path) -> &'static str {
+    let db = project_path.join(".graphiq").join("graphiq.db");
+    if !db.exists() {
+        return "no-index";
+    }
+    // Try a quick symbol count to confirm it's not empty/corrupt.
+    if let Ok(conn) = rusqlite::Connection::open(&db) {
+        if let Ok(n) = conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get::<_, i64>(0)) {
+            return if n > 0 { "ready" } else { "empty" };
+        }
+    }
+    "ready" // file exists but we couldn't probe; assume ready
+}
+
+/// Record (or refresh) a project in the persistent registry after a successful
+/// index. Best-effort: any failure is swallowed so it never breaks indexing.
+/// Captures a snapshot of files/symbols so `graphiq projects` can show at a
+/// glance whether an index is populated.
+fn record_indexed_project(path: &std::path::Path, db: &graphiq_core::db::GraphDb) {
+    let Some(reg_path) = projects_registry_path() else {
+        return;
+    };
+    let canonical = match path.canonicalize() {
+        Ok(p) => p.display().to_string(),
+        Err(_) => path.display().to_string(),
+    };
+    let (files, symbols) = match db.stats() {
+        Ok(s) => (s.files as u64, s.symbols as u64),
+        Err(_) => (0, 0),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let iso = format_unix_ts_iso(now);
+    let entry = TrackedProject {
+        path: canonical,
+        last_indexed_at: iso,
+        files,
+        symbols,
+    };
+    let updated = upsert_project(load_projects_registry(), entry);
+    if let Some(parent) = reg_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&reg_path, serialize_projects_registry(&updated));
+}
+
+/// Format a unix timestamp as an ISO-8601 UTC string (no deps). Pure.
+fn format_unix_ts_iso(secs: u64) -> String {
+    let days_since_epoch = (secs / 86400) as i64;
+    let sod = (secs % 86400) as u64;
+    let h = sod / 3600;
+    let m = (sod % 3600) / 60;
+    let s = sod % 60;
+    // Civil date from days-since-epoch (Howard Hinnant's algorithm).
+    let z = days_since_epoch + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, d, h, m, s
+    )
+}
+
+fn cmd_projects(json: bool, forget: Option<&str>) {
+    let reg_path = match projects_registry_path() {
+        Some(p) => p,
+        None => {
+            eprintln!("error: cannot determine data directory for the projects registry");
+            std::process::exit(1);
+        }
+    };
+
+    // --forget <path|all>
+    if let Some(target) = forget {
+        let mut projects = load_projects_registry();
+        let before = projects.len();
+        if target == "all" {
+            projects.clear();
+        } else {
+            let resolved = std::path::Path::new(target)
+                .canonicalize()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| target.to_string());
+            projects = forget_project(projects, &resolved);
+        }
+        if let Some(parent) = reg_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&reg_path, serialize_projects_registry(&projects)).ok();
+        println!(
+            "Forgot {} project(s). {} tracked remaining.",
+            before - projects.len(),
+            projects.len()
+        );
+        return;
+    }
+
+    let projects = load_projects_registry();
+    if projects.is_empty() {
+        if json {
+            println!("{}", serialize_projects_registry(&[]));
+        } else {
+            println!("No tracked projects yet.");
+            println!("Index one with: graphiq index /path/to/project");
+        }
+        return;
+    }
+
+    if json {
+        println!("{}", serialize_projects_registry(&projects));
+        return;
+    }
+
+    println!("╭──────────────────────────────────────────────╮");
+    println!("│            GraphIQ Projects                  │");
+    println!("╰──────────────────────────────────────────────╯");
+    println!("  {} tracked project(s):\n", projects.len());
+    println!(
+        "  {:<48} {:<8} {:<10} {}",
+        "project", "health", "symbols", "last indexed"
+    );
+    println!("  {:-<48} {:-<8} {:-<10} {:-<20}", "", "", "", "");
+    for p in &projects {
+        let path = std::path::Path::new(&p.path);
+        let health = if path.exists() {
+            project_index_health(path)
+        } else {
+            "gone"
+        };
+        let display_path = if p.path.len() > 46 {
+            format!("…{}", &p.path[p.path.len().saturating_sub(45)..])
+        } else {
+            p.path.clone()
+        };
+        println!(
+            "  {:<48} {:<8} {:<10} {}",
+            display_path, health, p.symbols, p.last_indexed_at
+        );
+    }
+    println!();
+    println!("  Return to a project: cd <path> && graphiq search <query>");
+    println!("  Forget one:          graphiq projects --forget <path>");
 }
 
 fn cmd_setup(
@@ -5320,5 +5590,112 @@ mod tests {
         assert_eq!(tree_state_label(1, 0, 0), "dirty");
         assert_eq!(tree_state_label(0, 5, 0), "dirty");
         assert_eq!(tree_state_label(0, 0, 3), "dirty");
+    }
+
+    // ── graphiq projects tests (pure helpers) ────────────────────────────
+
+    #[test]
+    fn projects_parse_registry_roundtrip() {
+        let json = r#"{"projects":[
+          {"path":"/a","lastIndexedAt":"2026-06-22T01:00:00Z","files":10,"symbols":100},
+          {"path":"/b","lastIndexedAt":"2026-06-22T02:00:00Z","files":5,"symbols":50}
+        ]}"#;
+        let p = parse_projects_registry(json);
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].path, "/a"); // sorted
+        assert_eq!(p[0].symbols, 100);
+    }
+
+    #[test]
+    fn projects_parse_tolerates_garbage() {
+        assert!(parse_projects_registry("").is_empty());
+        assert!(parse_projects_registry("not json").is_empty());
+        assert!(parse_projects_registry("{}").is_empty());
+    }
+
+    #[test]
+    fn projects_upsert_replaces_same_path() {
+        let base = vec![TrackedProject {
+            path: "/a".into(),
+            last_indexed_at: "old".into(),
+            files: 1,
+            symbols: 1,
+        }];
+        let updated = upsert_project(
+            base,
+            TrackedProject {
+                path: "/a".into(),
+                last_indexed_at: "new".into(),
+                files: 2,
+                symbols: 2,
+            },
+        );
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].last_indexed_at, "new");
+        assert_eq!(updated[0].symbols, 2);
+    }
+
+    #[test]
+    fn projects_upsert_adds_new_sorted() {
+        let base = vec![TrackedProject {
+            path: "/b".into(),
+            last_indexed_at: "".into(),
+            files: 0,
+            symbols: 0,
+        }];
+        let updated = upsert_project(
+            base,
+            TrackedProject {
+                path: "/a".into(),
+                last_indexed_at: "".into(),
+                files: 0,
+                symbols: 0,
+            },
+        );
+        assert_eq!(updated.len(), 2);
+        assert_eq!(updated[0].path, "/a"); // sorted
+    }
+
+    #[test]
+    fn projects_forget_removes_by_path() {
+        let p = vec![
+            TrackedProject {
+                path: "/a".into(),
+                last_indexed_at: "".into(),
+                files: 0,
+                symbols: 0,
+            },
+            TrackedProject {
+                path: "/b".into(),
+                last_indexed_at: "".into(),
+                files: 0,
+                symbols: 0,
+            },
+        ];
+        let out = forget_project(p, "/a");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, "/b");
+    }
+
+    #[test]
+    fn projects_serialize_is_valid_json() {
+        let p = vec![TrackedProject {
+            path: "/x".into(),
+            last_indexed_at: "2026-01-01T00:00:00Z".into(),
+            files: 3,
+            symbols: 9,
+        }];
+        let s = serialize_projects_registry(&p);
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["projects"][0]["path"], "/x");
+        assert_eq!(v["projects"][0]["symbols"], 9);
+    }
+
+    #[test]
+    fn format_unix_ts_iso_matches_known_epoch() {
+        // Verified via Python datetime: 1782153600 == 2026-06-22T18:40:00Z.
+        assert_eq!(format_unix_ts_iso(1782153600), "2026-06-22T18:40:00Z");
+        // Unix epoch itself.
+        assert_eq!(format_unix_ts_iso(0), "1970-01-01T00:00:00Z");
     }
 }

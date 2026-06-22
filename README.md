@@ -131,6 +131,7 @@ Common MCP tools:
 | `sync` | Verify harness attach + write the graphiq registry |
 | `discover` | Scan the system for installed agent harnesses |
 | `git` | Current project scope: branch, working tree, recent commits |
+| `projects` | List tracked projects and their index health |
 
 ## What Gets Indexed
 
