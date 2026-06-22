@@ -1533,6 +1533,9 @@ enum AttachShape {
     Mcp,
     /// TOML `[mcp_servers.graphiq]` (Codex).
     CodexToml,
+    /// pi does not use MCP; attach is the graphiq-pi extension file existing in
+    /// ~/.pi/agent/extensions/.
+    PiExtension,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1579,6 +1582,16 @@ fn detect_attach(content: &str, shape: AttachShape) -> AttachState {
                     || t.starts_with("[mcp_servers.graphiq ")
             });
             if has {
+                AttachState::Connected
+            } else {
+                AttachState::NotConfigured
+            }
+        }
+        AttachShape::PiExtension => {
+            // pi attach = the graphiq-pi extension file exists (content isn't a
+            // config we parse; it's the extension source). The `content` here is
+            // the file's text — connected if it looks like the graphiq extension.
+            if content.contains("GraphIQ extension for pi") || content.contains("graphiq_search") {
                 AttachState::Connected
             } else {
                 AttachState::NotConfigured
@@ -1642,6 +1655,16 @@ fn harness_targets(home: &std::path::Path, project: &std::path::Path) -> Vec<Har
         name: "windsurf",
         path: project.join(".windsurf").join("mcp.json"),
         shape: AttachShape::McpServers,
+    });
+    // pi: attach is the extension file in ~/.pi/agent/extensions/.
+    out.push(HarnessTarget {
+        name: "pi",
+        path: home
+            .join(".pi")
+            .join("agent")
+            .join("extensions")
+            .join("graphiq-pi.ts"),
+        shape: AttachShape::PiExtension,
     });
     out
 }
@@ -2435,6 +2458,94 @@ fn cmd_setup(
         }
     } else {
         skipped.push("Aider".to_string());
+    }
+
+    // Pi — pi does not support MCP; it integrates via a pi extension (the same
+    // approach Signet uses). Install the graphiq-pi extension into
+    // ~/.pi/agent/extensions/ so pi auto-discovers it and exposes the graphiq
+    // tools + /graphiq command. The extension shells out to this `graphiq` CLI.
+    if should_configure("pi") {
+        'pi: {
+            let home_dir =
+                dirs::home_dir().unwrap_or_else(|| std::path::Path::new(".").to_path_buf());
+            let pi_ext_dir = home_dir.join(".pi").join("agent").join("extensions");
+            // Only install where pi is actually present (the extensions dir exists).
+            if !pi_ext_dir.exists() {
+                skipped.push("pi".to_string());
+                break 'pi;
+            }
+            // Find the extension source bundled with this graphiq install.
+            let exe = std::env::current_exe().ok();
+            let candidates: Vec<PathBuf> = [
+                exe.as_ref().map(|e| {
+                    e.parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("integrations")
+                        .join("pi")
+                        .join("graphiq-pi.ts")
+                }),
+                exe.as_ref().map(|e| {
+                    e.parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("..")
+                        .join("share")
+                        .join("graphiq")
+                        .join("graphiq-pi.ts")
+                }),
+                Some(PathBuf::from("/usr/local/share/graphiq/graphiq-pi.ts")),
+                Some(PathBuf::from("/opt/homebrew/share/graphiq/graphiq-pi.ts")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let src = candidates.iter().find(|p| p.exists());
+            let dest = pi_ext_dir.join("graphiq-pi.ts");
+            match src {
+                Some(src_path) => {
+                    if let Some(parent) = dest.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    match std::fs::copy(src_path, &dest) {
+                        Ok(_) => {
+                            println!("  Pi:            installed extension {}", dest.display());
+                            configured.push("Pi".to_string());
+                        }
+                        Err(e) => {
+                            eprintln!("  Pi:            failed to install extension: {e}");
+                            failed.push("Pi".to_string());
+                        }
+                    }
+                }
+                None => {
+                    // Development convenience: if running from the graphiq repo, the
+                    // source is at repo integrations/pi/graphiq-pi.ts.
+                    let dev_src = PathBuf::from("integrations/pi/graphiq-pi.ts");
+                    if dev_src.exists() {
+                        if let Some(parent) = dest.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        match std::fs::copy(&dev_src, &dest) {
+                            Ok(_) => {
+                                println!("  Pi:            installed extension {}", dest.display());
+                                configured.push("Pi".to_string());
+                            }
+                            Err(e) => {
+                                eprintln!("  Pi:            failed to install extension: {e}");
+                                failed.push("Pi".to_string());
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "  Pi:            graphiq-pi.ts not found beside the graphiq binary;"
+                        );
+                        eprintln!("                 reinstall graphiq to bundle the pi extension.");
+                        failed.push("Pi".to_string());
+                    }
+                }
+            }
+        }
+    } else {
+        skipped.push("pi".to_string());
     }
 
     if configured.is_empty() && skipped.is_empty() {
@@ -4429,11 +4540,33 @@ mod tests {
         let project = std::path::Path::new("/tmp/fakeproj");
         let targets = harness_targets(home, project);
         let names: Vec<&str> = targets.iter().map(|t| t.name).collect();
-        for expected in ["claude-code", "opencode", "codex", "cursor", "windsurf"] {
+        for expected in [
+            "claude-code",
+            "opencode",
+            "codex",
+            "cursor",
+            "windsurf",
+            "pi",
+        ] {
             assert!(
                 names.contains(&expected),
                 "missing harness target: {expected}"
             );
         }
+    }
+
+    #[test]
+    fn sync_detect_attach_pi_extension() {
+        let installed = "/** GraphIQ extension for pi */\nexport default function(){}\npi.registerTool({name:\"graphiq_search\"})";
+        assert_eq!(
+            detect_attach(installed, AttachShape::PiExtension),
+            AttachState::Connected
+        );
+        // A different extension file is not a graphiq attach.
+        let other = "// some other pi extension";
+        assert_eq!(
+            detect_attach(other, AttachShape::PiExtension),
+            AttachState::NotConfigured
+        );
     }
 }

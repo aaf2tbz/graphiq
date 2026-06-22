@@ -31,7 +31,7 @@ The Signet lifecycle hook warms `$TMPDIR/graphiq-session-<session>/graphiq.db` f
 | **Forge** | Supported | MCP stdio via Signet connector |
 | **Hermes Agent** | Supported | MCP stdio via Signet connector |
 | **Oh My Pi** | Supported | MCP stdio via Signet connector |
-| **Pi** | Supported | MCP stdio via Signet connector |
+| **Pi** | Supported | pi extension (no MCP — shells out to graphiq CLI) |
 
 ## Tool names
 
