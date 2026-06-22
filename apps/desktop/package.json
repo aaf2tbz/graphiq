@@ -1,6 +1,6 @@
 {
   "name": "graphiq-desktop",
-  "version": "4.3.2",
+  "version": "4.3.3",
   "private": true,
   "description": "GraphIQ desktop application",
   "author": "Alex Mondello",
@@ -59,9 +59,9 @@
       "identity": null,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist",
-      "afterPack": "build/adhoc-deep-sign.cjs"
+      "entitlementsInherit": "build/entitlements.mac.plist"
     },
+    "afterPack": "build/adhoc-deep-sign.cjs",
     "linux": {
       "target": [
         "AppImage",
