@@ -25,6 +25,20 @@ fi
 
 if [ -n "$SESSION_ID" ]; then
     SESSION_DIR="${TMPDIR:-/tmp}/graphiq-session-${SESSION_ID}"
+    # DORMANCY: terminate any background indexing still running for this
+    # session so graphiq stops doing work the moment the session/harness
+    # closes (the plan: "if the user is not inside of an active harness or
+    # project, graphiq should remain dormant"). The session-start hook writes
+    # the indexer PID to .index.lock; if it's still alive, stop it cleanly.
+    LOCKFILE="$SESSION_DIR/.index.lock"
+    if [ -f "$LOCKFILE" ]; then
+        LOCK_PID="$(cat "$LOCKFILE" 2>/dev/null || echo "")"
+        if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+            kill "$LOCK_PID" 2>/dev/null || true
+            echo "[graphiq] Stopped background indexer (PID $LOCK_PID) for ended session."
+        fi
+        rm -f "$LOCKFILE"
+    fi
     if [ -d "$SESSION_DIR" ]; then
         rm -rf "$SESSION_DIR"
         echo "[graphiq] Cleaned up session DB: $SESSION_DIR"

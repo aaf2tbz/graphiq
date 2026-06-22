@@ -72,6 +72,10 @@ const DB_FLAG = () => {
   return process.env.GRAPHIQ_DB ?? ".graphiq/graphiq.db";
 };
 
+// Track the background indexer so we can stop it on session shutdown (dormancy:
+// graphiq must not keep doing work after the harness/project closes).
+let backgroundIndexer: ReturnType<typeof spawn> | null = null;
+
 export default function (pi: ExtensionAPI) {
   // Status + auto-index on session start (mirrors signet's per-session warm).
   pi.on("session_start", async (_event, ctx) => {
@@ -88,20 +92,34 @@ export default function (pi: ExtensionAPI) {
     const db = join(cwd, DB_FLAG());
     if (!existsSync(db)) {
       ctx.ui.notify("GraphIQ indexing project in background…", "info");
-      spawn(
+      // NOT detached: the child is tracked so session_shutdown can stop it,
+      // keeping graphiq dormant when no session is active.
+      backgroundIndexer = spawn(
         GRAPHIQ_BIN,
         ["index", cwd, "--db", db],
         {
           cwd,
           env: { ...process.env, GRAPHIQ_INDEX_MODE: "background", RAYON_NUM_THREADS: "2" },
           stdio: "ignore",
-          detached: true,
         },
-      ).unref();
+      );
+      backgroundIndexer.on("exit", () => {
+        backgroundIndexer = null;
+      });
     }
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
+    // DORMANCY: stop any background indexer the moment the session closes, so
+    // graphiq does no work while no harness/project is active.
+    if (backgroundIndexer && backgroundIndexer.pid) {
+      try {
+        backgroundIndexer.kill("SIGTERM");
+      } catch {
+        /* already gone */
+      }
+      backgroundIndexer = null;
+    }
     ctx.ui.setStatus("graphiq", undefined);
   });
 
