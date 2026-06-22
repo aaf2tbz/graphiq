@@ -1,6 +1,6 @@
 {
   "name": "graphiq-desktop",
-  "version": "4.3.0",
+  "version": "4.3.1",
   "private": true,
   "description": "GraphIQ desktop application",
   "author": "Alex Mondello",
@@ -14,7 +14,7 @@
     "package": "npm run build && electron-builder"
   },
   "dependencies": {
-    "better-sqlite3": "^11.8.1",
+    "better-sqlite3": "^12.11.1",
     "brace-expansion": "^5.0.6",
     "fast-glob": "^3.3.3",
     "lucide-react": "^0.511.0",
@@ -55,7 +55,10 @@
     "icon": "build/icon.png",
     "mac": {
       "category": "public.app-category.developer-tools",
-      "icon": "build/icon.icns"
+      "icon": "build/icon.icns",
+      "identity": null,
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
     },
     "linux": {
       "target": [
