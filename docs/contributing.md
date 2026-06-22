@@ -27,20 +27,46 @@ Artifacts are written to `apps/desktop/release/`.
 
 ## Architecture
 
-GraphIQ is a Rust workspace with these crates:
+GraphIQ is a Rust workspace. The layout:
 
-- `graphiq-core` — Indexing, search, and analysis engine
-- `graphiq-cli` — Command-line interface
-- `graphiq-mcp` — MCP server (experimental)
-- `graphiq-bench` — Benchmarks
-- `apps/desktop` — Electron desktop shell for browsing local indexes
+| Crate / dir | Role |
+|---|---|
+| `graphiq-core` | Indexing, search, and analysis engine (the heart) |
+| `graphiq-cli` | Command-line interface → `graphiq` binary |
+| `graphiq-mcp` | MCP stdio server → `graphiq-mcp` binary |
+| `graphiq-bench` | Benchmark harness |
+| `apps/desktop` | Electron desktop shell for browsing local indexes |
+| `signet-plugin/` | Signet managed-plugin manifest + session hooks |
+| `integrations/pi/` | pi extension (no MCP — shells out to the CLI) |
+
+The CLI surfaces index/search/blast plus lifecycle commands: `setup`, `sync`
+(--apply re-configures), `discover`, `git`, `projects`, `clear`. See the
+[CLI reference in the README](../README.md#cli-reference) and the
+[AGENTS.md template](../crates/graphiq-cli/AGENTS.md.template) for the full set.
 
 ## Development workflow
 
 1. Create a feature branch from `main`.
-2. Make changes with tests.
-3. Run `cargo test`, `cargo clippy`, `cargo fmt --check`.
-4. Open a pull request against `main`.
+2. Make changes with tests (prefer pure, unit-testable helpers).
+3. Validate locally:
+   ```bash
+   cargo test --workspace
+   cargo clippy --workspace --all-targets
+   cargo fmt --all -- --check
+   ```
+4. For harness/integration changes, rebuild and **probe the real binary** — don't
+   rely on unit tests alone. See the verification patterns in recent commit
+   messages.
+5. Open a pull request against `main`.
+
+## CI
+
+- **`linux-smoke.yml`** — builds with `--features gpu` on ubuntu, strips all
+  Vulkan, and proves the binaries start + run the full command surface on CPU.
+  This is the gate that answers "does it work on Linux".
+- **`release.yml`** — cross-builds macOS (arm64 + x86_64) and Linux (x86_64 +
+  aarch64) releases with SHA-256 checksums.
+- **`auto-release.yml`** — tags the next version on every push to `main`.
 
 ## Commit style
 
@@ -71,11 +97,16 @@ bun run build
 
 ## Benchmarks
 
+The benchmark harness compares GraphIQ against grep on real query sets:
+
 ```bash
-cargo bench
+# Build a DB, then:
+./target/release/graphiq-bench <db-path> <ndcg-queries.json> <mrr-queries.json>
 ```
 
-Results are saved to `benchmarks/`.
+Query sets live in `benches/queries/archive/`. When changing the indexer or
+scoring, run an **A/B** against `main` to prove no regression (the demo-codebase
+MRR suite is a good quick check). Baselines are in `benches/baseline-*.json`.
 
 ## Release
 
