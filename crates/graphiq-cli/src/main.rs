@@ -1258,6 +1258,111 @@ fn check_build_dependencies() {
     }
 }
 
+/// Strip JSONC comments (`// line` and `/* block */`) from text so it can be
+/// parsed by a strict JSON parser (serde_json). String literals are preserved —
+/// a `//` or `/*` inside a string value (e.g. a URL) is NOT treated as a
+/// comment. Multi-byte UTF-8 content is preserved by working on `char`s.
+/// This lets setup read+preserve the user's existing opencode config
+/// (commonly written as JSONC) instead of falling back to `{}` and destroying
+/// it on parse failure.
+fn strip_jsonc_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.char_indices().peekable();
+    let mut in_string = false;
+
+    while let Some((_, c)) = chars.next() {
+        if in_string {
+            out.push(c);
+            if c == '\\' {
+                // Escape: copy the next char verbatim so an escaped quote (\")
+                // doesn't terminate the string.
+                if let Some((_, escaped)) = chars.next() {
+                    out.push(escaped);
+                }
+                continue;
+            }
+            if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        // Not in a string.
+        if c == '"' {
+            in_string = true;
+            out.push('"');
+            continue;
+        }
+
+        if c == '/' {
+            match chars.peek() {
+                Some((_, '/')) => {
+                    // Line comment: consume the '/' and everything to end of
+                    // line. Keep the newline so line numbers stay sane.
+                    chars.next(); // consume second '/'
+                    while let Some((_, cc)) = chars.next() {
+                        if cc == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some((_, '*')) => {
+                    // Block comment: consume to '*/'. Emit a newline so adjacent
+                    // tokens stay separated (e.g. "a",/*x*/"b" -> "a",\n"b").
+                    chars.next(); // consume '*'
+                    let mut closed = false;
+                    while let Some((_, cc)) = chars.next() {
+                        if cc == '*' {
+                            if let Some((_, '/')) = chars.peek() {
+                                chars.next(); // consume '/'
+                                closed = true;
+                                break;
+                            }
+                        }
+                    }
+                    let _ = closed;
+                    out.push('\n');
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        out.push(c);
+    }
+
+    out
+}
+
+/// Parse JSONC config text into a serde_json::Value, stripping comments first.
+/// Returns `None` (instead of an empty object) when parsing fails, so callers
+/// can refuse to overwrite unreadable config rather than silently destroying it.
+fn parse_jsonc_config(content: &str) -> Option<serde_json::Value> {
+    let stripped = strip_jsonc_comments(content);
+    serde_json::from_str(&stripped).ok()
+}
+
+/// Decide which opencode config file to read/write.
+///
+/// opencode reads both `opencode.jsonc` (canonical, modern) and `opencode.json`
+/// (legacy) and merges them. To avoid creating a confusing second file and to
+/// correctly detect an existing graphiq entry, we prefer the file that already
+/// exists (`.jsonc` first), and create `.jsonc` when neither exists.
+fn opencode_config_path(home: &std::path::Path) -> std::path::PathBuf {
+    let dir = home.join(".config").join("opencode");
+    let jsonc = dir.join("opencode.jsonc");
+    let json = dir.join("opencode.json");
+    if jsonc.exists() {
+        jsonc
+    } else if json.exists() {
+        json
+    } else {
+        jsonc
+    }
+}
+
 fn cmd_setup(
     project: Option<&std::path::Path>,
     skip_index: bool,
@@ -1494,66 +1599,120 @@ fn cmd_setup(
 
     // OpenCode
     if should_configure("opencode") {
-        let opencode_config =
-            dirs::home_dir().map(|d| d.join(".config").join("opencode").join("opencode.json"));
-
-        if let Some(ref config_path) = opencode_config {
-            let project_str = project_path.display().to_string();
-            let mut cmd = vec!["graphiq-mcp".to_string(), project_str.clone()];
-            if ephemeral {
-                cmd.push("--ephemeral".to_string());
-            }
-            let entry = json!({
-                "type": "local",
-                "command": cmd,
-                "enabled": true
+        // opencode reads opencode.jsonc (canonical) and opencode.json (legacy)
+        // and merges them. Write to whichever already exists (prefer .jsonc) so
+        // we don't spawn a second file, and parse JSONC safely so a commented
+        // config is preserved rather than destroyed.
+        let opencode_config = dirs::home_dir()
+            .map(|h| opencode_config_path(&h))
+            .and_then(|p| {
+                // Only proceed if the opencode config directory itself exists —
+                // creating a brand-new opencode.jsonc in a missing dir would
+                // imply opencode is installed when it may not be.
+                if p.parent().map_or(false, |d| d.exists()) {
+                    Some(p)
+                } else {
+                    None
+                }
             });
 
-            let (config, written) = if config_path.exists() {
-                match std::fs::read_to_string(config_path) {
-                    Ok(content) => {
-                        let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
-                        let mcp = parsed
-                            .as_object_mut()
-                            .unwrap()
-                            .entry("mcp")
-                            .or_insert_with(|| json!({}))
-                            .as_object_mut()
-                            .unwrap();
-                        let already = mcp
-                            .get("graphiq")
-                            .and_then(|v| v.get("command"))
-                            .and_then(|a| a.as_array())
-                            .and_then(|arr| arr.get(1))
-                            .and_then(|v| v.as_str())
-                            .map_or(false, |s| s == project_str);
-                        mcp.insert("graphiq".into(), entry);
-                        (pretty(&parsed), !already)
-                    }
-                    Err(_) => {
-                        let obj = json!({"mcp": {"graphiq": entry}});
-                        (pretty(&obj), true)
-                    }
+        if let Some(ref config_path) = opencode_config {
+            // Wrapped in a labeled block so recoverable opencode errors
+            // (unreadable/unparseable config) skip ONLY this harness via
+            // `break 'opencode` — they must not abort the whole setup run.
+            'opencode: {
+                let project_str = project_path.display().to_string();
+                let mut cmd = vec!["graphiq-mcp".to_string(), project_str.clone()];
+                if ephemeral {
+                    cmd.push("--ephemeral".to_string());
                 }
-            } else {
-                let obj = json!({"mcp": {"graphiq": entry}});
-                (pretty(&obj), true)
-            };
+                let entry = json!({
+                    "type": "local",
+                    "command": cmd,
+                    "enabled": true
+                });
 
-            if let Some(parent) = config_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            match std::fs::write(config_path, &config) {
-                Ok(()) => {
-                    let status = if written { "configured" } else { "updated" };
-                    println!("  opencode:      {} {}", status, config_path.display());
-                    configured.push("opencode".to_string());
-                }
-                Err(e) => {
-                    eprintln!("  opencode:      failed to write config: {e}");
+                // Read existing config. If it exists but can't be parsed (even after
+                // JSONC stripping), DO NOT fall back to {} — that would overwrite
+                // and destroy the user's config. Instead, treat it as a hard error.
+                let mut parsed: Value = if config_path.exists() {
+                    match std::fs::read_to_string(config_path) {
+                        Ok(content) => match parse_jsonc_config(&content) {
+                            Some(v) => v,
+                            None => {
+                                eprintln!(
+                                    "  opencode:      failed to parse existing config at {}",
+                                    config_path.display()
+                                );
+                                eprintln!("  leaving it untouched; fix or back up the file and re-run setup.");
+                                failed.push("opencode".to_string());
+                                break 'opencode;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("  opencode:      failed to read config: {e}");
+                            failed.push("opencode".to_string());
+                            break 'opencode;
+                        }
+                    }
+                } else {
+                    json!({})
+                };
+
+                // Ensure `parsed` is an object so we can insert the mcp key.
+                if !parsed.is_object() {
+                    eprintln!(
+                    "  opencode:      existing config at {} is not a JSON object; leaving it untouched",
+                    config_path.display()
+                );
                     failed.push("opencode".to_string());
+                    break 'opencode;
                 }
-            }
+
+                // Get or create the `mcp` object. If `mcp` exists but isn't an
+                // object (e.g. "mcp": false), refuse to overwrite rather than panic.
+                let mcp_obj = parsed
+                    .as_object_mut()
+                    .unwrap()
+                    .entry("mcp")
+                    .or_insert_with(|| json!({}));
+                if !mcp_obj.is_object() {
+                    eprintln!(
+                    "  opencode:      existing `mcp` key in {} is not an object; leaving it untouched",
+                    config_path.display()
+                );
+                    failed.push("opencode".to_string());
+                    break 'opencode;
+                }
+                let mcp = mcp_obj.as_object_mut().unwrap();
+                let already = mcp
+                    .get("graphiq")
+                    .and_then(|v| v.get("command"))
+                    .and_then(|a| a.as_array())
+                    .and_then(|arr| arr.get(1))
+                    .and_then(|v| v.as_str())
+                    .map_or(false, |s| s == project_str);
+                mcp.insert("graphiq".into(), entry);
+                let written = !already;
+                let config = pretty(&parsed);
+
+                if let Some(parent) = config_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::write(config_path, &config) {
+                    Ok(()) => {
+                        let status = if written { "configured" } else { "updated" };
+                        println!("  opencode:      {} {}", status, config_path.display());
+                        configured.push("opencode".to_string());
+                    }
+                    Err(e) => {
+                        eprintln!("  opencode:      failed to write config: {e}");
+                        failed.push("opencode".to_string());
+                    }
+                }
+            } // end 'opencode labeled block
+        } else {
+            skipped.push("opencode".to_string());
         }
     } else {
         skipped.push("opencode".to_string());
@@ -3629,5 +3788,111 @@ fn cmd_embed_test(text: &str) {
             eprintln!("FAILED to embed: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    #[test]
+    fn strip_jsonc_line_and_block_comments() {
+        let input = r#"{
+  // a line comment
+  "name": "value", /* block comment */
+  "n": 1
+}"#;
+        let out = strip_jsonc_comments(input);
+        // Comments gone, valid JSON, values preserved.
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["name"], "value");
+        assert_eq!(v["n"], 1);
+    }
+
+    #[test]
+    fn strip_jsonc_preserves_urls_and_strings() {
+        // `//` inside a string (a URL) must NOT be treated as a comment.
+        let input = r#"{
+  "$schema": "https://opencode.ai/config.json",
+  "url": "http://example.com/path"
+}"#;
+        let out = strip_jsonc_comments(input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["$schema"], "https://opencode.ai/config.json");
+        assert_eq!(v["url"], "http://example.com/path");
+    }
+
+    #[test]
+    fn strip_jsonc_preserves_escaped_quotes() {
+        // Escaped quote inside a string must not terminate it.
+        let input = r#"{ "msg": "she said \"hi\" // not a comment" }"#;
+        let out = strip_jsonc_comments(input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["msg"], "she said \"hi\" // not a comment");
+    }
+
+    #[test]
+    fn strip_jsonc_block_comment_separates_tokens() {
+        let input = r#"{ "a": 1,/*x*/"b": 2 }"#;
+        let out = strip_jsonc_comments(input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["a"], 1);
+        assert_eq!(v["b"], 2);
+    }
+
+    #[test]
+    fn strip_jsonc_unterminated_block_comment() {
+        // Should not panic; produces parseable (incomplete) output but no crash.
+        let input = "{ \"a\": 1 /* never closed";
+        let _ = strip_jsonc_comments(input);
+    }
+
+    #[test]
+    fn strip_jsonc_preserves_utf8() {
+        // Regression: the byte-casting implementation mangled multi-byte chars.
+        // Non-ASCII content (names, descriptions, emojis) must round-trip intact.
+        let input = "{ \"name\": \"café\", \"emoji\": \"🚀\", // 注释\n \"ok\": true }";
+        let out = strip_jsonc_comments(input);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["name"], "café");
+        assert_eq!(v["emoji"], "🚀");
+        assert_eq!(v["ok"], true);
+    }
+
+    #[test]
+    fn parse_jsonc_config_returns_none_on_invalid() {
+        assert!(parse_jsonc_config("{ not valid json }").is_none());
+        assert!(parse_jsonc_config("").is_none());
+        assert!(parse_jsonc_config(r#"{ "ok": true } // trailing"#).is_some());
+    }
+
+    #[test]
+    fn opencode_config_path_prefers_existing_jsonc() {
+        let tmp = std::env::temp_dir().join(format!(
+            "gq-test-jsonc-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let dir = tmp.join(".config").join("opencode");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Neither exists -> default to .jsonc (modern canonical).
+        let p = opencode_config_path(&tmp);
+        assert!(p.ends_with("opencode.jsonc"));
+
+        // Only .json exists -> use it (legacy).
+        std::fs::write(dir.join("opencode.json"), "{}").unwrap();
+        let p = opencode_config_path(&tmp);
+        assert!(p.ends_with("opencode.json"));
+
+        // Both exist -> prefer .jsonc.
+        std::fs::write(dir.join("opencode.jsonc"), "{}").unwrap();
+        let p = opencode_config_path(&tmp);
+        assert!(p.ends_with("opencode.jsonc"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
