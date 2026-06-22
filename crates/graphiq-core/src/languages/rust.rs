@@ -6,6 +6,29 @@ use crate::chunker::{
 };
 use crate::symbol::{SymbolKind, Visibility};
 
+/// Collect the names of methods/constants defined inside an `impl_item` node,
+/// so we can emit `contains` relations linking the impl's type to its members.
+fn impl_member_names(impl_node: &tree_sitter::Node, source: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut cursor = impl_node.walk();
+    for child in impl_node.children(&mut cursor) {
+        if child.kind() == "declaration_list" || child.kind() == "trait_item" {
+            let mut inner = child.walk();
+            for item in child.children(&mut inner) {
+                if matches!(
+                    item.kind(),
+                    "function_item" | "const_item" | "type_item" | "assoc_type_item"
+                ) {
+                    if let Some(n) = extract_name(item, source) {
+                        names.push(n);
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
 pub struct RustChunker;
 
 impl Default for RustChunker {
@@ -191,20 +214,13 @@ impl LanguageChunker for RustChunker {
                     self.extract_impl_items(child, source, file_path, symbols);
                 }
                 "impl_item" => {
-                    let name = extract_name(child, source);
-                    if let Some(sym) = make_parsed_symbol(
-                        source,
-                        child,
-                        file_path,
-                        "rust",
-                        SymbolKind::Module,
-                        name.as_deref(),
-                        None,
-                        Visibility::Public,
-                        serde_json::Value::Null,
-                    ) {
-                        symbols.push(sym);
-                    }
+                    // Intentionally do NOT create a Module symbol for the impl
+                    // block: its name (the impl type, e.g. "RateLimiter") collides
+                    // with the struct/type of the same name, which broke
+                    // name-resolution of `contains` edges and left `graphiq blast
+                    // Struct` reporting an empty radius. The impl's methods are
+                    // still extracted below, and linked to their type by name via
+                    // `contains` structural relations in extract_structural_rels.
                     self.extract_impl_items(child, source, file_path, symbols);
                 }
                 "mod_item" => {
@@ -312,22 +328,44 @@ impl LanguageChunker for RustChunker {
                 "impl_item" => {
                     let trait_node = node.child_by_field_name("trait");
                     let type_node = node.child_by_field_name("type");
+                    // The impl's type (e.g. `Foo` in `impl Foo` / `impl T for Foo`),
+                    // used for both `implements` (when a trait is present) and
+                    // `contains` (linking the type to each of its methods).
+                    let type_name = type_node
+                        .as_ref()
+                        .and_then(|n| n.utf8_text(source.as_bytes()).ok())
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
                     if let (Some(trait_n), Some(type_n)) = (trait_node, type_node) {
                         let trait_name = trait_n
                             .utf8_text(source.as_bytes())
                             .unwrap_or("")
                             .trim()
                             .to_string();
-                        let type_name = type_n
+                        let tn = type_n
                             .utf8_text(source.as_bytes())
                             .unwrap_or("")
                             .trim()
                             .to_string();
-                        if !trait_name.is_empty() && !type_name.is_empty() {
+                        if !trait_name.is_empty() && !tn.is_empty() {
                             rels.push(StructuralRelation {
-                                source_name: type_name,
+                                source_name: tn,
                                 target_name: trait_name,
                                 rel_type: "implements".into(),
+                            });
+                        }
+                    }
+                    // Link the impl's type to each of its methods/constants so
+                    // blast-radius and structural search traverse struct→method
+                    // (previously Rust impl methods were orphaned from their
+                    // type, so `graphiq blast Struct` reported an empty radius).
+                    if !type_name.is_empty() {
+                        for member_name in impl_member_names(&node, source) {
+                            rels.push(StructuralRelation {
+                                source_name: type_name.clone(),
+                                target_name: member_name,
+                                rel_type: "contains".into(),
                             });
                         }
                     }
@@ -535,5 +573,60 @@ impl Display for User {
             .structural_rels
             .iter()
             .any(|r| r.rel_type == "contains" && r.target_name == "Address"));
+    }
+
+    #[test]
+    fn test_rust_impl_methods_linked_to_type_via_contains() {
+        // Regression: Rust impl methods were orphaned from their struct, so
+        // `graphiq blast Struct` reported an empty radius. The impl's type must
+        // now `contains` each of its methods (resolved by name at index time).
+        let source = r#"
+struct RateLimiter {
+    max: u32,
+}
+
+impl RateLimiter {
+    pub fn check_rate(&self) -> bool { true }
+    pub fn reset(&self) {}
+}
+
+impl Display for RateLimiter {
+    fn fmt(&self, f: &mut Formatter) -> Result { Ok(()) }
+}
+"#;
+        let chunker = RustChunker::new();
+        let result = chunker.parse(source, "src/rl.rs");
+
+        // Inherent-impl methods linked to the struct.
+        assert!(
+            result
+                .structural_rels
+                .iter()
+                .any(|r| r.rel_type == "contains"
+                    && r.source_name == "RateLimiter"
+                    && r.target_name == "check_rate"),
+            "RateLimiter should contain check_rate: {:?}",
+            result.structural_rels
+        );
+        assert!(result
+            .structural_rels
+            .iter()
+            .any(|r| r.rel_type == "contains"
+                && r.source_name == "RateLimiter"
+                && r.target_name == "reset"));
+        // Trait-impl method (fmt) also linked to the implementing type.
+        assert!(result
+            .structural_rels
+            .iter()
+            .any(|r| r.rel_type == "contains"
+                && r.source_name == "RateLimiter"
+                && r.target_name == "fmt"));
+        // And the trait implementation is still captured.
+        assert!(result
+            .structural_rels
+            .iter()
+            .any(|r| r.rel_type == "implements"
+                && r.source_name == "RateLimiter"
+                && r.target_name == "Display"));
     }
 }

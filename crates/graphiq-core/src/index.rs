@@ -228,6 +228,7 @@ impl<'a> Indexer<'a> {
                     "implements" => Some(EdgeKind::Implements),
                     "extends" => Some(EdgeKind::Extends),
                     "overrides" => Some(EdgeKind::Overrides),
+                    "contains" => Some(EdgeKind::Contains),
                     _ => None,
                 };
                 if let Some(kind) = edge_kind {
