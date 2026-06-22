@@ -81,6 +81,15 @@ enum Commands {
         #[arg(short, long, help = "Skip the confirmation prompt")]
         yes: bool,
     },
+    Sync {
+        #[arg(long, value_name = "PATH")]
+        project: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Limit the displayed report to harnesses matching this substring"
+        )]
+        harness: Option<String>,
+    },
     Subsystems {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
@@ -215,6 +224,7 @@ fn main() {
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
         Commands::Clear { db, yes } => cmd_clear(&db, yes),
+        Commands::Sync { project, harness } => cmd_sync(project.as_deref(), harness.as_deref()),
         Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
         Commands::Roles { db, subsystem, top } => cmd_roles(&db, subsystem, top),
         Commands::Demo => cmd_demo(),
@@ -1446,6 +1456,353 @@ fn opencode_config_path(home: &std::path::Path) -> std::path::PathBuf {
         json
     } else {
         jsonc
+    }
+}
+
+// ─── graphiq sync: verify harness attach + reconcile graphiq storage ─────────
+//
+// `graphiq sync` reports the TRUE attach state of every supported harness
+// (is graphiq wired into the config setup targets?), confirms `graphiq-mcp` is
+// reachable, and writes a graphiq-owned registry recording what it found. It is
+// a read-only health check + storage reconcile; to (re)apply a config, run
+// `graphiq setup`. This directly addresses the plan's "does not reliably attach"
+// and "synced back with graphiq storage" requirements.
+
+/// Minimal JSONC `//` line-comment + `/* */` block-comment stripper for the read
+/// path (opencode configs are JSONC). String literals are preserved, and it is
+/// char-based so multi-byte UTF-8 round-trips intact.
+fn sync_strip_jsonc(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.char_indices().peekable();
+    let mut in_string = false;
+    while let Some((_, c)) = chars.next() {
+        if in_string {
+            out.push(c);
+            if c == '\\' {
+                if let Some((_, e)) = chars.next() {
+                    out.push(e);
+                }
+                continue;
+            }
+            if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push('"');
+            continue;
+        }
+        if c == '/' {
+            match chars.peek() {
+                Some((_, '/')) => {
+                    chars.next();
+                    while let Some((_, cc)) = chars.next() {
+                        if cc == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some((_, '*')) => {
+                    chars.next();
+                    while let Some((_, cc)) = chars.next() {
+                        if cc == '*' && matches!(chars.peek(), Some((_, '/'))) {
+                            chars.next();
+                            break;
+                        }
+                    }
+                    out.push('\n');
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachShape {
+    /// top-level `mcpServers.graphiq` (Claude Desktop, Claude Code, Cursor, Windsurf).
+    McpServers,
+    /// top-level `mcp.graphiq`, JSONC (OpenCode).
+    Mcp,
+    /// TOML `[mcp_servers.graphiq]` (Codex).
+    CodexToml,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AttachState {
+    /// Config exists and has a graphiq MCP entry.
+    Connected,
+    /// Config exists but has no graphiq entry.
+    NotConfigured,
+    /// Config exists but could not be parsed.
+    ParseFailed,
+}
+
+/// Pure: given a harness config's text and its shape, decide whether graphiq is
+/// wired in. Robust to JSONC comments for the JSON shapes; the TOML shape matches
+/// the `[mcp_servers.graphiq]` section header with a terminator so it does not
+/// false-positive on `[mcp_servers.graphiqfoo]`.
+fn detect_attach(content: &str, shape: AttachShape) -> AttachState {
+    match shape {
+        AttachShape::McpServers | AttachShape::Mcp => {
+            let key = match shape {
+                AttachShape::McpServers => "mcpServers",
+                _ => "mcp",
+            };
+            let stripped = sync_strip_jsonc(content);
+            match serde_json::from_str::<serde_json::Value>(&stripped) {
+                Ok(v) => {
+                    let has = v.get(key).and_then(|m| m.get("graphiq")).is_some();
+                    if has {
+                        AttachState::Connected
+                    } else {
+                        AttachState::NotConfigured
+                    }
+                }
+                Err(_) => AttachState::ParseFailed,
+            }
+        }
+        AttachShape::CodexToml => {
+            // Match the section header with a terminator (] or .) so
+            // [mcp_servers.graphiqfoo] does not false-positive.
+            let has = content.lines().any(|l| {
+                let t = l.trim();
+                t == "[mcp_servers.graphiq]"
+                    || t.starts_with("[mcp_servers.graphiq.")
+                    || t.starts_with("[mcp_servers.graphiq ")
+            });
+            if has {
+                AttachState::Connected
+            } else {
+                AttachState::NotConfigured
+            }
+        }
+    }
+}
+
+/// One harness attach target: display name, config path, and config shape.
+struct HarnessTarget {
+    name: &'static str,
+    path: PathBuf,
+    shape: AttachShape,
+}
+
+/// Resolve the config-file targets for all supported harnesses. Paths mirror
+/// what `setup` writes so sync reads the same files setup configures (this is
+/// what makes sync an accurate check, not a parallel source of truth).
+fn harness_targets(home: &std::path::Path, project: &std::path::Path) -> Vec<HarnessTarget> {
+    let mut out = Vec::new();
+    if let Some(claude_desktop) =
+        dirs::config_dir().map(|d| d.join("Claude").join("claude_desktop_config.json"))
+    {
+        out.push(HarnessTarget {
+            name: "claude-desktop",
+            path: claude_desktop,
+            shape: AttachShape::McpServers,
+        });
+    }
+    out.push(HarnessTarget {
+        name: "claude-code",
+        path: project.join(".claude").join(".mcp.json"),
+        shape: AttachShape::McpServers,
+    });
+    // OpenCode: same resolution setup uses (prefer existing .jsonc, else .json).
+    let oc_dir = home.join(".config").join("opencode");
+    let oc_path = {
+        let jsonc = oc_dir.join("opencode.jsonc");
+        if jsonc.exists() {
+            jsonc
+        } else {
+            oc_dir.join("opencode.json")
+        }
+    };
+    out.push(HarnessTarget {
+        name: "opencode",
+        path: oc_path,
+        shape: AttachShape::Mcp,
+    });
+    out.push(HarnessTarget {
+        name: "codex",
+        path: home.join(".codex").join("config.toml"),
+        shape: AttachShape::CodexToml,
+    });
+    out.push(HarnessTarget {
+        name: "cursor",
+        path: project.join(".cursor").join("mcp.json"),
+        shape: AttachShape::McpServers,
+    });
+    out.push(HarnessTarget {
+        name: "windsurf",
+        path: project.join(".windsurf").join("mcp.json"),
+        shape: AttachShape::McpServers,
+    });
+    out
+}
+
+/// Resolve the graphiq-mcp binary: sibling of the running `graphiq` exe, then
+/// PATH lookup. Returns the path used (for the registry) or None.
+fn resolve_graphiq_mcp() -> Option<PathBuf> {
+    if let Some(sibling) = which_graphiq() {
+        return Some(sibling);
+    }
+    // Fallback: PATH lookup. `which` is Unix; on Windows `where` is the tool.
+    let probe = if cfg!(windows) { "where" } else { "which" };
+    std::process::Command::new(probe)
+        .arg("graphiq-mcp")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| {
+            let line = s.lines().next()?.trim().to_string();
+            if line.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(line))
+            }
+        })
+}
+
+/// Graphiq-owned registry location ("graphiq storage").
+fn graphiq_registry_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("graphiq").join("registry.json"))
+}
+
+fn cmd_sync(project: Option<&std::path::Path>, harness_filter: Option<&str>) {
+    use serde_json::{json, Value};
+
+    let project_path = match project {
+        Some(p) => p.to_path_buf(),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd.canonicalize().unwrap_or(cwd),
+            Err(_) => {
+                eprintln!("error: cannot determine current directory");
+                std::process::exit(1);
+            }
+        },
+    };
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::Path::new(".").to_path_buf());
+
+    println!("╭──────────────────────────────────────────────╮");
+    println!("│            GraphIQ Sync                      │");
+    println!("╰──────────────────────────────────────────────╯");
+    println!("  Project: {}", project_path.display());
+
+    // 1. Is graphiq-mcp reachable? This is the #1 attach failure.
+    let mcp = resolve_graphiq_mcp();
+    match &mcp {
+        Some(p) => println!("  graphiq-mcp:  {}", p.display()),
+        None => {
+            eprintln!("  warning: graphiq-mcp is not reachable (not on PATH, not beside graphiq).");
+            eprintln!("  Harnesses cannot attach without it. Reinstall graphiq, then re-run sync.");
+            // Continue anyway: per-harness state is still useful diagnostics
+            // when debugging a broken attach, and the registry records it.
+        }
+    }
+
+    let filter = harness_filter.map(|f| f.to_lowercase());
+    let targets = harness_targets(&home, &project_path);
+
+    println!();
+    println!("  {:<16} {:<10} {}", "harness", "state", "config");
+    println!("  {:-<16} {:-<10} {:-<40}", "", "", "");
+
+    let mut connected: Vec<String> = Vec::new();
+    let mut not_configured: Vec<String> = Vec::new();
+    // IMPORTANT: the registry always records EVERY target's state, regardless of
+    // the display filter — a focused report must not erase the source-of-truth
+    // record for the other harnesses. The filter only narrows the printed table.
+    let mut registry_harnesses: Vec<Value> = Vec::new();
+
+    for t in &targets {
+        let (state_char, state_label, detail) = if !t.path.exists() {
+            (
+                "—",
+                "absent",
+                format!("{} (not configured)", t.path.display()),
+            )
+        } else {
+            match std::fs::read_to_string(&t.path) {
+                Ok(content) => match detect_attach(&content, t.shape) {
+                    AttachState::Connected => ("✓", "connected", t.path.display().to_string()),
+                    AttachState::NotConfigured => ("✗", "missing", t.path.display().to_string()),
+                    AttachState::ParseFailed => ("✗", "unparsed", t.path.display().to_string()),
+                },
+                Err(_) => ("✗", "unreadable", t.path.display().to_string()),
+            }
+        };
+
+        // Record every harness in the registry.
+        if state_label == "connected" {
+            connected.push(t.name.to_string());
+        } else if state_label != "absent" {
+            not_configured.push(t.name.to_string());
+        }
+        registry_harnesses.push(json!({
+            "name": t.name,
+            "state": state_label,
+            "configPath": t.path.display().to_string(),
+        }));
+
+        // But only print rows matching the filter.
+        if let Some(ref f) = filter {
+            if !t.name.to_lowercase().contains(f) {
+                continue;
+            }
+        }
+        println!(
+            "  {:<16} {:<10} {}",
+            t.name,
+            format!("{} {}", state_char, state_label),
+            detail
+        );
+    }
+
+    println!();
+    if connected.is_empty() {
+        println!("  No harnesses have graphiq wired in yet.");
+        println!("  Run: graphiq setup --project {}", project_path.display());
+    } else {
+        println!("  connected: {}", connected.join(", "));
+        if !not_configured.is_empty() {
+            println!("  missing:   {}", not_configured.join(", "));
+            println!(
+                "  To wire them in: graphiq setup --project {}",
+                project_path.display()
+            );
+        }
+    }
+
+    // 2. Reconcile graphiq storage (registry).
+    if let Some(reg_path) = graphiq_registry_path() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let registry = json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "mcpBinary": mcp.as_ref().map(|p| p.display().to_string()),
+            "projectRoot": project_path.display().to_string(),
+            "syncedAt": now,
+            "harnesses": registry_harnesses,
+        });
+        if let Some(parent) = reg_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::write(
+            &reg_path,
+            serde_json::to_string_pretty(&registry).unwrap_or_default(),
+        ) {
+            Ok(()) => println!("  registry:    {}", reg_path.display()),
+            Err(e) => eprintln!("  warning: could not write registry: {e}"),
+        }
     }
 }
 
@@ -3980,5 +4337,92 @@ mod tests {
         assert!(p.ends_with("opencode.jsonc"));
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── graphiq sync tests ──────────────────────────────────────────────
+
+    #[test]
+    fn sync_detect_attach_mcp_servers_json() {
+        let connected = r#"{"mcpServers":{"graphiq":{"command":"graphiq-mcp"}}}"#;
+        assert_eq!(
+            detect_attach(connected, AttachShape::McpServers),
+            AttachState::Connected
+        );
+        let other = r#"{"mcpServers":{"x":{"command":"y"}}}"#;
+        assert_eq!(
+            detect_attach(other, AttachShape::McpServers),
+            AttachState::NotConfigured
+        );
+    }
+
+    #[test]
+    fn sync_detect_attach_opencode_jsonc_with_comments() {
+        let jsonc = r#"{
+  // opencode
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": { "graphiq": { "command": ["graphiq-mcp", "."] } }
+}"#;
+        assert_eq!(
+            detect_attach(jsonc, AttachShape::Mcp),
+            AttachState::Connected
+        );
+        let none = r#"{ /* fine */ "mcp": { "other": {} } }"#;
+        assert_eq!(
+            detect_attach(none, AttachShape::Mcp),
+            AttachState::NotConfigured
+        );
+    }
+
+    #[test]
+    fn sync_detect_attach_codex_toml_exact_and_terminator() {
+        // exact section header -> connected
+        let connected = "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\n";
+        assert_eq!(
+            detect_attach(connected, AttachShape::CodexToml),
+            AttachState::Connected
+        );
+        // a different server -> not configured
+        let other = "[mcp_servers.something]\ncommand = \"x\"\n";
+        assert_eq!(
+            detect_attach(other, AttachShape::CodexToml),
+            AttachState::NotConfigured
+        );
+        // REGRESSION: a server named graphiqfoo must NOT match graphiq.
+        let lookalike = "[mcp_servers.graphiqfoo]\ncommand = \"x\"\n";
+        assert_eq!(
+            detect_attach(lookalike, AttachShape::CodexToml),
+            AttachState::NotConfigured
+        );
+    }
+
+    #[test]
+    fn sync_detect_attach_parse_failed_for_garbage() {
+        assert_eq!(
+            detect_attach("{ totally broken {{{", AttachShape::McpServers),
+            AttachState::ParseFailed
+        );
+    }
+
+    #[test]
+    fn sync_strip_jsonc_keeps_strings_and_utf8() {
+        let input = "{ \"url\": \"https://x.io/a\" /* c */ , \"n\": \"café\" // line\n }";
+        let out = sync_strip_jsonc(input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["url"], "https://x.io/a");
+        assert_eq!(v["n"], "café");
+    }
+
+    #[test]
+    fn sync_harness_targets_covers_known_harnesses() {
+        let home = std::path::Path::new("/tmp/fakehome");
+        let project = std::path::Path::new("/tmp/fakeproj");
+        let targets = harness_targets(home, project);
+        let names: Vec<&str> = targets.iter().map(|t| t.name).collect();
+        for expected in ["claude-code", "opencode", "codex", "cursor", "windsurf"] {
+            assert!(
+                names.contains(&expected),
+                "missing harness target: {expected}"
+            );
+        }
     }
 }
