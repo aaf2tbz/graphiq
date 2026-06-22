@@ -2166,51 +2166,62 @@ fn cmd_setup(
         let codex_config = dirs::home_dir().map(|d| d.join(".codex").join("config.toml"));
 
         if let Some(ref config_path) = codex_config {
-            let project_str = project_path.display().to_string();
-            let args_suffix = if ephemeral { ", \"--ephemeral\"" } else { "" };
+            // Labeled block so a codex read failure skips ONLY codex, not the
+            // rest of cmd_setup (Hermes/Cursor/Windsurf/Gemini/Aider/index).
+            'codex: {
+                let project_str = project_path.display().to_string();
+                let args_suffix = if ephemeral { ", \"--ephemeral\"" } else { "" };
 
-            let (content, written) = if config_path.exists() {
-                match std::fs::read_to_string(config_path) {
-                    Ok(existing) => {
-                        let already = existing.contains("[mcp_servers.graphiq]")
-                            && existing.contains(&project_str);
-                        if already {
-                            (existing, false)
-                        } else {
-                            let mut cleaned = existing;
-                            let section = format!(
+                let (content, written) = if config_path.exists() {
+                    match std::fs::read_to_string(config_path) {
+                        Ok(existing) => {
+                            // Detect an existing graphiq section EXACTLY (with a
+                            // terminator) so [mcp_servers.graphiqfoo] doesn't count.
+                            let has_graphiq = existing.lines().any(|l| {
+                                let t = l.trim();
+                                t == "[mcp_servers.graphiq]"
+                                    || t.starts_with("[mcp_servers.graphiq.")
+                                    || t.starts_with("[mcp_servers.graphiq ")
+                            });
+                            let same_project = existing.contains(&project_str);
+                            if has_graphiq && same_project {
+                                (existing, false)
+                            } else {
+                                let mut cleaned = existing;
+                                let section = format!(
                             "\n[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"{}]\nenabled = true\n",
                             project_str, args_suffix
                         );
-                            cleaned.push_str(&section);
-                            (cleaned, true)
+                                cleaned.push_str(&section);
+                                (cleaned, true)
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("  Codex:         failed to read config: {e}");
+                            failed.push("Codex".to_string());
+                            break 'codex;
                         }
                     }
-                    Err(e) => {
-                        eprintln!("  Codex:         failed to read config: {e}");
-                        failed.push("Codex".to_string());
-                        return;
-                    }
-                }
-            } else {
-                let section = format!(
+                } else {
+                    let section = format!(
                 "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"{}]\nenabled = true\n",
                 project_str, args_suffix
             );
-                (section, true)
-            };
+                    (section, true)
+                };
 
-            match std::fs::write(config_path, &content) {
-                Ok(()) => {
-                    let status = if written { "configured" } else { "updated" };
-                    println!("  Codex:         {} {}", status, config_path.display());
-                    configured.push("Codex".to_string());
+                match std::fs::write(config_path, &content) {
+                    Ok(()) => {
+                        let status = if written { "configured" } else { "updated" };
+                        println!("  Codex:         {} {}", status, config_path.display());
+                        configured.push("Codex".to_string());
+                    }
+                    Err(e) => {
+                        eprintln!("  Codex:         failed to write config: {e}");
+                        failed.push("Codex".to_string());
+                    }
                 }
-                Err(e) => {
-                    eprintln!("  Codex:         failed to write config: {e}");
-                    failed.push("Codex".to_string());
-                }
-            }
+            } // end 'codex labeled block
         }
     } else {
         skipped.push("Codex".to_string());
