@@ -168,15 +168,14 @@ do_install() {
     need_cmd tar  "system package manager"
 
     if [ "$(uname -s)" = "Linux" ]; then
-        # The release bundles libvulkan.so.1 (the loader) with an $ORIGIN/lib
-        # RPATH, so the binary starts and runs even without a system loader.
-        # This check only advises installing a real Vulkan DRIVER (ICD) for actual
-        # GPU acceleration; without one graphiq still runs on CPU+rayon.
+        # graphiq's binaries load Vulkan lazily at runtime (wgpu dlopens it), so
+        # the binary STARTS and runs on CPU+rayon even with no Vulkan installed.
+        # This prompt only offers the loader+driver for optional GPU acceleration.
         if ! ldconfig -p 2>/dev/null | grep -q "libvulkan.so.1" && \
            ! [ -f /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ] && \
            ! [ -f /usr/lib/aarch64-linux-gnu/libvulkan.so.1 ]; then
-            info "No system Vulkan loader found — the bundled loader will be used; GPU acceleration needs a Vulkan driver (ICD)."
-            if confirm "Install a Vulkan driver now for GPU acceleration?"; then
+            info "No Vulkan loader found — graphiq will run on CPU; install Vulkan for optional GPU acceleration."
+            if confirm "Install Vulkan (loader + Mesa driver) now?"; then
                 if command -v apt >/dev/null 2>&1; then
                     sudo apt install -y libvulkan1 mesa-vulkan-drivers
                 elif command -v dnf >/dev/null 2>&1; then
@@ -184,7 +183,7 @@ do_install() {
                 elif command -v pacman >/dev/null 2>&1; then
                     sudo pacman -S --noconfirm vulkan-driver
                 else
-                    echo "  Optional manual install for GPU accel: mesa-vulkan-drivers (apt), vulkan-loader+mesa-vulkan-drivers (dnf), vulkan-driver (pacman)"
+                    echo "  Optional for GPU accel: libvulkan1 + mesa-vulkan-drivers (apt), vulkan-loader+mesa-vulkan-drivers (dnf), vulkan-driver (pacman)"
                 fi
             fi
         else
@@ -254,17 +253,6 @@ do_install() {
         fi
     done
 
-    # On Linux the release archive bundles the Vulkan loader under lib/ with an
-    # RPATH of $ORIGIN/lib baked into the binaries, so the binary always finds
-    # libvulkan.so.1 even on a system without libvulkan1 installed. Mirror that
-    # layout into the install dir.
-    if [ "$(uname -s)" = "Linux" ] && [ -d "${_GRAPHIQ_TMPDIR}/lib" ]; then
-        $need_sudo mkdir -p "${INSTALL_DIR}/lib"
-        $need_sudo cp -RL "${_GRAPHIQ_TMPDIR}/lib/." "${INSTALL_DIR}/lib/" 2>/dev/null || \
-            $need_sudo cp -R "${_GRAPHIQ_TMPDIR}/lib/." "${INSTALL_DIR}/lib/"
-        info "bundled libvulkan loader -> ${INSTALL_DIR}/lib"
-    fi
-
     if [ "$installed" -eq 0 ]; then
         error "no binaries were installed"
         exit 1
@@ -327,15 +315,6 @@ do_uninstall() {
             info "removed ${target}"
         fi
     done
-    # Also remove the bundled Vulkan loader dir (install mirrors it on Linux).
-    if [ -d "${INSTALL_DIR}/lib" ]; then
-        local lib_sudo=""
-        if [ ! -w "${INSTALL_DIR}/lib" ]; then
-            lib_sudo="sudo"
-        fi
-        $lib_sudo rm -rf "${INSTALL_DIR}/lib"
-        info "removed ${INSTALL_DIR}/lib"
-    fi
     info "done"
 }
 
