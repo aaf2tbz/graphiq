@@ -1394,6 +1394,7 @@ dependencies = [
  "dirs",
  "hf-hub",
  "ignore",
+ "libc",
  "llama-cpp-2",
  "lru",
  "pollster",

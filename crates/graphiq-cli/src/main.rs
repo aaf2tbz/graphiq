@@ -194,6 +194,7 @@ enum Commands {
 }
 
 fn main() {
+    graphiq_core::reset_sigpipe();
     let cli = Cli::parse();
     match cli.command {
         #[cfg(not(feature = "embed"))]

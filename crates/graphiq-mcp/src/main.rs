@@ -444,6 +444,7 @@ fn resolve_cpu_threads(background: bool) -> usize {
 }
 
 fn main() {
+    graphiq_core::reset_sigpipe();
     let (project_arg, db_override, ephemeral, watch, session_id) = parse_args();
 
     let explicit = project_arg.is_some();
