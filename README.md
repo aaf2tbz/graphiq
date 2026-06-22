@@ -129,6 +129,7 @@ Common MCP tools:
 | `index` | Full reindex (only when empty/corrupt) |
 | `clear` | Delete the index, leaving a fresh empty database |
 | `sync` | Verify harness attach + write the graphiq registry |
+| `discover` | Scan the system for installed agent harnesses |
 
 ## What Gets Indexed
 

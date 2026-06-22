@@ -90,6 +90,10 @@ enum Commands {
         )]
         harness: Option<String>,
     },
+    Discover {
+        #[arg(long, help = "Output machine-readable JSON instead of a table")]
+        json: bool,
+    },
     Subsystems {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
@@ -225,6 +229,7 @@ fn main() {
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
         Commands::Clear { db, yes } => cmd_clear(&db, yes),
         Commands::Sync { project, harness } => cmd_sync(project.as_deref(), harness.as_deref()),
+        Commands::Discover { json } => cmd_discover(json),
         Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
         Commands::Roles { db, subsystem, top } => cmd_roles(&db, subsystem, top),
         Commands::Demo => cmd_demo(),
@@ -1827,6 +1832,308 @@ fn cmd_sync(project: Option<&std::path::Path>, harness_filter: Option<&str>) {
             Err(e) => eprintln!("  warning: could not write registry: {e}"),
         }
     }
+}
+
+// ─── graphiq discover: top-down scan for installed agent harnesses ───────────
+//
+// `graphiq discover` inspects the user's computer to reliably find which agent
+// harnesses are installed (codex, forge, pi, opencode, claude, cursor, hermes,
+// windsurf, gemini, aider, openclaw). This is the plan's "top-down file search to
+// reliably find the users harness installs". It checks three signal types per
+// harness — config directory, binary on PATH, and macOS .app bundle — so it's
+// robust to any single install method. `setup` can use it to scope which
+// harnesses to configure instead of blindly writing configs that are ignored.
+
+/// How a harness was detected. A harness may match more than one; we report the
+/// strongest evidence first (config dir is the most reliable long-lived signal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectReason {
+    ConfigDir,
+    BinaryOnPath,
+    MacosApp,
+}
+
+/// The install signature for one harness: every place graphiq knows to look.
+/// Kept data-only so detection is a pure function of (signature, probes).
+struct HarnessSignature {
+    name: &'static str,
+    /// Human-readable label.
+    label: &'static str,
+    /// Config/config-directory path, relative to $HOME (e.g. ".codex").
+    /// Empty = no config-dir signal.
+    config_dir: &'static str,
+    /// Binary name expected on PATH (e.g. "codex"). Empty = no PATH signal.
+    binary: &'static str,
+    /// macOS app bundle name under /Applications (e.g. "Cursor.app").
+    /// Empty = no macOS-app signal.
+    macos_app: &'static str,
+}
+
+/// One detected harness and why.
+#[derive(Debug, Clone)]
+struct DetectedHarness {
+    name: String,
+    label: String,
+    reason: DetectReason,
+    /// The concrete path/evidence that matched (for display + JSON).
+    evidence: String,
+}
+
+/// The catalog of harnesses graphiq knows how to discover and configure.
+/// Mirrors the set `setup` handles so discover and setup agree.
+fn harness_catalog() -> Vec<HarnessSignature> {
+    vec![
+        HarnessSignature {
+            name: "claude-desktop",
+            label: "Claude Desktop",
+            config_dir: "Library/Application Support/Claude",
+            binary: "",
+            macos_app: "Claude.app",
+        },
+        HarnessSignature {
+            name: "claude-code",
+            label: "Claude Code",
+            config_dir: ".claude",
+            binary: "claude",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "codex",
+            label: "Codex CLI",
+            config_dir: ".codex",
+            binary: "codex",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "opencode",
+            label: "OpenCode",
+            config_dir: ".config/opencode",
+            binary: "opencode",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "pi",
+            label: "Pi",
+            config_dir: ".pi/agent",
+            binary: "pi",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "cursor",
+            label: "Cursor",
+            config_dir: ".cursor",
+            binary: "",
+            macos_app: "Cursor.app",
+        },
+        HarnessSignature {
+            name: "hermes",
+            label: "Hermes Agent",
+            config_dir: ".hermes",
+            binary: "hermes",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "windsurf",
+            label: "Windsurf",
+            config_dir: ".windsurf",
+            binary: "",
+            macos_app: "Windsurf.app",
+        },
+        HarnessSignature {
+            name: "gemini",
+            label: "Gemini CLI",
+            config_dir: ".gemini",
+            binary: "gemini",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "aider",
+            label: "Aider",
+            config_dir: ".aider.conf.yml",
+            binary: "aider",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "forge",
+            label: "Forge",
+            config_dir: ".forge",
+            binary: "forge-code",
+            macos_app: "Forge.app",
+        },
+        HarnessSignature {
+            name: "openclaw",
+            label: "OpenClaw",
+            config_dir: ".openclaw",
+            binary: "openclaw",
+            macos_app: "",
+        },
+    ]
+}
+
+/// Pure detection: given a signature and three probe results (does the config
+/// dir exist, is the binary on PATH, does the macOS app exist), return the
+/// strongest reason found, or None. Order matters: ConfigDir is the most stable
+/// signal (a binary may be renamed/uninstalled but the config persists), then
+/// BinaryOnPath, then MacosApp.
+fn detect_signature(
+    sig: &HarnessSignature,
+    config_exists: bool,
+    config_path: &str,
+    binary_on_path: bool,
+    binary_path: &str,
+    app_exists: bool,
+    app_path: &str,
+) -> Option<DetectedHarness> {
+    if config_exists && !sig.config_dir.is_empty() {
+        return Some(DetectedHarness {
+            name: sig.name.to_string(),
+            label: sig.label.to_string(),
+            reason: DetectReason::ConfigDir,
+            evidence: config_path.to_string(),
+        });
+    }
+    if binary_on_path && !sig.binary.is_empty() {
+        return Some(DetectedHarness {
+            name: sig.name.to_string(),
+            label: sig.label.to_string(),
+            reason: DetectReason::BinaryOnPath,
+            evidence: binary_path.to_string(),
+        });
+    }
+    if app_exists && !sig.macos_app.is_empty() {
+        return Some(DetectedHarness {
+            name: sig.name.to_string(),
+            label: sig.label.to_string(),
+            reason: DetectReason::MacosApp,
+            evidence: app_path.to_string(),
+        });
+    }
+    None
+}
+
+/// Resolve the full path for a harness's config-dir signal, given a home dir.
+/// Returns None if the signature has no config-dir signal.
+fn config_dir_path(home: &std::path::Path, sig: &HarnessSignature) -> Option<PathBuf> {
+    if sig.config_dir.is_empty() {
+        None
+    } else {
+        Some(home.join(sig.config_dir))
+    }
+}
+
+/// Check whether `binary` is on PATH. Returns the resolved path if found.
+/// Uses `which` on Unix and `where` on Windows so it works cross-platform.
+fn binary_on_path(binary: &str) -> Option<PathBuf> {
+    if binary.is_empty() {
+        return None;
+    }
+    let probe = if cfg!(windows) { "where" } else { "which" };
+    std::process::Command::new(probe)
+        .arg(binary)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| {
+            let line = s.lines().next()?.trim().to_string();
+            if line.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(line))
+            }
+        })
+}
+
+/// Run a full discovery scan against the real filesystem. Returns one entry per
+/// installed harness (strongest signal only), sorted by name for stable output.
+fn run_discovery(home: &std::path::Path) -> Vec<DetectedHarness> {
+    let mut found = Vec::new();
+    for sig in harness_catalog() {
+        let (config_exists, config_path) = match config_dir_path(home, &sig) {
+            Some(p) => (p.exists(), p.display().to_string()),
+            None => (false, String::new()),
+        };
+        let (binary_on_path_flag, binary_path) = match binary_on_path(sig.binary) {
+            Some(p) => (true, p.display().to_string()),
+            None => (false, String::new()),
+        };
+        // macOS app bundles only exist on macOS; skip the probe on other OSes.
+        let (app_exists, app_path) = if !sig.macos_app.is_empty() && cfg!(target_os = "macos") {
+            let p = PathBuf::from("/Applications").join(sig.macos_app);
+            (p.exists(), p.display().to_string())
+        } else {
+            (false, String::new())
+        };
+        if let Some(d) = detect_signature(
+            &sig,
+            config_exists,
+            &config_path,
+            binary_on_path_flag,
+            &binary_path,
+            app_exists,
+            &app_path,
+        ) {
+            found.push(d);
+        }
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
+}
+
+fn cmd_discover(json: bool) {
+    use serde_json::json;
+
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::Path::new(".").to_path_buf());
+    let found = run_discovery(&home);
+
+    if json {
+        // Machine-readable: stable for scripts and for `graphiq sync`/setup to consume.
+        let entries: Vec<_> = found
+            .iter()
+            .map(|d| {
+                json!({
+                    "name": d.name,
+                    "label": d.label,
+                    "reason": match d.reason {
+                        DetectReason::ConfigDir => "config-dir",
+                        DetectReason::BinaryOnPath => "binary",
+                        DetectReason::MacosApp => "macos-app",
+                    },
+                    "evidence": d.evidence,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "harnesses": entries, "count": entries.len() }))
+                .unwrap_or_default()
+        );
+        return;
+    }
+
+    println!("╭──────────────────────────────────────────────╮");
+    println!("│            GraphIQ Discover                  │");
+    println!("╰──────────────────────────────────────────────╯");
+    if found.is_empty() {
+        println!("  No supported harnesses detected.");
+        return;
+    }
+    println!("  Detected {} installed harness(es):\n", found.len());
+    println!("  {:<16} {:<12} {}", "harness", "via", "evidence");
+    println!("  {:-<16} {:-<12} {:-<40}", "", "", "");
+    for d in &found {
+        let via = match d.reason {
+            DetectReason::ConfigDir => "config-dir",
+            DetectReason::BinaryOnPath => "binary",
+            DetectReason::MacosApp => "macos-app",
+        };
+        println!("  {:<16} {:<12} {}", d.name, via, d.evidence);
+    }
+    println!();
+    println!("  To configure graphiq for all of these:");
+    println!("    graphiq setup --project <path>");
+    println!("  Then verify with:");
+    println!("    graphiq sync");
 }
 
 fn cmd_setup(
@@ -4568,5 +4875,127 @@ mod tests {
             detect_attach(other, AttachShape::PiExtension),
             AttachState::NotConfigured
         );
+    }
+
+    // ── graphiq discover tests ───────────────────────────────────────────
+
+    #[test]
+    fn detect_signature_prefers_config_dir_then_binary_then_app() {
+        let sig = HarnessSignature {
+            name: "codex",
+            label: "Codex CLI",
+            config_dir: ".codex",
+            binary: "codex",
+            macos_app: "",
+        };
+        // Only config dir present -> ConfigDir wins.
+        let d = detect_signature(&sig, true, "/h/.codex", false, "", false, "").unwrap();
+        assert_eq!(d.reason, DetectReason::ConfigDir);
+        assert_eq!(d.evidence, "/h/.codex");
+        // All three present -> ConfigDir still wins (most stable signal).
+        let d =
+            detect_signature(&sig, true, "/h/.codex", true, "/usr/bin/codex", false, "").unwrap();
+        assert_eq!(d.reason, DetectReason::ConfigDir);
+        // No config dir, binary on PATH -> BinaryOnPath.
+        let d = detect_signature(&sig, false, "", true, "/usr/bin/codex", false, "").unwrap();
+        assert_eq!(d.reason, DetectReason::BinaryOnPath);
+        // Nothing -> None.
+        assert!(detect_signature(&sig, false, "", false, "", false, "").is_none());
+    }
+
+    #[test]
+    fn detect_signature_macos_app_fallback() {
+        // A harness with only an app-bundle signal (e.g. a Cursor.app install
+        // where the config dir hasn't been created yet).
+        let sig = HarnessSignature {
+            name: "cursor",
+            label: "Cursor",
+            config_dir: ".cursor",
+            binary: "",
+            macos_app: "Cursor.app",
+        };
+        let d =
+            detect_signature(&sig, false, "", false, "", true, "/Applications/Cursor.app").unwrap();
+        assert_eq!(d.reason, DetectReason::MacosApp);
+        assert_eq!(d.evidence, "/Applications/Cursor.app");
+    }
+
+    #[test]
+    fn detect_signature_empty_binary_never_reports_binary() {
+        // claude-desktop has no PATH binary; an empty binary field must never
+        // produce a BinaryOnPath result even if the probe would otherwise match.
+        let sig = HarnessSignature {
+            name: "claude-desktop",
+            label: "Claude Desktop",
+            config_dir: "",
+            binary: "",
+            macos_app: "Claude.app",
+        };
+        // No config dir, no app, and no binary signal -> None.
+        assert!(detect_signature(&sig, false, "", true, "/x/claude", false, "").is_none());
+    }
+
+    #[test]
+    fn harness_catalog_is_complete_and_unique() {
+        let cat = harness_catalog();
+        let names: Vec<&str> = cat.iter().map(|s| s.name).collect();
+        // Every harness setup handles must be discoverable.
+        for expected in [
+            "claude-desktop",
+            "claude-code",
+            "codex",
+            "opencode",
+            "pi",
+            "cursor",
+            "hermes",
+            "windsurf",
+            "gemini",
+            "aider",
+            "forge",
+            "openclaw",
+        ] {
+            assert!(names.contains(&expected), "catalog missing: {expected}");
+        }
+        // Names are unique (no accidental duplicates that would double-report).
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            names.len(),
+            "duplicate harness names in catalog"
+        );
+        // Each harness has at least one signal (otherwise it can never be detected).
+        for s in &cat {
+            assert!(
+                !s.config_dir.is_empty() || !s.binary.is_empty() || !s.macos_app.is_empty(),
+                "{} has no detection signal",
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn config_dir_path_resolves_against_home() {
+        let sig = HarnessSignature {
+            name: "x",
+            label: "X",
+            config_dir: ".codex",
+            binary: "",
+            macos_app: "",
+        };
+        assert_eq!(
+            config_dir_path(std::path::Path::new("/home/u"), &sig),
+            Some(PathBuf::from("/home/u/.codex"))
+        );
+        // Empty config_dir -> None.
+        let sig2 = HarnessSignature {
+            name: "x",
+            label: "X",
+            config_dir: "",
+            binary: "",
+            macos_app: "",
+        };
+        assert_eq!(config_dir_path(std::path::Path::new("/h"), &sig2), None);
     }
 }
