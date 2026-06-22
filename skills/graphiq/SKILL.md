@@ -56,6 +56,11 @@ Use `graphiq setup --harness <name>` to target a specific harness (claude-code, 
 | Index health | `status` | File/symbol/edge counts |
 | Fix stale index | `upgrade_index` | Rebuild artifacts |
 | Nuclear option | `index` | Full reindex (expensive) |
+| Wipe and start over | `clear` | Delete the index, fresh empty DB |
+| Which harnesses are wired | `sync` | Verify attach + write registry |
+| Find installed harnesses | `discover` | Scan the system |
+| Current git scope | `git` | Branch, tree state, recent commits |
+| List tracked projects | `projects` | Multi-project registry + health |
 
 ## Workflows
 
@@ -163,6 +168,13 @@ graphiq clear --yes      # non-interactive (agents/scripts)
 # Setup agent harness
 graphiq setup --project /path/to/project
 graphiq setup --harness cursor
+
+# Harness + project management
+graphiq discover              # scan the system for installed harnesses
+graphiq sync --project .      # verify each harness is wired + write the registry
+graphiq git --project .       # current branch, working-tree state, recent commits
+graphiq projects              # list every indexed project + index health
+graphiq projects --forget .   # stop tracking a project (--forget all for everything)
 ```
 
 ## How It Works
