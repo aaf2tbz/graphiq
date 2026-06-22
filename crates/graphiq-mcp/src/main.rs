@@ -388,6 +388,61 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
     Ok(msg)
 }
 
+/// Resolve the CPU thread count for the indexing/search pool from explicit env
+/// values and the number of available cores. Pure (no global state) so it can
+/// be unit-tested without env races.
+///
+/// Priority: `graphiq_max` (GRAPHIQ_MAX_THREADS) wins over `rayon_num`
+/// (RAYON_NUM_THREADS), which wins over the computed default. Values must parse
+/// to >= 1 and are capped to `available` to avoid oversubscription. When
+/// `background` is true (the MCP daemon is running as a session/background
+/// process via `--ephemeral` or `--session-id`), the default is capped to keep
+/// load in check instead of pegging every core.
+fn resolve_cpu_threads_from(
+    graphiq_max: Option<&str>,
+    rayon_num: Option<&str>,
+    available: usize,
+    background: bool,
+) -> usize {
+    let cap = available.max(1);
+    for value in [graphiq_max, rayon_num].into_iter().flatten() {
+        if let Ok(n) = value.trim().parse::<usize>() {
+            if n >= 1 {
+                return n.min(cap);
+            }
+        }
+    }
+    if background {
+        BACKGROUND_DEFAULT_THREADS.min(available).max(1)
+    } else {
+        available
+    }
+}
+
+/// Default thread cap for session/background MCP daemons. Foreground (explicit,
+/// persistent indexing) is unaffected and still uses all cores.
+const BACKGROUND_DEFAULT_THREADS: usize = 4;
+
+/// Resolve the indexing/search CPU thread count from the environment.
+///
+/// `GRAPHIQ_MAX_THREADS` and `RAYON_NUM_THREADS` are honored so operators and
+/// session hooks can cap CPU load. Previously the MCP daemon hardcoded
+/// `available_parallelism()` into `build_global()`, which silently overrode
+/// these variables — so the session hook's `RAYON_NUM_THREADS=2` cap was
+/// ineffective and the background daemon pegged every core while indexing.
+/// In background/session mode the default is capped to keep load in check.
+fn resolve_cpu_threads(background: bool) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    resolve_cpu_threads_from(
+        std::env::var("GRAPHIQ_MAX_THREADS").ok().as_deref(),
+        std::env::var("RAYON_NUM_THREADS").ok().as_deref(),
+        available,
+        background,
+    )
+}
+
 fn main() {
     let (project_arg, db_override, ephemeral, watch, session_id) = parse_args();
 
@@ -566,9 +621,10 @@ fn main() {
     }
 
     {
-        let n_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
+        // Background/session mode (--ephemeral or --session-id) keeps the daemon
+        // light by default; foreground (persistent) indexing uses all cores.
+        let background = ephemeral || session_id.is_some();
+        let n_threads = resolve_cpu_threads(background);
         rayon::ThreadPoolBuilder::new()
             .num_threads(n_threads)
             .thread_name(|i| format!("graphiq-cpu-{i}"))
@@ -3337,5 +3393,38 @@ mod tests {
         assert!(state.suppress_auto_index);
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_cpu_threads_priority_and_defaults() {
+        // Foreground default: no env -> available cores.
+        assert_eq!(resolve_cpu_threads_from(None, None, 8, false), 8);
+        // Background default: no env -> capped to BACKGROUND_DEFAULT_THREADS (4).
+        assert_eq!(resolve_cpu_threads_from(None, None, 8, true), 4);
+        // Background on a small machine never oversubscribes.
+        assert_eq!(resolve_cpu_threads_from(None, None, 2, true), 2);
+
+        // RAYON_NUM_THREADS honored when GRAPHIQ_MAX_THREADS unset.
+        assert_eq!(resolve_cpu_threads_from(None, Some("2"), 8, false), 2);
+        // Env override beats the background default.
+        assert_eq!(resolve_cpu_threads_from(None, Some("6"), 8, true), 6);
+
+        // GRAPHIQ_MAX_THREADS wins over RAYON_NUM_THREADS.
+        assert_eq!(resolve_cpu_threads_from(Some("3"), Some("2"), 8, false), 3);
+
+        // Invalid / zero values fall through to the next source.
+        assert_eq!(
+            resolve_cpu_threads_from(Some("notanumber"), Some("2"), 8, false),
+            2
+        );
+        assert_eq!(resolve_cpu_threads_from(Some("0"), Some("2"), 8, false), 2);
+        assert_eq!(resolve_cpu_threads_from(None, Some("0"), 8, false), 8);
+        assert_eq!(resolve_cpu_threads_from(None, Some("0"), 8, true), 4);
+
+        // Capped to available cores (no oversubscription).
+        assert_eq!(resolve_cpu_threads_from(Some("64"), None, 4, false), 4);
+
+        // Whitespace tolerated.
+        assert_eq!(resolve_cpu_threads_from(Some("  2 "), None, 8, false), 2);
     }
 }

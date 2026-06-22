@@ -195,6 +195,23 @@ In background mode GraphIQ reduces CPU-resident source tokenization and keeps
 the existing GPU compute path available when built with the `gpu` feature. You
 can override the source window with `GRAPHIQ_SOURCE_TERM_LIMIT`.
 
+### CPU / Load Control
+
+The long-running MCP daemon (`graphiq-mcp`) honors CPU caps so background
+sessions stay light:
+
+- `GRAPHIQ_MAX_THREADS=<n>` — max CPU threads for indexing/search (highest
+  priority).
+- `RAYON_NUM_THREADS=<n>` — same effect, standard rayon variable.
+- In session/background mode (`--ephemeral` or `--session-id`) the default is
+  capped to 4 threads even without these variables, so a harness-spawned daemon
+  won't peg every core while warming an index. Foreground indexing still uses
+  all cores.
+
+```bash
+GRAPHIQ_MAX_THREADS=2 graphiq-mcp /path/to/project
+```
+
 ## Development
 
 ```bash
