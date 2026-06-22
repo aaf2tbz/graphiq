@@ -172,6 +172,7 @@ graphiq setup --harness cursor
 # Harness + project management
 graphiq discover              # scan the system for installed harnesses
 graphiq sync --project .      # verify each harness is wired + write the registry
+graphiq sync --project . --apply  # re-apply config to missing harnesses, then re-verify
 graphiq git --project .       # current branch, working-tree state, recent commits
 graphiq projects              # list every indexed project + index health
 graphiq projects --forget .   # stop tracking a project (--forget all for everything)

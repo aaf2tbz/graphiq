@@ -89,6 +89,11 @@ enum Commands {
             help = "Limit the displayed report to harnesses matching this substring"
         )]
         harness: Option<String>,
+        #[arg(
+            long,
+            help = "Re-apply graphiq config to any discovered-but-unconfigured harness, then re-verify"
+        )]
+        apply: bool,
     },
     Discover {
         #[arg(long, help = "Output machine-readable JSON instead of a table")]
@@ -242,7 +247,11 @@ fn main() {
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
         Commands::Clear { db, yes } => cmd_clear(&db, yes),
-        Commands::Sync { project, harness } => cmd_sync(project.as_deref(), harness.as_deref()),
+        Commands::Sync {
+            project,
+            harness,
+            apply,
+        } => cmd_sync(project.as_deref(), harness.as_deref(), apply),
         Commands::Discover { json } => cmd_discover(json),
         Commands::Git {
             project,
@@ -1728,7 +1737,7 @@ fn graphiq_registry_path() -> Option<PathBuf> {
     dirs::data_dir().map(|d| d.join("graphiq").join("registry.json"))
 }
 
-fn cmd_sync(project: Option<&std::path::Path>, harness_filter: Option<&str>) {
+fn cmd_sync(project: Option<&std::path::Path>, harness_filter: Option<&str>, apply: bool) {
     use serde_json::{json, Value};
 
     let project_path = match project {
@@ -1761,61 +1770,115 @@ fn cmd_sync(project: Option<&std::path::Path>, harness_filter: Option<&str>) {
     }
 
     let filter = harness_filter.map(|f| f.to_lowercase());
-    let targets = harness_targets(&home, &project_path);
+
+    // Scan all harness targets once. Returns (connected, not_configured,
+    // registry entries, printable rows) for the display + registry. Kept as a
+    // closure so `--apply` can re-run setup and re-scan without duplicating the
+    // ~50-line probe loop.
+    //
+    // The registry ALWAYS records every target's state, regardless of the
+    // display filter — a focused report must not erase the source-of-truth
+    // record for the other harnesses. The filter only narrows the printed rows.
+    let scan = |home: &std::path::Path,
+                project_path: &std::path::Path|
+     -> (Vec<String>, Vec<String>, Vec<Value>, Vec<(String, String)>) {
+        let targets = harness_targets(home, project_path);
+        let mut connected: Vec<String> = Vec::new();
+        let mut not_configured: Vec<String> = Vec::new();
+        let mut registry_harnesses: Vec<Value> = Vec::new();
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for t in &targets {
+            let (state_char, state_label, detail) = if !t.path.exists() {
+                (
+                    "—",
+                    "absent",
+                    format!("{} (not configured)", t.path.display()),
+                )
+            } else {
+                match std::fs::read_to_string(&t.path) {
+                    Ok(content) => match detect_attach(&content, t.shape) {
+                        AttachState::Connected => ("✓", "connected", t.path.display().to_string()),
+                        AttachState::NotConfigured => {
+                            ("✗", "missing", t.path.display().to_string())
+                        }
+                        AttachState::ParseFailed => ("✗", "unparsed", t.path.display().to_string()),
+                    },
+                    Err(_) => ("✗", "unreadable", t.path.display().to_string()),
+                }
+            };
+            if state_label == "connected" {
+                connected.push(t.name.to_string());
+            } else if state_label != "absent" {
+                not_configured.push(t.name.to_string());
+            }
+            registry_harnesses.push(json!({
+                "name": t.name,
+                "state": state_label,
+                "configPath": t.path.display().to_string(),
+            }));
+            rows.push((
+                t.name.to_string(),
+                format!(
+                    "  {:<16} {:<10} {}",
+                    t.name,
+                    format!("{} {}", state_char, state_label),
+                    detail
+                ),
+            ));
+        }
+        (connected, not_configured, registry_harnesses, rows)
+    };
+
+    let (mut connected, mut not_configured, mut registry_harnesses, mut rows) =
+        scan(&home, &project_path);
+
+    // --apply: reconcile. The plan wants `graphiq sync` to re-apply the harness
+    // configuration. For any discovered-but-unconfigured harness, re-run the
+    // fully-tested `setup` writer (idempotent), then re-scan to confirm.
+    if apply && !not_configured.is_empty() {
+        println!();
+        println!("  Re-applying graphiq config to missing harnesses via setup...");
+        // setup is idempotent and scoped to installed harnesses; --skip-index
+        // keeps it fast (sync never indexes).
+        let setup_status = std::process::Command::new("graphiq")
+            .arg("setup")
+            .arg("--project")
+            .arg(&project_path)
+            .arg("--skip-index")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
+            .status();
+        match setup_status {
+            Ok(s) if s.success() => {
+                let (c, nc, rh, r) = scan(&home, &project_path);
+                connected = c;
+                not_configured = nc;
+                registry_harnesses = rh;
+                rows = r;
+                println!("  re-applied; re-scanning.");
+            }
+            Ok(s) => {
+                eprintln!(
+                    "  warning: `graphiq setup` exited non-zero ({:?}); not re-scanning.",
+                    s.code()
+                );
+            }
+            Err(e) => {
+                eprintln!("  warning: could not run `graphiq setup`: {e}");
+            }
+        }
+    }
 
     println!();
     println!("  {:<16} {:<10} {}", "harness", "state", "config");
     println!("  {:-<16} {:-<10} {:-<40}", "", "", "");
-
-    let mut connected: Vec<String> = Vec::new();
-    let mut not_configured: Vec<String> = Vec::new();
-    // IMPORTANT: the registry always records EVERY target's state, regardless of
-    // the display filter — a focused report must not erase the source-of-truth
-    // record for the other harnesses. The filter only narrows the printed table.
-    let mut registry_harnesses: Vec<Value> = Vec::new();
-
-    for t in &targets {
-        let (state_char, state_label, detail) = if !t.path.exists() {
-            (
-                "—",
-                "absent",
-                format!("{} (not configured)", t.path.display()),
-            )
-        } else {
-            match std::fs::read_to_string(&t.path) {
-                Ok(content) => match detect_attach(&content, t.shape) {
-                    AttachState::Connected => ("✓", "connected", t.path.display().to_string()),
-                    AttachState::NotConfigured => ("✗", "missing", t.path.display().to_string()),
-                    AttachState::ParseFailed => ("✗", "unparsed", t.path.display().to_string()),
-                },
-                Err(_) => ("✗", "unreadable", t.path.display().to_string()),
-            }
-        };
-
-        // Record every harness in the registry.
-        if state_label == "connected" {
-            connected.push(t.name.to_string());
-        } else if state_label != "absent" {
-            not_configured.push(t.name.to_string());
-        }
-        registry_harnesses.push(json!({
-            "name": t.name,
-            "state": state_label,
-            "configPath": t.path.display().to_string(),
-        }));
-
-        // But only print rows matching the filter.
+    for (name, row) in &rows {
         if let Some(ref f) = filter {
-            if !t.name.to_lowercase().contains(f) {
+            if !name.to_lowercase().contains(f) {
                 continue;
             }
         }
-        println!(
-            "  {:<16} {:<10} {}",
-            t.name,
-            format!("{} {}", state_char, state_label),
-            detail
-        );
+        println!("{}", row);
     }
 
     println!();
