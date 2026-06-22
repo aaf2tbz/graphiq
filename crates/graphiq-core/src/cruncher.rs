@@ -283,6 +283,32 @@ pub fn build_cruncher_index(db: &GraphDb) -> Result<CruncherIndex, String> {
         .flatten()
         .collect();
 
+    // Empty-index fast path: with zero symbols the GPU/parallel compute buffers
+    // would be created at size 0, which wgpu rejects (panic). Return a valid
+    // empty CruncherIndex instead so search/status/blast degrade gracefully to
+    // "no results" rather than crashing. This matters for fresh/empty projects.
+    if n == 0 {
+        return Ok(CruncherIndex {
+            n: 0,
+            symbol_ids: Vec::new(),
+            symbol_names: Vec::new(),
+            symbol_kinds: Vec::new(),
+            symbol_file_ids: Vec::new(),
+            file_paths,
+            outgoing: Vec::new(),
+            incoming: Vec::new(),
+            term_sets: Vec::new(),
+            global_idf: HashMap::new(),
+            bridging: Vec::new(),
+            id_to_idx: HashMap::new(),
+            name_to_indices: HashMap::new(),
+            structural_degree: Vec::new(),
+            neighbor_terms: Vec::new(),
+            alias_terms: Vec::new(),
+            collision_names: HashSet::new(),
+        });
+    }
+
     eprintln!("  Cruncher: building adjacency lists...");
     let mut outgoing: Vec<Vec<Edge>> = vec![Vec::new(); n];
     let mut incoming: Vec<Vec<Edge>> = vec![Vec::new(); n];
@@ -1040,5 +1066,27 @@ mod fuzz_tests {
         for q in &["123", "3.14", "0x1F", "1e10", "v2.0", "h264"] {
             run_fuzz_query(&db, q);
         }
+    }
+}
+
+#[cfg(test)]
+mod empty_index_tests {
+    use super::*;
+    use crate::db::GraphDb;
+
+    #[test]
+    fn build_cruncher_index_on_empty_db_does_not_panic() {
+        // Regression: a 0-symbol index used to create GPU buffers at size 0,
+        // which wgpu rejects with a panic. The build must return a valid empty
+        // CruncherIndex instead, so search/blast/status degrade gracefully.
+        let db = GraphDb::open_in_memory().unwrap();
+        let idx = build_cruncher_index(&db).expect("empty index should build, not panic");
+        assert_eq!(idx.n, 0);
+        assert!(idx.symbol_ids.is_empty());
+        assert!(idx.term_sets.is_empty());
+        assert!(idx.id_to_idx.is_empty());
+        // Structural fields are empty but valid (indexable without panic).
+        assert_eq!(idx.outgoing.len(), 0);
+        assert_eq!(idx.incoming.len(), 0);
     }
 }
