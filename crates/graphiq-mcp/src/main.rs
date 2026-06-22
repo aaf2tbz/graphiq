@@ -44,6 +44,10 @@ struct ServerState {
     watching: bool,
     last_cruncher_rebuild_at: Option<std::time::Instant>,
     last_staleness_check_at: Option<std::time::Instant>,
+    /// When true, the server treats an empty database as intentional (set by the
+    /// `clear` tool/command) and will NOT auto-reindex it. Cleared by an explicit
+    /// `index` call so the agent/user controls when a cleared index is rebuilt.
+    suppress_auto_index: bool,
 }
 
 fn db_file_to_project_path(path: &Path) -> Option<PathBuf> {
@@ -534,6 +538,7 @@ fn main() {
         watching: watch,
         last_cruncher_rebuild_at: None,
         last_staleness_check_at: None,
+        suppress_auto_index: false,
     }));
 
     let running = Arc::new(AtomicBool::new(true));
@@ -735,6 +740,13 @@ fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>, indexing: &
                     }
                 };
 
+                // Honor an explicit `clear`: don't auto-reindex a deliberately
+                // emptied database on file changes until the agent re-indexes.
+                if s.suppress_auto_index {
+                    indexing.store(false, Ordering::Release);
+                    continue;
+                }
+
                 if let Err(e) = do_index(&mut s) {
                     log_err(&format!("watcher: reindex failed: {e}"));
                 } else {
@@ -830,6 +842,14 @@ fn background_warm(state: &Arc<Mutex<ServerState>>, indexing: &Arc<AtomicBool>) 
                 return;
             }
         };
+        // Re-check suppression under the lock right before indexing. The `clear`
+        // tool sets this in the same critical section it empties the DB, so a
+        // clear that races with startup warming cannot be silently undone.
+        if s.suppress_auto_index {
+            indexing.store(false, Ordering::Release);
+            log_err("warm: database is empty but auto-index is suppressed (cleared by user/agent)");
+            return;
+        }
         log_err("warm: database empty, starting full index...");
         if let Err(e) = do_index(&mut s) {
             log_err(&format!("warm: full index failed: {e}"));
@@ -1246,6 +1266,15 @@ fn tools_list() -> Value {
                     "properties": {},
                     "required": []
                 }
+            },
+            {
+                "name": "clear",
+                "description": "Delete the entire index and leave an empty database ready for a fresh reindex. Destructive: all indexed symbols, edges, and cached artifacts are removed. Use when the index is corrupted, belongs to the wrong project, or you want to start over — then call `index` to rebuild.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
             }
         ]
     })
@@ -1273,6 +1302,7 @@ fn handle_tool_call(
         && tool_name != "status"
         && tool_name != "doctor"
         && tool_name != "impact"
+        && tool_name != "clear"
     {
         if indexing.load(Ordering::Acquire) {
             return tool_ok("Indexing in progress — please retry in a few seconds.".into());
@@ -1294,6 +1324,12 @@ fn handle_tool_call(
             };
             if !db_is_empty(&s.db) {
                 indexing.store(false, Ordering::Release);
+            } else if s.suppress_auto_index {
+                // The DB is empty because the agent/user ran `clear`. Do NOT
+                // cold-start a rebuild — let the tool return its honest empty
+                // result. An explicit `index` call clears the suppression.
+                indexing.store(false, Ordering::Release);
+                log_err("auto-index suppressed (index was cleared by user/agent)");
             } else {
                 log_err("auto-indexing (cold start)...");
                 if let Err(e) = do_index(&mut s) {
@@ -1346,6 +1382,8 @@ fn handle_tool_call(
         "index" => {
             indexing.store(true, Ordering::Release);
             let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            // An explicit index request overrides any prior `clear` suppression.
+            s.suppress_auto_index = false;
             let result = match do_index(&mut s) {
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
@@ -1379,6 +1417,16 @@ fn handle_tool_call(
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
             }
+        }
+        "clear" => {
+            indexing.store(true, Ordering::Release);
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let result = match tool_clear(&mut s) {
+                Ok(msg) => tool_ok(msg),
+                Err(e) => tool_error(&e),
+            };
+            indexing.store(false, Ordering::Release);
+            result
         }
         "constants" => {
             let s = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -3003,6 +3051,36 @@ fn tool_upgrade_index(state: &mut ServerState) -> Result<String, String> {
     }
 }
 
+/// Wipe the active index down to an empty database, ready for a fresh reindex.
+/// Destructive: all symbols/edges/cached artifacts are removed. Keeps the
+/// schema so `index` can repopulate immediately.
+fn tool_clear(state: &mut ServerState) -> Result<String, String> {
+    // Drop all rows in place (safe while the connection is open, cross-platform).
+    state
+        .db
+        .clear()
+        .map_err(|e| format!("failed to clear index: {e}"))?;
+
+    // Invalidate in-memory search artifacts.
+    state.cruncher_index = None;
+
+    // Suppress auto-reindexing of the now-empty database (startup warming and
+    // the file watcher both honor this) so the cleared state persists until the
+    // agent explicitly calls `index`. The `index` tool clears this flag.
+    state.suppress_auto_index = true;
+
+    // Remove cached on-disk artifacts so doctor/status honestly report empty.
+    let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
+    for name in ["cruncher.bin.zst", "manifest.json"] {
+        let p = db_dir.join(name);
+        if p.exists() {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+
+    Ok("Index cleared. The database is empty and ready for a fresh reindex. Call the `index` tool to rebuild.".into())
+}
+
 fn parse_evidence_kind(meta: &serde_json::Value) -> &'static str {
     if let Some(kind) = meta
         .get("evidence")
@@ -3207,5 +3285,57 @@ mod tests {
 
         assert_eq!(resolved, provider.canonicalize().unwrap());
         let _ = fs::remove_dir_all(provider);
+    }
+
+    /// Regression: `clear` must empty the database, drop the in-memory cruncher,
+    /// and set suppress_auto_index so the server's auto-index paths (startup
+    /// warm, file watcher, cold-start) don't immediately rebuild it. See the
+    /// audit that found the cold-start path was missing this guard.
+    #[test]
+    fn tool_clear_empties_db_and_suppresses_auto_index() {
+        let dir = temp_path("clear-contract");
+        fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("graphiq.db");
+
+        // Index a tiny project so the DB is non-empty before clearing.
+        fs::write(dir.join("main.rs"), "pub fn alpha() -> u32 { 1 }\n").unwrap();
+        {
+            let db = graphiq_core::db::GraphDb::open(&db_path).unwrap();
+            let indexer = graphiq_core::index::Indexer::new(&db);
+            indexer.index_project(&dir).unwrap();
+            assert!(db.symbol_count().unwrap() > 0);
+        }
+
+        let mut state = ServerState {
+            project_root: dir.clone(),
+            db_path: db_path.clone(),
+            db: graphiq_core::db::GraphDb::open(&db_path).unwrap(),
+            cache: graphiq_core::cache::HotCache::with_defaults(),
+            cruncher_index: None,
+            watching: false,
+            last_cruncher_rebuild_at: None,
+            last_staleness_check_at: None,
+            suppress_auto_index: false,
+        };
+
+        // Sanity: not suppressed before clear.
+        assert!(!state.suppress_auto_index);
+        assert!(state.db.symbol_count().unwrap() > 0);
+
+        let msg = tool_clear(&mut state).expect("clear should succeed");
+        assert!(
+            msg.contains("empty"),
+            "clear should report an empty index: {msg}"
+        );
+
+        // The database is empty ...
+        assert_eq!(state.db.symbol_count().unwrap(), 0);
+        assert_eq!(state.db.stats().unwrap().files, 0);
+        // ... the in-memory cruncher is dropped ...
+        assert!(state.cruncher_index.is_none());
+        // ... and auto-index is suppressed so the cleared state persists.
+        assert!(state.suppress_auto_index);
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

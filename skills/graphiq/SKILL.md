@@ -156,6 +156,10 @@ graphiq status
 graphiq doctor
 graphiq upgrade-index
 
+# Start over: wipe the index and leave a fresh empty database
+graphiq clear            # prompts for confirmation
+graphiq clear --yes      # non-interactive (agents/scripts)
+
 # Setup agent harness
 graphiq setup --project /path/to/project
 graphiq setup --harness cursor

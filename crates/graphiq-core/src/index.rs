@@ -18,10 +18,10 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 
 use crate::calls;
-use crate::chunker::LanguageChunker;
+use crate::chunker::{LanguageChunker, ParseResult};
 use crate::db::GraphDb;
 use crate::edge::EdgeKind;
-use crate::files::{content_hash, detect_language, walk_project, Language};
+use crate::files::{content_hash, detect_language, is_data_file, walk_project, Language};
 use crate::motifs::{detect_motifs, motifs_to_hints, MotifEvidence};
 use crate::roles::{infer_roles, roles_to_hints, RoleEvidence};
 use crate::symbol::{SymbolBuilder, SymbolKind};
@@ -161,8 +161,17 @@ impl<'a> Indexer<'a> {
                     .upsert_file(&path_str, lang.as_str(), hash, *mtime, *line_count)?;
             stats.files_indexed += 1;
 
-            let chunker = get_chunker(*lang);
-            let result = chunker.parse(source, &path_str);
+            // Data files (dependency lockfiles, oversized generated data) are
+            // file-tracked for freshness but never symbol-extracted. Extracting
+            // every JSON key from a package-lock.json otherwise dominates the
+            // graph with thousands of low-value Constant symbols and silently
+            // pollutes search results and the codebase briefing.
+            let result = if is_data_file(rel_path, source.len() as u64) {
+                ParseResult::empty()
+            } else {
+                let chunker = get_chunker(*lang);
+                chunker.parse(source, &path_str)
+            };
 
             let mut file_name_to_id: HashMap<String, i64> = HashMap::new();
             let mut containers: Vec<(String, SymbolKind, i64)> = Vec::new();
@@ -1953,5 +1962,64 @@ function run(): string { return helper(); }
             resolve_file(b_helpers[0].target_id).contains("b.ts"),
             "run→helper target should be b.ts helper, not a.ts helper"
         );
+    }
+
+    #[test]
+    fn test_data_files_are_tracked_but_not_symbol_extracted() {
+        // A package-lock.json with hundreds of JSON keys must NOT produce junk
+        // Constant symbols, but the file should still be file-tracked so
+        // freshness/staleness continues to work. A real source file alongside it
+        // is parsed normally.
+        let tmp = TempDir::new().unwrap();
+
+        // Build a synthetic lockfile with many keys at multiple depths.
+        let mut lock = String::from("{\n");
+        for i in 0..50 {
+            lock.push_str(&format!(
+                "  \"node_modules/pkg-{i}\": {{ \"version\": \"1.0.0\", \"resolved\": \"https://example.com/pkg-{i}\" }},\n"
+            ));
+        }
+        lock.push_str("  \"name\": \"demo\",\n  \"version\": \"1.0.0\"\n}\n");
+        std::fs::write(tmp.path().join("package-lock.json"), lock).unwrap();
+
+        let rust = tmp.path().join("main.rs");
+        std::fs::write(
+            &rust,
+            r#"
+pub fn handle_request() -> u32 { 200 }
+"#,
+        )
+        .unwrap();
+
+        let db = GraphDb::open_in_memory().unwrap();
+        let indexer = Indexer::new(&db);
+        let stats = indexer.index_project(tmp.path()).unwrap();
+
+        // Both files are tracked.
+        assert_eq!(stats.files_indexed, 2);
+
+        // The rust file produced its function symbol.
+        assert!(
+            !db.symbols_by_name("handle_request").unwrap().is_empty(),
+            "real source should be symbol-extracted"
+        );
+
+        // The lockfile was file-tracked …
+        let lock_file = db
+            .get_file_by_path("package-lock.json")
+            .unwrap()
+            .expect("lockfile should be file-tracked");
+        // … but produced zero symbols.
+        let lock_syms = db.symbols_by_file(lock_file.id).unwrap();
+        assert_eq!(
+            lock_syms.len(),
+            0,
+            "package-lock.json must not contribute symbols (got {lock_syms:?})"
+        );
+
+        // Generic lockfile keys that would otherwise pollute search must be absent.
+        assert!(db.symbols_by_name("version").unwrap().is_empty());
+        assert!(db.symbols_by_name("dependencies").unwrap().is_empty());
+        assert!(db.symbols_by_name("node_modules/pkg-0").unwrap().is_empty());
     }
 }

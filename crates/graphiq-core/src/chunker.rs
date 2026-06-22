@@ -46,6 +46,21 @@ pub struct ParseResult {
     pub tree: Option<Tree>,
 }
 
+impl ParseResult {
+    /// An empty parse result: no symbols, imports, structural relations, or AST.
+    ///
+    /// Used for files that are file-tracked for freshness but must not be
+    /// symbol-extracted (dependency lockfiles, oversized generated data).
+    pub fn empty() -> Self {
+        ParseResult {
+            symbols: Vec::new(),
+            imports: Vec::new(),
+            structural_rels: Vec::new(),
+            tree: None,
+        }
+    }
+}
+
 pub trait LanguageChunker: Send + Sync {
     fn language(&self) -> Language;
     fn language_name(&self) -> &str;

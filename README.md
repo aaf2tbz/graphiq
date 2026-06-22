@@ -126,6 +126,8 @@ Common MCP tools:
 | `status` | Index stats and health |
 | `doctor` | Artifact validation and repair guidance |
 | `upgrade_index` | Rebuild stale graph artifacts |
+| `index` | Full reindex (only when empty/corrupt) |
+| `clear` | Delete the index, leaving a fresh empty database |
 
 ## What Gets Indexed
 
@@ -135,6 +137,12 @@ Common MCP tools:
 | Structure | calls, imports, references, containment, type flow, constants |
 | Context | comments, signatures, file paths, sibling symbols, error surfaces |
 | Maintenance | dead code, blast radius, topology, index health |
+
+Dependency lockfiles and other generated data files (`package-lock.json`,
+`Cargo.lock`, `pnpm-lock.yaml`, `yarn.lock`, `go.sum`, and oversized JSON/YAML/TOML
+blobs) are **file-tracked** for freshness but **never symbol-extracted**, so they
+can't silently dominate the graph with thousands of low-value keys. Wipe an index
+any time with `graphiq clear` (or the MCP `clear` tool).
 
 GraphIQ currently parses TypeScript, TSX, JavaScript, JSX, Rust, Python, Go,
 Java, C, C++, Ruby, YAML, TOML, JSON, HTML, and CSS. It also tracks many

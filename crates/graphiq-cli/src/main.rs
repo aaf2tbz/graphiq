@@ -75,6 +75,12 @@ enum Commands {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
+    Clear {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+        #[arg(short, long, help = "Skip the confirmation prompt")]
+        yes: bool,
+    },
     Subsystems {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
@@ -208,6 +214,7 @@ fn main() {
         ),
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
+        Commands::Clear { db, yes } => cmd_clear(&db, yes),
         Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
         Commands::Roles { db, subsystem, top } => cmd_roles(&db, subsystem, top),
         Commands::Demo => cmd_demo(),
@@ -635,6 +642,85 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
     let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
     if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
         eprintln!("  warning: failed to write manifest: {e}");
+    }
+}
+
+/// Remove an existing GraphIQ index and create a fresh empty one.
+///
+/// Deletes the SQLite database (and its WAL/SHM sidecars) plus the cached
+/// `cruncher.bin.zst`, then opens a brand-new empty database so the project is
+/// ready for a clean reindex. Existing indexed data is discarded; the on-disk
+/// layout (`.graphiq/`) is preserved.
+fn cmd_clear(db_path: &std::path::Path, yes: bool) {
+    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+
+    // Gather everything we consider part of "the index" so the report is honest.
+    let sidecars = [
+        db_path.to_path_buf(),
+        db_path.with_extension("db-wal"),
+        db_path.with_extension("db-shm"),
+        db_dir.join("cruncher.bin.zst"),
+        db_dir.join("manifest.json"),
+    ];
+
+    let existing: Vec<_> = sidecars.iter().filter(|p| p.exists()).collect();
+
+    if existing.is_empty() {
+        // Nothing to clear — make sure there is a fresh empty DB so the command
+        // is idempotent and the project is ready to index.
+        if let Some(parent) = db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match graphiq_core::db::GraphDb::open(db_path) {
+            Ok(_) => {
+                println!("No existing index found at {}.", db_path.display());
+                println!("Created a fresh empty index.");
+                return;
+            }
+            Err(e) => {
+                eprintln!("error creating fresh database: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if !yes
+        && !confirm(&format!(
+            "Clear the GraphIQ index at {}? This cannot be undone.",
+            db_path.display()
+        ))
+    {
+        println!("aborted.");
+        return;
+    }
+
+    let mut removed = 0usize;
+    for path in &existing {
+        match std::fs::remove_file(path) {
+            Ok(()) => {
+                println!("  removed {}", path.display());
+                removed += 1;
+            }
+            Err(e) => eprintln!("  warning: could not remove {}: {e}", path.display()),
+        }
+    }
+
+    // Create a fresh empty database (open() initializes the schema).
+    if let Some(parent) = db_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match graphiq_core::db::GraphDb::open(db_path) {
+        Ok(_) => {
+            println!(
+                "Cleared index at {} (removed {removed} file(s)).",
+                db_path.display()
+            );
+            println!("Fresh empty index ready. Run `graphiq index <path>` to rebuild.");
+        }
+        Err(e) => {
+            eprintln!("removed old index but failed to create fresh database: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
