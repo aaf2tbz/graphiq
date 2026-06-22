@@ -1,0 +1,154 @@
+name: Linux smoke
+
+# Validates that graphiq builds AND runs correctly on Linux, and that the
+# bundled Vulkan loader makes the release self-contained. The release build uses
+# --features gpu, so libvulkan.so.1 is a dynamic NEEDED entry; without bundling,
+# a Linux box lacking libvulkan1 can't even start graphiq-mcp (the CPU fallback
+# never runs because the dynamic linker rejects the binary first).
+#
+# This workflow:
+#   1. builds the release binaries with --features gpu on ubuntu,
+#   2. bundles libvulkan.so.1 next to them and sets RPATH $ORIGIN/lib,
+#   3. REMOVES the system libvulkan to prove the bundle is self-contained,
+#   4. runs the full command surface (index/search/discover/git/projects/clear/sync)
+#      to prove runtime behavior, not just compilation.
+
+on:
+  push:
+    branches: [main, feat/graphiq-reliability-and-harness-sync]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libvulkan-dev patchelf
+
+      - name: Build release (gpu feature)
+        run: cargo build --release --features gpu
+
+      - name: Bundle Vulkan loader and set RPATH
+        run: |
+          set -euo pipefail
+          DEST="target/release"
+          mkdir -p "$DEST/lib"
+          cd "$(mktemp -d)"
+          apt-get download libvulkan1
+          for deb in *.deb; do dpkg-deb -x "$deb" .; done
+          LOADER="$(find . -path '*/libvulkan.so.1' | head -1)"
+          test -n "$LOADER"
+          cp -L "$(readlink -f "$LOADER")" "$GITHUB_WORKSPACE/$DEST/lib/"
+          cp -L "$LOADER" "$GITHUB_WORKSPACE/$DEST/lib/libvulkan.so.1" 2>/dev/null || true
+          cd "$GITHUB_WORKSPACE"
+          for bin in graphiq graphiq-mcp graphiq-bench; do
+            if [ -f "$DEST/$bin" ]; then
+              patchelf --set-rpath '$ORIGIN/lib' "$DEST/$bin"
+              patchelf --print-rpath "$DEST/$bin" | grep -q '\$ORIGIN/lib' || {
+                echo "RPATH not set on $bin" >&2; exit 1;
+              }
+            fi
+          done
+
+      - name: Prove the bundle is self-contained (remove system libvulkan)
+        run: |
+          set -euo pipefail
+          # Purge the system loader and its ICDs so the ONLY way the binary can
+          # start is via the bundled $ORIGIN/lib loader. libvulkan-dev depends
+          # on libvulkan1, so remove the -dev package first.
+          sudo dpkg --remove --force-depends libvulkan-dev libvulkan1 mesa-vulkan-drivers 2>/dev/null || true
+          sudo ldconfig
+          # Assert the system loader is ACTUALLY gone before claiming
+          # self-containment — otherwise this step false-passes (RPATH would
+          # resolve to the bundle even with the system loader still present).
+          if ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1' || \
+             [ -e /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ]; then
+            echo "system libvulkan still present after removal — self-containment UNPROVEN" >&2
+            sudo apt list --installed 2>/dev/null | grep -i vulkan >&2 || true
+            exit 1
+          fi
+          echo "system libvulkan confirmed removed"
+          # The binary must still resolve libvulkan.so.1 to the bundled copy.
+          ldd target/release/graphiq-mcp | tee /tmp/ldd.txt
+          grep -E "libvulkan\.so\.1\s*=>" /tmp/ldd.txt | grep -q "target/release/lib" || {
+            echo "ERROR: libvulkan.so.1 did not resolve to the bundled copy" >&2
+            cat /tmp/ldd.txt >&2
+            exit 1
+          }
+          # Launch smoke: BOTH binaries must start cleanly with no system vulkan.
+          ./target/release/graphiq --version
+          ./target/release/graphiq-mcp --help >/dev/null
+
+      - name: Build a fixture project and index it
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/release:$PATH"
+          mkdir -p fixture/src
+          cat > fixture/src/lib.rs <<'RUST'
+          pub struct RateLimiter { max: u32 }
+          impl RateLimiter {
+              pub fn check_rate(&self) -> bool { true }
+              pub fn reset(&self) {}
+          }
+          pub fn handle_request(rl: &RateLimiter) -> bool { rl.check_rate() }
+          RUST
+          (cd fixture && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -qm init)
+          graphiq index fixture --db fixture/.graphiq/graphiq.db | grep -E "Symbols: [0-9]+"
+
+      - name: Run the full command surface (runtime validation)
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/release:$PATH"
+          DB=fixture/.graphiq/graphiq.db
+
+          echo "--- search (must find the symbol, not crash) ---"
+          out="$(graphiq search 'rate limit' --db "$DB" --top 3)"
+          echo "$out" | grep -q "RateLimiter" || { echo "search did not find RateLimiter: $out" >&2; exit 1; }
+
+          echo "--- blast (Rust impl->type contains fix) ---"
+          graphiq blast RateLimiter --db "$DB" --depth 2 | grep -E "check_rate|reset" >/dev/null
+
+          echo "--- empty-index no-panic regression ---"
+          mkdir -p empty_proj && (cd empty_proj && git init -q)
+          graphiq index empty_proj --db empty_proj/g.db >/dev/null 2>&1
+          graphiq search anything --db empty_proj/g.db | grep -q "No results"
+
+          echo "--- clear ---"
+          graphiq clear --db empty_proj/g.db --yes | grep -q "fresh empty\|Cleared"
+
+          echo "--- discover (JSON, must report a count) ---"
+          graphiq discover --json | grep -q '"count"'
+
+          echo "--- git scope (fixture is a repo) ---"
+          graphiq git --project fixture --json | grep -q '"branch"'
+
+          echo "--- projects (registry) ---"
+          HOME="$PWD/fake-home" graphiq projects --json | grep -q '"projects"'
+
+          echo "--- sync verify ---"
+          HOME="$PWD/fake-home" graphiq sync --project fixture | grep -qE "connected:|No harnesses"
+
+          echo "ALL LINUX SMOKE CHECKS PASSED"
+
+      - name: Upload binaries + bundle (for inspection)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphiq-linux-bundle
+          path: |
+            target/release/graphiq
+            target/release/graphiq-mcp
+            target/release/lib

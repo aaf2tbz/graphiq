@@ -41,7 +41,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libvulkan-dev
+          sudo apt-get install -y build-essential pkg-config libvulkan-dev patchelf
           if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
             sudo apt-get install -y gcc-aarch64-linux-gnu
           fi
@@ -56,6 +56,52 @@ jobs:
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }} --features gpu
 
+      # Bundle the Vulkan loader (libvulkan.so.1) next to the binaries and set
+      # RPATH $ORIGIN so the binary always finds it at launch. With the `gpu`
+      # feature the binaries have libvulkan.so.1 as a dynamic NEEDED entry, so
+      # without this a Linux box lacking libvulkan1 can't even START graphiq-mcp
+      # (the CPU fallback never runs because the dynamic linker rejects it).
+      # Bundling makes the release self-contained; a driver/ICD is still needed
+      # for actual GPU use, but missing it degrades to CPU+rayon gracefully.
+      - name: Bundle Vulkan loader (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          DEST="target/${{ matrix.target }}/release"
+          mkdir -p "$DEST/lib"
+          # Pull the matching libvulkan1 package and extract libvulkan.so.1*
+          # (the loader .so + versioned symlinks) for the target arch.
+          PKG=libvulkan1
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            PKG=libvulkan1:arm64
+            sudo dpkg --add-architecture arm64
+            sudo apt-get update
+          fi
+          cd "$(mktemp -d)"
+          apt-get download "$PKG"
+          for deb in *.deb; do dpkg-deb -x "$deb" .; done
+          # Find the loader under usr/lib/*/ and copy it (resolve the symlink).
+          LOADER=$(find . -path '*/libvulkan.so.1' | head -1)
+          if [ -z "$LOADER" ]; then
+            echo "libvulkan.so.1 not found in package" >&2; exit 1
+          fi
+          LOADER_REAL="$(readlink -f "$LOADER")"
+          cp -L "$LOADER_REAL" "$GITHUB_WORKSPACE/$DEST/lib/"
+          cp -L "$LOADER" "$GITHUB_WORKSPACE/$DEST/lib/libvulkan.so.1" 2>/dev/null || true
+          cd "$GITHUB_WORKSPACE"
+          # Make the binaries find the bundled loader first. A patchelf failure
+          # MUST fail the build — otherwise we'd ship a release with no RPATH and
+          # the bundle would never be consulted (the exact failure we prevent).
+          for bin in graphiq graphiq-mcp graphiq-bench; do
+            if [ -f "$DEST/$bin" ]; then
+              patchelf --set-rpath "\$ORIGIN/lib" "$DEST/$bin"
+              # Assert the RPATH actually took on every binary.
+              patchelf --print-rpath "$DEST/$bin" | grep -q '\$ORIGIN/lib' || {
+                echo "RPATH not set on $bin" >&2; exit 1;
+              }
+            fi
+          done
+
       - name: Package
         run: |
           mkdir -p dist
@@ -64,6 +110,10 @@ jobs:
               cp "target/${{ matrix.target }}/release/$bin" dist/
             fi
           done
+          # Include the bundled Vulkan loader when present (Linux only).
+          if [ -d "target/${{ matrix.target }}/release/lib" ]; then
+            cp -r "target/${{ matrix.target }}/release/lib" dist/
+          fi
           cd dist && tar czf "${{ matrix.artifact }}.tar.gz" *
           shasum -a 256 "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.sha256"
 
