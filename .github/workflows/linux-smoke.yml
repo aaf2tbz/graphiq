@@ -90,32 +90,54 @@ jobs:
           export PATH="$PWD/target/release:$PATH"
           DB=fixture/.graphiq/graphiq.db
 
+          # Note on SIGPIPE: graphiq resets SIGPIPE to default, so piping its
+          # output to a reader that closes early (head/grep -q) terminates it
+          # with exit 141 (classic Unix behavior, NOT a panic). To test output
+          # content without triggering that, we capture each command's output
+          # into a variable first, then grep the captured string.
+
           echo "--- search (CPU+rayon path, must find the symbol) ---"
           out="$(graphiq search 'rate limit' --db "$DB" --top 3)"
           echo "$out" | grep -q "RateLimiter" || { echo "search did not find RateLimiter: $out" >&2; exit 1; }
 
           echo "--- blast (Rust impl->type contains fix) ---"
-          graphiq blast RateLimiter --db "$DB" --depth 2 | grep -E "check_rate|reset" >/dev/null
+          out="$(graphiq blast RateLimiter --db "$DB" --depth 2)"
+          echo "$out" | grep -Eq "check_rate|reset" || { echo "blast missing members: $out" >&2; exit 1; }
 
           echo "--- empty-index no-panic regression ---"
           mkdir -p empty_proj && (cd empty_proj && git init -q)
           graphiq index empty_proj --db empty_proj/g.db >/dev/null 2>&1
-          graphiq search anything --db empty_proj/g.db | grep -q "No results"
+          out="$(graphiq search anything --db empty_proj/g.db)"
+          echo "$out" | grep -q "No results" || { echo "empty search did not say No results: $out" >&2; exit 1; }
 
           echo "--- clear ---"
-          graphiq clear --db empty_proj/g.db --yes | grep -q "fresh empty\|Cleared"
+          out="$(graphiq clear --db empty_proj/g.db --yes)"
+          echo "$out" | grep -Eq "fresh empty|Cleared" || { echo "clear failed: $out" >&2; exit 1; }
 
           echo "--- discover (JSON, must report a count) ---"
-          graphiq discover --json | grep -q '"count"'
+          out="$(graphiq discover --json)"
+          echo "$out" | grep -q '"count"' || { echo "discover no count: $out" >&2; exit 1; }
 
           echo "--- git scope (fixture is a repo) ---"
-          graphiq git --project fixture --json | grep -q '"branch"'
+          out="$(graphiq git --project fixture --json)"
+          echo "$out" | grep -q '"branch"' || { echo "git no branch: $out" >&2; exit 1; }
 
           echo "--- projects (registry) ---"
-          HOME="$PWD/fake-home" graphiq projects --json | grep -q '"projects"'
+          out="$(HOME="$PWD/fake-home" graphiq projects --json)"
+          echo "$out" | grep -q '"projects"' || { echo "projects no key: $out" >&2; exit 1; }
 
           echo "--- sync verify ---"
-          HOME="$PWD/fake-home" graphiq sync --project fixture | grep -qE "connected:|No harnesses"
+          out="$(HOME="$PWD/fake-home" graphiq sync --project fixture)"
+          echo "$out" | grep -Eq "connected:|No harnesses" || { echo "sync no result: $out" >&2; exit 1; }
+
+          echo "--- explicit SIGPIPE behavior: piping to head exits 141, not panic 101 ---"
+          # graphiq terminated by SIGPIPE (141) when the reader closes early = correct Unix behavior.
+          set +e
+          graphiq discover 2>/dev/null | head -1 >/dev/null
+          rc=${PIPESTATUS[0]}
+          set -e
+          [ "$rc" -eq 141 ] || [ "$rc" -eq 0 ] || { echo "unexpected exit $rc from discover|head (want 141 SIGPIPE or 0)" >&2; exit 1; }
+          echo "discover|head exit $rc (SIGPIPE handled, no panic)"
 
           echo "ALL LINUX SMOKE CHECKS PASSED (no Vulkan installed)"
 
