@@ -49,13 +49,84 @@ fn evidence_weight(kind_str: &str) -> f64 {
     }
 }
 
-fn dominant_file_from_path(path: &str) -> String {
-    let parts: Vec<&str> = path.split('/').collect();
-    if parts.len() >= 2 {
-        format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1])
-    } else {
-        path.to_string()
+/// Compute an honest label for a subsystem from the paths of its member files.
+///
+/// Previously the label was the last two path components of a single
+/// "dominant" file, which collided across unrelated directories — symbols in
+/// `crates/graphiq-core/src/roles.rs` and `apps/desktop/src/renderer/src/styles.css`
+/// both reduced to `src/<file>`, so a big cluster of Rust symbols could be
+/// labeled "Src / Styles.css".
+///
+/// Now we prefer the **longest common leading directory** shared by all member
+/// files (the real location of the cluster), and fall back to the most common
+/// two-level path prefix (the dominant area) when members span unrelated
+/// top-level directories. The result is a directory path like
+/// `crates/graphiq-core/src`, never a misleading single filename.
+fn cluster_directory_label(member_paths: &[&str]) -> String {
+    let non_empty: Vec<&str> = member_paths
+        .iter()
+        .copied()
+        .filter(|p| !p.is_empty())
+        .collect();
+    if non_empty.is_empty() {
+        return "unknown".to_string();
     }
+
+    // Work on directories (drop the file-name component) so a single file in a
+    // dir and several files in that dir both resolve to the directory itself.
+    // Slice the original &str (borrowed from the caller) rather than allocating,
+    // so the returned components outlive this closure.
+    let dir_paths: Vec<Vec<&str>> = non_empty
+        .iter()
+        .map(|p: &&str| {
+            let dir_str: &str = match p.rfind('/') {
+                Some(i) => &p[..i],
+                None => "",
+            };
+            dir_str
+                .split('/')
+                .filter(|c| !c.is_empty())
+                .collect::<Vec<&str>>()
+        })
+        .collect();
+
+    // Longest common leading directory prefix across all members.
+    let first = &dir_paths[0];
+    let mut common = 0usize;
+    'outer: for i in 0..first.len() {
+        let seg = first[i];
+        for other in &dir_paths[1..] {
+            if i >= other.len() || other[i] != seg {
+                break 'outer;
+            }
+        }
+        common = i + 1;
+    }
+    if common > 0 {
+        return first[..common].join("/");
+    }
+
+    // No common prefix (members span top-level dirs): use the most common
+    // two-level prefix — the dominant area the cluster lives in.
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for comps in &dir_paths {
+        let key = if comps.is_empty() {
+            ".".to_string()
+        } else if comps.len() >= 2 {
+            format!("{}/{}", comps[0], comps[1])
+        } else {
+            comps[0].to_string()
+        };
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    counts
+        .into_iter()
+        // Deterministic tiebreaker: highest count wins; on ties the
+        // lexicographically-smallest prefix wins, so the persisted label is
+        // stable across runs (HashMap iteration order is randomized).
+        .max_by(|(k1, c1), (k2, c2)| c1.cmp(c2).then_with(|| k2.cmp(k1)))
+        .map(|(k, _)| k)
+        .unwrap_or_else(|| "root".to_string())
 }
 
 fn dir_cluster_key(path: &str) -> String {
@@ -182,13 +253,30 @@ pub fn detect_subsystems(db: &GraphDb) -> Result<SubsystemIndex, String> {
     }
 
     if edge_kinds.is_empty() {
-        let name = all_symbol_ids
+        let member_paths: Vec<&str> = all_symbol_ids
             .iter()
-            .find_map(|sid| {
-                let fid = symbol_file.get(sid)?;
-                let path = file_paths.get(fid)?;
-                Some(dominant_file_from_path(path))
-            })
+            .filter_map(|sid| symbol_file.get(sid))
+            .filter_map(|fid| file_paths.get(fid).map(|s| s.as_str()))
+            .collect();
+        let name = cluster_directory_label(&member_paths);
+
+        // Dominant file = the file contributing the most symbols (same rule as
+        // the main path), so the `dominant_file` field is always a real file
+        // path — never the directory label.
+        let mut fid_counts: HashMap<i64, usize> = HashMap::new();
+        for sid in &all_symbol_ids {
+            if let Some(&fid) = symbol_file.get(sid) {
+                *fid_counts.entry(fid).or_insert(0) += 1;
+            }
+        }
+        let dominant_fid = fid_counts
+            .iter()
+            .max_by_key(|(_, &c)| c)
+            .map(|(&f, _)| f)
+            .unwrap_or(0);
+        let dominant_file = file_paths
+            .get(&dominant_fid)
+            .cloned()
             .unwrap_or_else(|| "unknown".to_string());
 
         let subsystem = Subsystem {
@@ -199,7 +287,7 @@ pub fn detect_subsystems(db: &GraphDb) -> Result<SubsystemIndex, String> {
                 .iter()
                 .map(|sid| symbol_names.get(sid).cloned().unwrap_or_default())
                 .collect(),
-            dominant_file: name,
+            dominant_file,
             internal_edge_count: 0,
             boundary_edge_count: 0,
             cohesion: 1.0,
@@ -429,7 +517,15 @@ pub fn detect_subsystems(db: &GraphDb) -> Result<SubsystemIndex, String> {
             .get(&dominant_fid)
             .map(|p| p.as_str())
             .unwrap_or("unknown");
-        let name = dominant_file_from_path(dom_path);
+        let member_paths: Vec<&str> = members
+            .iter()
+            .filter_map(|sid| symbol_file.get(sid))
+            .filter_map(|fid| file_paths.get(fid).map(|s| s.as_str()))
+            .collect();
+        // Label the cluster by where its members actually live (common
+        // directory), not by a single dominant file's last two components —
+        // the latter collided across `src/` directories and mislabeled symbols.
+        let name = cluster_directory_label(&member_paths);
 
         let sym_ids: Vec<i64> = members.clone();
         let sym_names: Vec<String> = members
@@ -1310,5 +1406,48 @@ mod tests {
             .query_row([], |row| row.get(0))
             .unwrap();
         assert!(count > 0, "should have stored roles");
+    }
+
+    #[test]
+    fn test_cluster_directory_label_common_prefix() {
+        // Several files in the same directory -> the directory itself.
+        let label = cluster_directory_label(&[
+            "crates/graphiq-core/src/roles.rs",
+            "crates/graphiq-core/src/index.rs",
+            "crates/graphiq-core/src/db.rs",
+        ]);
+        assert_eq!(label, "crates/graphiq-core/src");
+    }
+
+    #[test]
+    fn test_cluster_directory_label_single_file() {
+        // A single file resolves to its directory, not to "<dir>/<file>".
+        assert_eq!(
+            cluster_directory_label(&["apps/desktop/src/renderer/src/styles.css"]),
+            "apps/desktop/src/renderer/src"
+        );
+        assert_eq!(cluster_directory_label(&["main.rs"]), ".");
+    }
+
+    #[test]
+    fn test_cluster_directory_label_uses_common_not_colliding() {
+        // Regression for the original bug: symbols from different `src/`
+        // directories must NOT all collapse to "src/<file>". Two unrelated
+        // directories that share no prefix get the majority two-level area.
+        let label = cluster_directory_label(&[
+            "crates/graphiq-core/src/roles.rs",
+            "crates/graphiq-core/src/index.rs",
+            "crates/graphiq-core/src/db.rs",
+            "apps/desktop/src/renderer/src/styles.css",
+        ]);
+        // Majority (3/4) live under crates/graphiq-core — that is the honest
+        // dominant area, and it is NOT the misleading "src/styles.css".
+        assert_eq!(label, "crates/graphiq-core");
+    }
+
+    #[test]
+    fn test_cluster_directory_label_empty() {
+        assert_eq!(cluster_directory_label(&[]), "unknown");
+        assert_eq!(cluster_directory_label(&["", ""]), "unknown");
     }
 }

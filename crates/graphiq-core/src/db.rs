@@ -168,6 +168,31 @@ impl GraphDb {
         Ok(db)
     }
 
+    /// Delete all indexed data in place and reinitialize an empty schema.
+    ///
+    /// Used by `graphiq clear` and the MCP `clear` tool. Unlike removing the
+    /// database file, this works while the connection is open and is safe across
+    /// platforms. After clearing, the database is empty and ready for a fresh
+    /// index; `stats()` reports zero files/symbols/edges and a valid schema.
+    pub fn clear(&self) -> Result<(), DbError> {
+        self.conn.execute_batch(
+            "
+            PRAGMA foreign_keys=OFF;
+            DROP TABLE IF EXISTS symbol_embeddings;
+            DROP TABLE IF EXISTS blast_cache;
+            DROP TABLE IF EXISTS file_edges;
+            DROP TABLE IF EXISTS edges;
+            DROP TABLE IF EXISTS symbols_fts;
+            DROP TABLE IF EXISTS symbols;
+            DROP TABLE IF EXISTS files;
+            DROP TABLE IF EXISTS meta;
+            PRAGMA foreign_keys=ON;
+            ",
+        )?;
+        self.init_schema()?;
+        Ok(())
+    }
+
     pub fn conn(&self) -> &Connection {
         &self.conn
     }
@@ -933,6 +958,53 @@ mod tests {
 
         db.delete_file("src/main.ts").unwrap();
         assert!(db.get_symbol(sid).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_clear_empties_database_and_keeps_schema() {
+        let db = GraphDb::open_in_memory().unwrap();
+        let fid = db
+            .upsert_file("src/main.ts", "typescript", "abc", 1000, 10)
+            .unwrap();
+        let sym = SymbolBuilder::new(
+            fid,
+            "main".into(),
+            SymbolKind::Function,
+            "fn main() {}".into(),
+            "typescript".into(),
+        )
+        .lines(1, 1)
+        .build();
+        db.insert_symbol(&sym).unwrap();
+
+        assert!(db.symbol_count().unwrap() > 0);
+        assert!(db.stats().unwrap().files > 0);
+
+        // Clearing drops all data ...
+        db.clear().unwrap();
+        assert_eq!(db.symbol_count().unwrap(), 0);
+        let stats = db.stats().unwrap();
+        assert_eq!(stats.files, 0);
+        assert_eq!(stats.symbols, 0);
+        assert_eq!(stats.edges, 0);
+
+        // ... and leaves a valid schema, so indexing can resume immediately.
+        let fid2 = db
+            .upsert_file("src/new.ts", "typescript", "def", 2000, 5)
+            .unwrap();
+        let sym2 = SymbolBuilder::new(
+            fid2,
+            "rebuilt".into(),
+            SymbolKind::Function,
+            "fn rebuilt() {}".into(),
+            "typescript".into(),
+        )
+        .lines(1, 1)
+        .build();
+        db.insert_symbol(&sym2).unwrap();
+        assert_eq!(db.symbol_count().unwrap(), 1);
+        assert!(!db.symbols_by_name("rebuilt").unwrap().is_empty());
+        assert!(db.schema_version().unwrap().starts_with('1'));
     }
 
     #[test]

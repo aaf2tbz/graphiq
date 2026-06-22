@@ -44,6 +44,10 @@ struct ServerState {
     watching: bool,
     last_cruncher_rebuild_at: Option<std::time::Instant>,
     last_staleness_check_at: Option<std::time::Instant>,
+    /// When true, the server treats an empty database as intentional (set by the
+    /// `clear` tool/command) and will NOT auto-reindex it. Cleared by an explicit
+    /// `index` call so the agent/user controls when a cleared index is rebuilt.
+    suppress_auto_index: bool,
 }
 
 fn db_file_to_project_path(path: &Path) -> Option<PathBuf> {
@@ -384,7 +388,63 @@ fn do_index(state: &mut ServerState) -> Result<String, String> {
     Ok(msg)
 }
 
+/// Resolve the CPU thread count for the indexing/search pool from explicit env
+/// values and the number of available cores. Pure (no global state) so it can
+/// be unit-tested without env races.
+///
+/// Priority: `graphiq_max` (GRAPHIQ_MAX_THREADS) wins over `rayon_num`
+/// (RAYON_NUM_THREADS), which wins over the computed default. Values must parse
+/// to >= 1 and are capped to `available` to avoid oversubscription. When
+/// `background` is true (the MCP daemon is running as a session/background
+/// process via `--ephemeral` or `--session-id`), the default is capped to keep
+/// load in check instead of pegging every core.
+fn resolve_cpu_threads_from(
+    graphiq_max: Option<&str>,
+    rayon_num: Option<&str>,
+    available: usize,
+    background: bool,
+) -> usize {
+    let cap = available.max(1);
+    for value in [graphiq_max, rayon_num].into_iter().flatten() {
+        if let Ok(n) = value.trim().parse::<usize>() {
+            if n >= 1 {
+                return n.min(cap);
+            }
+        }
+    }
+    if background {
+        BACKGROUND_DEFAULT_THREADS.min(available).max(1)
+    } else {
+        available
+    }
+}
+
+/// Default thread cap for session/background MCP daemons. Foreground (explicit,
+/// persistent indexing) is unaffected and still uses all cores.
+const BACKGROUND_DEFAULT_THREADS: usize = 4;
+
+/// Resolve the indexing/search CPU thread count from the environment.
+///
+/// `GRAPHIQ_MAX_THREADS` and `RAYON_NUM_THREADS` are honored so operators and
+/// session hooks can cap CPU load. Previously the MCP daemon hardcoded
+/// `available_parallelism()` into `build_global()`, which silently overrode
+/// these variables — so the session hook's `RAYON_NUM_THREADS=2` cap was
+/// ineffective and the background daemon pegged every core while indexing.
+/// In background/session mode the default is capped to keep load in check.
+fn resolve_cpu_threads(background: bool) -> usize {
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    resolve_cpu_threads_from(
+        std::env::var("GRAPHIQ_MAX_THREADS").ok().as_deref(),
+        std::env::var("RAYON_NUM_THREADS").ok().as_deref(),
+        available,
+        background,
+    )
+}
+
 fn main() {
+    graphiq_core::reset_sigpipe();
     let (project_arg, db_override, ephemeral, watch, session_id) = parse_args();
 
     let explicit = project_arg.is_some();
@@ -534,6 +594,7 @@ fn main() {
         watching: watch,
         last_cruncher_rebuild_at: None,
         last_staleness_check_at: None,
+        suppress_auto_index: false,
     }));
 
     let running = Arc::new(AtomicBool::new(true));
@@ -561,9 +622,10 @@ fn main() {
     }
 
     {
-        let n_threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4);
+        // Background/session mode (--ephemeral or --session-id) keeps the daemon
+        // light by default; foreground (persistent) indexing uses all cores.
+        let background = ephemeral || session_id.is_some();
+        let n_threads = resolve_cpu_threads(background);
         rayon::ThreadPoolBuilder::new()
             .num_threads(n_threads)
             .thread_name(|i| format!("graphiq-cpu-{i}"))
@@ -735,6 +797,13 @@ fn run_watcher(project_root: &Path, state: &Arc<Mutex<ServerState>>, indexing: &
                     }
                 };
 
+                // Honor an explicit `clear`: don't auto-reindex a deliberately
+                // emptied database on file changes until the agent re-indexes.
+                if s.suppress_auto_index {
+                    indexing.store(false, Ordering::Release);
+                    continue;
+                }
+
                 if let Err(e) = do_index(&mut s) {
                     log_err(&format!("watcher: reindex failed: {e}"));
                 } else {
@@ -830,6 +899,14 @@ fn background_warm(state: &Arc<Mutex<ServerState>>, indexing: &Arc<AtomicBool>) 
                 return;
             }
         };
+        // Re-check suppression under the lock right before indexing. The `clear`
+        // tool sets this in the same critical section it empties the DB, so a
+        // clear that races with startup warming cannot be silently undone.
+        if s.suppress_auto_index {
+            indexing.store(false, Ordering::Release);
+            log_err("warm: database is empty but auto-index is suppressed (cleared by user/agent)");
+            return;
+        }
         log_err("warm: database empty, starting full index...");
         if let Err(e) = do_index(&mut s) {
             log_err(&format!("warm: full index failed: {e}"));
@@ -1246,6 +1323,15 @@ fn tools_list() -> Value {
                     "properties": {},
                     "required": []
                 }
+            },
+            {
+                "name": "clear",
+                "description": "Delete the entire index and leave an empty database ready for a fresh reindex. Destructive: all indexed symbols, edges, and cached artifacts are removed. Use when the index is corrupted, belongs to the wrong project, or you want to start over — then call `index` to rebuild.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
             }
         ]
     })
@@ -1273,6 +1359,7 @@ fn handle_tool_call(
         && tool_name != "status"
         && tool_name != "doctor"
         && tool_name != "impact"
+        && tool_name != "clear"
     {
         if indexing.load(Ordering::Acquire) {
             return tool_ok("Indexing in progress — please retry in a few seconds.".into());
@@ -1294,6 +1381,12 @@ fn handle_tool_call(
             };
             if !db_is_empty(&s.db) {
                 indexing.store(false, Ordering::Release);
+            } else if s.suppress_auto_index {
+                // The DB is empty because the agent/user ran `clear`. Do NOT
+                // cold-start a rebuild — let the tool return its honest empty
+                // result. An explicit `index` call clears the suppression.
+                indexing.store(false, Ordering::Release);
+                log_err("auto-index suppressed (index was cleared by user/agent)");
             } else {
                 log_err("auto-indexing (cold start)...");
                 if let Err(e) = do_index(&mut s) {
@@ -1346,6 +1439,8 @@ fn handle_tool_call(
         "index" => {
             indexing.store(true, Ordering::Release);
             let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            // An explicit index request overrides any prior `clear` suppression.
+            s.suppress_auto_index = false;
             let result = match do_index(&mut s) {
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
@@ -1379,6 +1474,16 @@ fn handle_tool_call(
                 Ok(msg) => tool_ok(msg),
                 Err(e) => tool_error(&e),
             }
+        }
+        "clear" => {
+            indexing.store(true, Ordering::Release);
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let result = match tool_clear(&mut s) {
+                Ok(msg) => tool_ok(msg),
+                Err(e) => tool_error(&e),
+            };
+            indexing.store(false, Ordering::Release);
+            result
         }
         "constants" => {
             let s = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -3003,6 +3108,36 @@ fn tool_upgrade_index(state: &mut ServerState) -> Result<String, String> {
     }
 }
 
+/// Wipe the active index down to an empty database, ready for a fresh reindex.
+/// Destructive: all symbols/edges/cached artifacts are removed. Keeps the
+/// schema so `index` can repopulate immediately.
+fn tool_clear(state: &mut ServerState) -> Result<String, String> {
+    // Drop all rows in place (safe while the connection is open, cross-platform).
+    state
+        .db
+        .clear()
+        .map_err(|e| format!("failed to clear index: {e}"))?;
+
+    // Invalidate in-memory search artifacts.
+    state.cruncher_index = None;
+
+    // Suppress auto-reindexing of the now-empty database (startup warming and
+    // the file watcher both honor this) so the cleared state persists until the
+    // agent explicitly calls `index`. The `index` tool clears this flag.
+    state.suppress_auto_index = true;
+
+    // Remove cached on-disk artifacts so doctor/status honestly report empty.
+    let db_dir = state.db_path.parent().unwrap_or(std::path::Path::new("."));
+    for name in ["cruncher.bin.zst", "manifest.json"] {
+        let p = db_dir.join(name);
+        if p.exists() {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+
+    Ok("Index cleared. The database is empty and ready for a fresh reindex. Call the `index` tool to rebuild.".into())
+}
+
 fn parse_evidence_kind(meta: &serde_json::Value) -> &'static str {
     if let Some(kind) = meta
         .get("evidence")
@@ -3207,5 +3342,90 @@ mod tests {
 
         assert_eq!(resolved, provider.canonicalize().unwrap());
         let _ = fs::remove_dir_all(provider);
+    }
+
+    /// Regression: `clear` must empty the database, drop the in-memory cruncher,
+    /// and set suppress_auto_index so the server's auto-index paths (startup
+    /// warm, file watcher, cold-start) don't immediately rebuild it. See the
+    /// audit that found the cold-start path was missing this guard.
+    #[test]
+    fn tool_clear_empties_db_and_suppresses_auto_index() {
+        let dir = temp_path("clear-contract");
+        fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("graphiq.db");
+
+        // Index a tiny project so the DB is non-empty before clearing.
+        fs::write(dir.join("main.rs"), "pub fn alpha() -> u32 { 1 }\n").unwrap();
+        {
+            let db = graphiq_core::db::GraphDb::open(&db_path).unwrap();
+            let indexer = graphiq_core::index::Indexer::new(&db);
+            indexer.index_project(&dir).unwrap();
+            assert!(db.symbol_count().unwrap() > 0);
+        }
+
+        let mut state = ServerState {
+            project_root: dir.clone(),
+            db_path: db_path.clone(),
+            db: graphiq_core::db::GraphDb::open(&db_path).unwrap(),
+            cache: graphiq_core::cache::HotCache::with_defaults(),
+            cruncher_index: None,
+            watching: false,
+            last_cruncher_rebuild_at: None,
+            last_staleness_check_at: None,
+            suppress_auto_index: false,
+        };
+
+        // Sanity: not suppressed before clear.
+        assert!(!state.suppress_auto_index);
+        assert!(state.db.symbol_count().unwrap() > 0);
+
+        let msg = tool_clear(&mut state).expect("clear should succeed");
+        assert!(
+            msg.contains("empty"),
+            "clear should report an empty index: {msg}"
+        );
+
+        // The database is empty ...
+        assert_eq!(state.db.symbol_count().unwrap(), 0);
+        assert_eq!(state.db.stats().unwrap().files, 0);
+        // ... the in-memory cruncher is dropped ...
+        assert!(state.cruncher_index.is_none());
+        // ... and auto-index is suppressed so the cleared state persists.
+        assert!(state.suppress_auto_index);
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn resolve_cpu_threads_priority_and_defaults() {
+        // Foreground default: no env -> available cores.
+        assert_eq!(resolve_cpu_threads_from(None, None, 8, false), 8);
+        // Background default: no env -> capped to BACKGROUND_DEFAULT_THREADS (4).
+        assert_eq!(resolve_cpu_threads_from(None, None, 8, true), 4);
+        // Background on a small machine never oversubscribes.
+        assert_eq!(resolve_cpu_threads_from(None, None, 2, true), 2);
+
+        // RAYON_NUM_THREADS honored when GRAPHIQ_MAX_THREADS unset.
+        assert_eq!(resolve_cpu_threads_from(None, Some("2"), 8, false), 2);
+        // Env override beats the background default.
+        assert_eq!(resolve_cpu_threads_from(None, Some("6"), 8, true), 6);
+
+        // GRAPHIQ_MAX_THREADS wins over RAYON_NUM_THREADS.
+        assert_eq!(resolve_cpu_threads_from(Some("3"), Some("2"), 8, false), 3);
+
+        // Invalid / zero values fall through to the next source.
+        assert_eq!(
+            resolve_cpu_threads_from(Some("notanumber"), Some("2"), 8, false),
+            2
+        );
+        assert_eq!(resolve_cpu_threads_from(Some("0"), Some("2"), 8, false), 2);
+        assert_eq!(resolve_cpu_threads_from(None, Some("0"), 8, false), 8);
+        assert_eq!(resolve_cpu_threads_from(None, Some("0"), 8, true), 4);
+
+        // Capped to available cores (no oversubscription).
+        assert_eq!(resolve_cpu_threads_from(Some("64"), None, 4, false), 4);
+
+        // Whitespace tolerated.
+        assert_eq!(resolve_cpu_threads_from(Some("  2 "), None, 8, false), 2);
     }
 }

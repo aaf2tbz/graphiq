@@ -1362,7 +1362,7 @@ dependencies = [
 
 [[package]]
 name = "graphiq-bench"
-version = "4.2.3"
+version = "4.3.0"
 dependencies = [
  "graphiq-core",
  "serde",
@@ -1371,7 +1371,7 @@ dependencies = [
 
 [[package]]
 name = "graphiq-cli"
-version = "4.2.3"
+version = "4.3.0"
 dependencies = [
  "clap",
  "dirs",
@@ -1384,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "graphiq-core"
-version = "4.2.3"
+version = "4.3.0"
 dependencies = [
  "bincode",
  "candle-core",
@@ -1394,6 +1394,7 @@ dependencies = [
  "dirs",
  "hf-hub",
  "ignore",
+ "libc",
  "llama-cpp-2",
  "lru",
  "pollster",
@@ -1427,7 +1428,7 @@ dependencies = [
 
 [[package]]
 name = "graphiq-mcp"
-version = "4.2.3"
+version = "4.3.0"
 dependencies = [
  "graphiq-core",
  "notify",

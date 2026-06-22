@@ -1,0 +1,151 @@
+name: Linux smoke
+
+# Validates that graphiq builds AND runs correctly on Linux. This is the answer
+# to "will this work on Linux as expected": empirically, yes.
+#
+# Key finding proven by this workflow: graphiq's binaries load Vulkan LAZILY at
+# runtime (wgpu dlopens libvulkan.so.1), so libvulkan is NOT a hard dynamic
+# dependency. The binary STARTS and runs on CPU+rayon even with zero Vulkan
+# installed. So a Linux box without libvulkan1/driver is fully supported — no
+# bundling required. This workflow proves that by removing ALL vulkan packages
+# after the build and showing the binaries still launch and the full command
+# surface (index/search/blast/discover/git/projects/clear/sync) works.
+
+on:
+  push:
+    branches: [main, feat/graphiq-reliability-and-harness-sync]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libvulkan-dev
+
+      - name: Build release (gpu feature)
+        run: cargo build --release --features gpu
+
+      - name: Strip ALL Vulkan to prove no hard dependency
+        run: |
+          set -euo pipefail
+          # Remove the dev package + the runtime loader + the Mesa ICD.
+          # libvulkan-dev depends on libvulkan1, so dpkg both with --force-depends.
+          sudo dpkg --remove --force-depends libvulkan-dev libvulkan1 mesa-vulkan-drivers 2>/dev/null || true
+          sudo ldconfig
+          # Assert the system loader is ACTUALLY gone before testing.
+          if ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1' || \
+             [ -e /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ]; then
+            echo "system libvulkan still present after removal — test premise unmet" >&2
+            exit 1
+          fi
+          echo "system libvulkan confirmed removed"
+
+      - name: Prove the binaries start with zero Vulkan (lazy-load + CPU fallback)
+        run: |
+          set -euo pipefail
+          # The binaries must launch. ldd must show NO libvulkan NEEDED entry
+          # (proving the vulkan link is lazy, not a hard dynamic dependency).
+          ldd target/release/graphiq-mcp | tee /tmp/ldd.txt
+          if grep -q 'libvulkan' /tmp/ldd.txt; then
+            echo "ERROR: graphiq-mcp has a hard libvulkan NEEDED entry — would fail to start without vulkan" >&2
+            exit 1
+          fi
+          echo "confirmed: graphiq-mcp has no hard libvulkan dependency"
+          ./target/release/graphiq --version
+          ./target/release/graphiq-mcp --help >/dev/null
+
+      - name: Build a fixture project and index it
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/release:$PATH"
+          mkdir -p fixture/src
+          cat > fixture/src/lib.rs <<'RUST'
+          pub struct RateLimiter { max: u32 }
+          impl RateLimiter {
+              pub fn check_rate(&self) -> bool { true }
+              pub fn reset(&self) {}
+          }
+          pub fn handle_request(rl: &RateLimiter) -> bool { rl.check_rate() }
+          RUST
+          (cd fixture && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -qm init)
+          graphiq index fixture --db fixture/.graphiq/graphiq.db | grep -E "Symbols: [0-9]+"
+
+      - name: Run the full command surface (runtime validation, no Vulkan)
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/release:$PATH"
+          DB=fixture/.graphiq/graphiq.db
+
+          # Note on SIGPIPE: graphiq resets SIGPIPE to default, so piping its
+          # output to a reader that closes early (head/grep -q) terminates it
+          # with exit 141 (classic Unix behavior, NOT a panic). To test output
+          # content without triggering that, we capture each command's output
+          # into a variable first, then grep the captured string.
+
+          echo "--- search (CPU+rayon path, must find the symbol) ---"
+          out="$(graphiq search 'rate limit' --db "$DB" --top 3)"
+          echo "$out" | grep -q "RateLimiter" || { echo "search did not find RateLimiter: $out" >&2; exit 1; }
+
+          echo "--- blast (Rust impl->type contains fix) ---"
+          out="$(graphiq blast RateLimiter --db "$DB" --depth 2)"
+          echo "$out" | grep -Eq "check_rate|reset" || { echo "blast missing members: $out" >&2; exit 1; }
+
+          echo "--- empty-index no-panic regression ---"
+          mkdir -p empty_proj && (cd empty_proj && git init -q)
+          graphiq index empty_proj --db empty_proj/g.db >/dev/null 2>&1
+          out="$(graphiq search anything --db empty_proj/g.db)"
+          echo "$out" | grep -q "No results" || { echo "empty search did not say No results: $out" >&2; exit 1; }
+
+          echo "--- clear ---"
+          out="$(graphiq clear --db empty_proj/g.db --yes)"
+          echo "$out" | grep -Eq "fresh empty|Cleared" || { echo "clear failed: $out" >&2; exit 1; }
+
+          echo "--- discover (JSON, must report a count) ---"
+          out="$(graphiq discover --json)"
+          echo "$out" | grep -q '"count"' || { echo "discover no count: $out" >&2; exit 1; }
+
+          echo "--- git scope (fixture is a repo) ---"
+          out="$(graphiq git --project fixture --json)"
+          echo "$out" | grep -q '"branch"' || { echo "git no branch: $out" >&2; exit 1; }
+
+          echo "--- projects (registry) ---"
+          out="$(HOME="$PWD/fake-home" graphiq projects --json)"
+          echo "$out" | grep -q '"projects"' || { echo "projects no key: $out" >&2; exit 1; }
+
+          echo "--- sync verify ---"
+          out="$(HOME="$PWD/fake-home" graphiq sync --project fixture)"
+          echo "$out" | grep -Eq "connected:|No harnesses" || { echo "sync no result: $out" >&2; exit 1; }
+
+          echo "--- explicit SIGPIPE behavior: piping to head exits 141, not panic 101 ---"
+          # graphiq terminated by SIGPIPE (141) when the reader closes early = correct Unix behavior.
+          set +e
+          graphiq discover 2>/dev/null | head -1 >/dev/null
+          rc=${PIPESTATUS[0]}
+          set -e
+          [ "$rc" -eq 141 ] || [ "$rc" -eq 0 ] || { echo "unexpected exit $rc from discover|head (want 141 SIGPIPE or 0)" >&2; exit 1; }
+          echo "discover|head exit $rc (SIGPIPE handled, no panic)"
+
+          echo "ALL LINUX SMOKE CHECKS PASSED (no Vulkan installed)"
+
+      - name: Upload binaries (for inspection)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphiq-linux-build
+          path: |
+            target/release/graphiq
+            target/release/graphiq-mcp

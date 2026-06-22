@@ -167,6 +167,84 @@ pub fn content_hash(content: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
+/// Maximum size at which a data-format file (JSON/YAML/TOML) is still symbol-extracted.
+/// Files larger than this are treated as opaque blobs: file-tracked for freshness,
+/// but never parsed into symbols. This prevents generated data — dependency
+/// lockfiles, benchmark dumps, vendored snapshots — from dominating the symbol
+/// graph with thousands of low-value keys.
+pub const MAX_DATA_FILE_SYMBOL_BYTES: u64 = 256 * 1024;
+
+/// Dependency lockfiles and generated vendored-data filenames. These carry no
+/// code-intelligence value and must never be symbol-extracted regardless of size.
+fn is_lockfile_name(name: &str) -> bool {
+    matches!(
+        name,
+        "package-lock.json"
+            | "npm-shrinkwrap.json"
+            | "yarn.lock"
+            | "pnpm-lock.yaml"
+            | "pnpm-lock.yml"
+            | "composer.lock"
+            | "Gemfile.lock"
+            | "Cargo.lock"
+            | "poetry.lock"
+            | "Pipfile.lock"
+            | "uv.lock"
+            | "flake.lock"
+            | "deno.lock"
+            | "go.sum"
+            | "bsb.lock"
+            | "esbuild.lock"
+            | "terraform.lock.hcl"
+            | "gradle.lockfile"
+            | "packages.lock.json"
+            | "mix.lock"
+            | "Podfile.lock"
+            | "Cartfile.resolved"
+    )
+}
+
+/// Returns true for files that should be **file-tracked** (so freshness/staleness
+/// still works) but **never symbol-extracted**.
+///
+/// Covers two cases:
+/// 1. Dependency lockfiles / generated vendored data (by name or `*-lock`/`*.lock`
+///    shape) — e.g. `package-lock.json`, `Cargo.lock`, `pnpm-lock.yaml`. A single
+///    `package-lock.json` can otherwise produce thousands of junk `Constant`
+///    symbols (one per JSON key) and silently dominate search results and the
+///    codebase briefing.
+/// 2. Oversized data-format files (JSON/YAML/TOML above `MAX_DATA_FILE_SYMBOL_BYTES`)
+///    — generated data dumps that have no useful per-symbol structure.
+///
+/// Source code (`.rs`, `.ts`, `.py`, ...) and small config files (`tsconfig.json`,
+/// `package.json`) are unaffected and still get full symbol extraction.
+pub fn is_data_file(path: &Path, size_bytes: u64) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if is_lockfile_name(name) {
+        return true;
+    }
+    // Lockfile-shaped names not in the literal list: *-lock.json, *.lock.json, *.lock
+    if name.ends_with("-lock.json")
+        || name.ends_with(".lock.json")
+        || name.ends_with(".lock")
+        || name.ends_with(".lockfile")
+    {
+        return true;
+    }
+    // Oversized data formats: a multi-megabyte JSON/YAML/TOML blob is generated
+    // data, not hand-written code, and has no useful per-symbol structure.
+    if size_bytes > MAX_DATA_FILE_SYMBOL_BYTES {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if matches!(
+            ext.to_lowercase().as_str(),
+            "json" | "jsonc" | "yaml" | "yml" | "toml"
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn walk_project(root: &Path) -> impl Iterator<Item = PathBuf> {
     let root_owned = root.to_path_buf();
     let mut builder = ignore::WalkBuilder::new(root);
@@ -262,5 +340,68 @@ mod tests {
         assert_eq!(h1, h2);
         assert_ne!(h1, h3);
         assert_eq!(h1.len(), 64);
+    }
+
+    #[test]
+    fn test_is_data_file_excludes_lockfiles() {
+        // Lockfiles are excluded at any size (by name).
+        for (name, size) in [
+            ("package-lock.json", 10u64),
+            ("Cargo.lock", 10),
+            ("pnpm-lock.yaml", 10),
+            ("yarn.lock", 10),
+            ("go.sum", 10),
+            ("packages.lock.json", 10),
+        ] {
+            assert!(
+                is_data_file(Path::new(name), size),
+                "{name} should be a data file"
+            );
+        }
+
+        // Lockfile-shaped names not in the literal list.
+        assert!(is_data_file(Path::new("some-pkg-lock.json"), 10));
+        assert!(is_data_file(Path::new("deps.lock.json"), 10));
+        assert!(is_data_file(Path::new("whatever.lock"), 10));
+
+        // Path-prefixed lockfiles.
+        assert!(is_data_file(
+            Path::new("apps/desktop/package-lock.json"),
+            10
+        ));
+    }
+
+    #[test]
+    fn test_is_data_file_keeps_code_and_small_config() {
+        // Real source code is never a data file.
+        assert!(!is_data_file(Path::new("src/main.rs"), 10));
+        assert!(!is_data_file(Path::new("src/index.ts"), 10));
+        assert!(!is_data_file(Path::new("lib/app.py"), 10));
+
+        // Small hand-written config is still parsed.
+        assert!(!is_data_file(Path::new("tsconfig.json"), 500));
+        assert!(!is_data_file(Path::new("package.json"), 2_000));
+        assert!(!is_data_file(Path::new("Cargo.toml"), 1_000));
+    }
+
+    #[test]
+    fn test_is_data_file_excludes_oversized_data() {
+        // A multi-megabyte JSON/YAML/TOML blob is treated as data even without a
+        // lockfile name.
+        assert!(is_data_file(
+            Path::new("benches/ndcg-50-tokio.json"),
+            5_000_000
+        ));
+        assert!(is_data_file(Path::new("snapshot.yaml"), 2_000_000));
+        assert!(is_data_file(Path::new("generated.toml"), 1_000_000));
+
+        // Same path at a small size is still parsed (it may be real config).
+        assert!(!is_data_file(
+            Path::new("benches/ndcg-50-tokio.json"),
+            1_000
+        ));
+
+        // Oversized source code is never treated as data — code is always parsed.
+        assert!(!is_data_file(Path::new("huge.rs"), 5_000_000));
     }
 }

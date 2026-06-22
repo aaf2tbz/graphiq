@@ -90,3 +90,25 @@ pub mod subsystems;
 pub mod symbol;
 pub mod tokenize;
 pub mod trace;
+
+/// Restore default SIGPIPE handling for CLI/MCP processes.
+///
+/// Rust ignores SIGPIPE by default, so writing to a closed pipe (e.g.
+/// `graphiq search ... | grep -q match`, where grep exits early) returns EPIPE
+/// and `println!` PANICS with "failed printing to stdout: Broken pipe". That
+/// breaks the standard Unix workflow of piping graphiq output to head/grep/less.
+/// Resetting SIGPIPE to `SIG_DFL` makes graphiq behave like classic Unix tools:
+/// when the downstream reader closes the pipe, the process is terminated by
+/// SIGPIPE (exit 141) silently, instead of panicking (exit 101). Call once at
+/// the very start of `main()`. No-op on non-Unix (Windows).
+#[cfg(unix)]
+pub fn reset_sigpipe() {
+    // SAFETY: signal() with SIG_DFL restores the platform default disposition.
+    // This is the canonical fix used by ripgrep, fd, bat, and other Rust CLIs.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn reset_sigpipe() {}

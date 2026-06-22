@@ -75,6 +75,44 @@ enum Commands {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
+    Clear {
+        #[arg(long, default_value = ".graphiq/graphiq.db")]
+        db: PathBuf,
+        #[arg(short, long, help = "Skip the confirmation prompt")]
+        yes: bool,
+    },
+    Sync {
+        #[arg(long, value_name = "PATH")]
+        project: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Limit the displayed report to harnesses matching this substring"
+        )]
+        harness: Option<String>,
+        #[arg(
+            long,
+            help = "Re-apply graphiq config to any discovered-but-unconfigured harness, then re-verify"
+        )]
+        apply: bool,
+    },
+    Discover {
+        #[arg(long, help = "Output machine-readable JSON instead of a table")]
+        json: bool,
+    },
+    Git {
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        project: PathBuf,
+        #[arg(long, help = "Number of recent commits to show", default_value_t = 10)]
+        commits: usize,
+        #[arg(long, help = "Output machine-readable JSON")]
+        json: bool,
+    },
+    Projects {
+        #[arg(long, help = "Output machine-readable JSON")]
+        json: bool,
+        #[arg(long, help = "Forget a project by path (or 'all')")]
+        forget: Option<String>,
+    },
     Subsystems {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
@@ -156,6 +194,7 @@ enum Commands {
 }
 
 fn main() {
+    graphiq_core::reset_sigpipe();
     let cli = Cli::parse();
     match cli.command {
         #[cfg(not(feature = "embed"))]
@@ -208,6 +247,19 @@ fn main() {
         ),
         Commands::Status { db } => cmd_status(&db),
         Commands::Reindex { path, db } => cmd_reindex(&path, &db),
+        Commands::Clear { db, yes } => cmd_clear(&db, yes),
+        Commands::Sync {
+            project,
+            harness,
+            apply,
+        } => cmd_sync(project.as_deref(), harness.as_deref(), apply),
+        Commands::Discover { json } => cmd_discover(json),
+        Commands::Git {
+            project,
+            commits,
+            json,
+        } => cmd_git(&project, commits, json),
+        Commands::Projects { json, forget } => cmd_projects(json, forget.as_deref()),
         Commands::Subsystems { db, roles } => cmd_subsystems(&db, roles),
         Commands::Roles { db, subsystem, top } => cmd_roles(&db, subsystem, top),
         Commands::Demo => cmd_demo(),
@@ -309,6 +361,11 @@ fn cmd_index(
     if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
         eprintln!("  warning: failed to write manifest: {e}");
     }
+
+    // Record this project in the persistent multi-project registry so
+    // `graphiq projects` can list it and the user/agent can return to it without
+    // re-indexing. Best-effort: never let a registry write fail the index.
+    let _ = record_indexed_project(path, &db);
 
     if do_embed {
         #[cfg(feature = "embed")]
@@ -635,6 +692,85 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
     let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
     if let Err(e) = graphiq_core::manifest::write_manifest(db_dir, &manifest) {
         eprintln!("  warning: failed to write manifest: {e}");
+    }
+}
+
+/// Remove an existing GraphIQ index and create a fresh empty one.
+///
+/// Deletes the SQLite database (and its WAL/SHM sidecars) plus the cached
+/// `cruncher.bin.zst`, then opens a brand-new empty database so the project is
+/// ready for a clean reindex. Existing indexed data is discarded; the on-disk
+/// layout (`.graphiq/`) is preserved.
+fn cmd_clear(db_path: &std::path::Path, yes: bool) {
+    let db_dir = db_path.parent().unwrap_or(std::path::Path::new("."));
+
+    // Gather everything we consider part of "the index" so the report is honest.
+    let sidecars = [
+        db_path.to_path_buf(),
+        db_path.with_extension("db-wal"),
+        db_path.with_extension("db-shm"),
+        db_dir.join("cruncher.bin.zst"),
+        db_dir.join("manifest.json"),
+    ];
+
+    let existing: Vec<_> = sidecars.iter().filter(|p| p.exists()).collect();
+
+    if existing.is_empty() {
+        // Nothing to clear — make sure there is a fresh empty DB so the command
+        // is idempotent and the project is ready to index.
+        if let Some(parent) = db_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match graphiq_core::db::GraphDb::open(db_path) {
+            Ok(_) => {
+                println!("No existing index found at {}.", db_path.display());
+                println!("Created a fresh empty index.");
+                return;
+            }
+            Err(e) => {
+                eprintln!("error creating fresh database: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if !yes
+        && !confirm(&format!(
+            "Clear the GraphIQ index at {}? This cannot be undone.",
+            db_path.display()
+        ))
+    {
+        println!("aborted.");
+        return;
+    }
+
+    let mut removed = 0usize;
+    for path in &existing {
+        match std::fs::remove_file(path) {
+            Ok(()) => {
+                println!("  removed {}", path.display());
+                removed += 1;
+            }
+            Err(e) => eprintln!("  warning: could not remove {}: {e}", path.display()),
+        }
+    }
+
+    // Create a fresh empty database (open() initializes the schema).
+    if let Some(parent) = db_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match graphiq_core::db::GraphDb::open(db_path) {
+        Ok(_) => {
+            println!(
+                "Cleared index at {} (removed {removed} file(s)).",
+                db_path.display()
+            );
+            println!("Fresh empty index ready. Run `graphiq index <path>` to rebuild.");
+        }
+        Err(e) => {
+            eprintln!("removed old index but failed to create fresh database: {e}");
+            std::process::exit(1);
+        }
     }
 }
 
@@ -1258,6 +1394,1335 @@ fn check_build_dependencies() {
     }
 }
 
+/// Strip JSONC comments (`// line` and `/* block */`) from text so it can be
+/// parsed by a strict JSON parser (serde_json). String literals are preserved —
+/// a `//` or `/*` inside a string value (e.g. a URL) is NOT treated as a
+/// comment. Multi-byte UTF-8 content is preserved by working on `char`s.
+/// This lets setup read+preserve the user's existing opencode config
+/// (commonly written as JSONC) instead of falling back to `{}` and destroying
+/// it on parse failure.
+fn strip_jsonc_comments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.char_indices().peekable();
+    let mut in_string = false;
+
+    while let Some((_, c)) = chars.next() {
+        if in_string {
+            out.push(c);
+            if c == '\\' {
+                // Escape: copy the next char verbatim so an escaped quote (\")
+                // doesn't terminate the string.
+                if let Some((_, escaped)) = chars.next() {
+                    out.push(escaped);
+                }
+                continue;
+            }
+            if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        // Not in a string.
+        if c == '"' {
+            in_string = true;
+            out.push('"');
+            continue;
+        }
+
+        if c == '/' {
+            match chars.peek() {
+                Some((_, '/')) => {
+                    // Line comment: consume the '/' and everything to end of
+                    // line. Keep the newline so line numbers stay sane.
+                    chars.next(); // consume second '/'
+                    while let Some((_, cc)) = chars.next() {
+                        if cc == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some((_, '*')) => {
+                    // Block comment: consume to '*/'. Emit a newline so adjacent
+                    // tokens stay separated (e.g. "a",/*x*/"b" -> "a",\n"b").
+                    chars.next(); // consume '*'
+                    let mut closed = false;
+                    while let Some((_, cc)) = chars.next() {
+                        if cc == '*' {
+                            if let Some((_, '/')) = chars.peek() {
+                                chars.next(); // consume '/'
+                                closed = true;
+                                break;
+                            }
+                        }
+                    }
+                    let _ = closed;
+                    out.push('\n');
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        out.push(c);
+    }
+
+    out
+}
+
+/// Parse JSONC config text into a serde_json::Value, stripping comments first.
+/// Returns `None` (instead of an empty object) when parsing fails, so callers
+/// can refuse to overwrite unreadable config rather than silently destroying it.
+fn parse_jsonc_config(content: &str) -> Option<serde_json::Value> {
+    let stripped = strip_jsonc_comments(content);
+    serde_json::from_str(&stripped).ok()
+}
+
+/// Decide which opencode config file to read/write.
+///
+/// opencode reads both `opencode.jsonc` (canonical, modern) and `opencode.json`
+/// (legacy) and merges them. To avoid creating a confusing second file and to
+/// correctly detect an existing graphiq entry, we prefer the file that already
+/// exists (`.jsonc` first), and create `.jsonc` when neither exists.
+fn opencode_config_path(home: &std::path::Path) -> std::path::PathBuf {
+    let dir = home.join(".config").join("opencode");
+    let jsonc = dir.join("opencode.jsonc");
+    let json = dir.join("opencode.json");
+    if jsonc.exists() {
+        jsonc
+    } else if json.exists() {
+        json
+    } else {
+        jsonc
+    }
+}
+
+// ─── graphiq sync: verify harness attach + reconcile graphiq storage ─────────
+//
+// `graphiq sync` reports the TRUE attach state of every supported harness
+// (is graphiq wired into the config setup targets?), confirms `graphiq-mcp` is
+// reachable, and writes a graphiq-owned registry recording what it found. It is
+// a read-only health check + storage reconcile; to (re)apply a config, run
+// `graphiq setup`. This directly addresses the plan's "does not reliably attach"
+// and "synced back with graphiq storage" requirements.
+
+/// Minimal JSONC `//` line-comment + `/* */` block-comment stripper for the read
+/// path (opencode configs are JSONC). String literals are preserved, and it is
+/// char-based so multi-byte UTF-8 round-trips intact.
+fn sync_strip_jsonc(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.char_indices().peekable();
+    let mut in_string = false;
+    while let Some((_, c)) = chars.next() {
+        if in_string {
+            out.push(c);
+            if c == '\\' {
+                if let Some((_, e)) = chars.next() {
+                    out.push(e);
+                }
+                continue;
+            }
+            if c == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        if c == '"' {
+            in_string = true;
+            out.push('"');
+            continue;
+        }
+        if c == '/' {
+            match chars.peek() {
+                Some((_, '/')) => {
+                    chars.next();
+                    while let Some((_, cc)) = chars.next() {
+                        if cc == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                Some((_, '*')) => {
+                    chars.next();
+                    while let Some((_, cc)) = chars.next() {
+                        if cc == '*' && matches!(chars.peek(), Some((_, '/'))) {
+                            chars.next();
+                            break;
+                        }
+                    }
+                    out.push('\n');
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachShape {
+    /// top-level `mcpServers.graphiq` (Claude Desktop, Claude Code, Cursor, Windsurf).
+    McpServers,
+    /// top-level `mcp.graphiq`, JSONC (OpenCode).
+    Mcp,
+    /// TOML `[mcp_servers.graphiq]` (Codex).
+    CodexToml,
+    /// pi does not use MCP; attach is the graphiq-pi extension file existing in
+    /// ~/.pi/agent/extensions/.
+    PiExtension,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AttachState {
+    /// Config exists and has a graphiq MCP entry.
+    Connected,
+    /// Config exists but has no graphiq entry.
+    NotConfigured,
+    /// Config exists but could not be parsed.
+    ParseFailed,
+}
+
+/// Pure: given a harness config's text and its shape, decide whether graphiq is
+/// wired in. Robust to JSONC comments for the JSON shapes; the TOML shape matches
+/// the `[mcp_servers.graphiq]` section header with a terminator so it does not
+/// false-positive on `[mcp_servers.graphiqfoo]`.
+fn detect_attach(content: &str, shape: AttachShape) -> AttachState {
+    match shape {
+        AttachShape::McpServers | AttachShape::Mcp => {
+            let key = match shape {
+                AttachShape::McpServers => "mcpServers",
+                _ => "mcp",
+            };
+            let stripped = sync_strip_jsonc(content);
+            match serde_json::from_str::<serde_json::Value>(&stripped) {
+                Ok(v) => {
+                    let has = v.get(key).and_then(|m| m.get("graphiq")).is_some();
+                    if has {
+                        AttachState::Connected
+                    } else {
+                        AttachState::NotConfigured
+                    }
+                }
+                Err(_) => AttachState::ParseFailed,
+            }
+        }
+        AttachShape::CodexToml => {
+            // Match the section header with a terminator (] or .) so
+            // [mcp_servers.graphiqfoo] does not false-positive.
+            let has = content.lines().any(|l| {
+                let t = l.trim();
+                t == "[mcp_servers.graphiq]"
+                    || t.starts_with("[mcp_servers.graphiq.")
+                    || t.starts_with("[mcp_servers.graphiq ")
+            });
+            if has {
+                AttachState::Connected
+            } else {
+                AttachState::NotConfigured
+            }
+        }
+        AttachShape::PiExtension => {
+            // pi attach = the graphiq-pi extension file exists (content isn't a
+            // config we parse; it's the extension source). The `content` here is
+            // the file's text — connected if it looks like the graphiq extension.
+            if content.contains("GraphIQ extension for pi") || content.contains("graphiq_search") {
+                AttachState::Connected
+            } else {
+                AttachState::NotConfigured
+            }
+        }
+    }
+}
+
+/// One harness attach target: display name, config path, and config shape.
+struct HarnessTarget {
+    name: &'static str,
+    path: PathBuf,
+    shape: AttachShape,
+}
+
+/// Resolve the config-file targets for all supported harnesses. Paths mirror
+/// what `setup` writes so sync reads the same files setup configures (this is
+/// what makes sync an accurate check, not a parallel source of truth).
+fn harness_targets(home: &std::path::Path, project: &std::path::Path) -> Vec<HarnessTarget> {
+    let mut out = Vec::new();
+    if let Some(claude_desktop) =
+        dirs::config_dir().map(|d| d.join("Claude").join("claude_desktop_config.json"))
+    {
+        out.push(HarnessTarget {
+            name: "claude-desktop",
+            path: claude_desktop,
+            shape: AttachShape::McpServers,
+        });
+    }
+    out.push(HarnessTarget {
+        name: "claude-code",
+        path: project.join(".claude").join(".mcp.json"),
+        shape: AttachShape::McpServers,
+    });
+    // OpenCode: same resolution setup uses (prefer existing .jsonc, else .json).
+    let oc_dir = home.join(".config").join("opencode");
+    let oc_path = {
+        let jsonc = oc_dir.join("opencode.jsonc");
+        if jsonc.exists() {
+            jsonc
+        } else {
+            oc_dir.join("opencode.json")
+        }
+    };
+    out.push(HarnessTarget {
+        name: "opencode",
+        path: oc_path,
+        shape: AttachShape::Mcp,
+    });
+    out.push(HarnessTarget {
+        name: "codex",
+        path: home.join(".codex").join("config.toml"),
+        shape: AttachShape::CodexToml,
+    });
+    out.push(HarnessTarget {
+        name: "cursor",
+        path: project.join(".cursor").join("mcp.json"),
+        shape: AttachShape::McpServers,
+    });
+    out.push(HarnessTarget {
+        name: "windsurf",
+        path: project.join(".windsurf").join("mcp.json"),
+        shape: AttachShape::McpServers,
+    });
+    // pi: attach is the extension file in ~/.pi/agent/extensions/.
+    out.push(HarnessTarget {
+        name: "pi",
+        path: home
+            .join(".pi")
+            .join("agent")
+            .join("extensions")
+            .join("graphiq-pi.ts"),
+        shape: AttachShape::PiExtension,
+    });
+    out
+}
+
+/// Resolve the graphiq-mcp binary: sibling of the running `graphiq` exe, then
+/// PATH lookup. Returns the path used (for the registry) or None.
+fn resolve_graphiq_mcp() -> Option<PathBuf> {
+    if let Some(sibling) = which_graphiq() {
+        return Some(sibling);
+    }
+    // Fallback: PATH lookup. `which` is Unix; on Windows `where` is the tool.
+    let probe = if cfg!(windows) { "where" } else { "which" };
+    std::process::Command::new(probe)
+        .arg("graphiq-mcp")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| {
+            let line = s.lines().next()?.trim().to_string();
+            if line.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(line))
+            }
+        })
+}
+
+/// Graphiq-owned registry location ("graphiq storage").
+fn graphiq_registry_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("graphiq").join("registry.json"))
+}
+
+fn cmd_sync(project: Option<&std::path::Path>, harness_filter: Option<&str>, apply: bool) {
+    use serde_json::{json, Value};
+
+    let project_path = match project {
+        Some(p) => p.to_path_buf(),
+        None => match std::env::current_dir() {
+            Ok(cwd) => cwd.canonicalize().unwrap_or(cwd),
+            Err(_) => {
+                eprintln!("error: cannot determine current directory");
+                std::process::exit(1);
+            }
+        },
+    };
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::Path::new(".").to_path_buf());
+
+    println!("╭──────────────────────────────────────────────╮");
+    println!("│            GraphIQ Sync                      │");
+    println!("╰──────────────────────────────────────────────╯");
+    println!("  Project: {}", project_path.display());
+
+    // 1. Is graphiq-mcp reachable? This is the #1 attach failure.
+    let mcp = resolve_graphiq_mcp();
+    match &mcp {
+        Some(p) => println!("  graphiq-mcp:  {}", p.display()),
+        None => {
+            eprintln!("  warning: graphiq-mcp is not reachable (not on PATH, not beside graphiq).");
+            eprintln!("  Harnesses cannot attach without it. Reinstall graphiq, then re-run sync.");
+            // Continue anyway: per-harness state is still useful diagnostics
+            // when debugging a broken attach, and the registry records it.
+        }
+    }
+
+    let filter = harness_filter.map(|f| f.to_lowercase());
+
+    // Scan all harness targets once. Returns (connected, not_configured,
+    // registry entries, printable rows) for the display + registry. Kept as a
+    // closure so `--apply` can re-run setup and re-scan without duplicating the
+    // ~50-line probe loop.
+    //
+    // The registry ALWAYS records every target's state, regardless of the
+    // display filter — a focused report must not erase the source-of-truth
+    // record for the other harnesses. The filter only narrows the printed rows.
+    let scan = |home: &std::path::Path,
+                project_path: &std::path::Path|
+     -> (Vec<String>, Vec<String>, Vec<Value>, Vec<(String, String)>) {
+        let targets = harness_targets(home, project_path);
+        let mut connected: Vec<String> = Vec::new();
+        let mut not_configured: Vec<String> = Vec::new();
+        let mut registry_harnesses: Vec<Value> = Vec::new();
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for t in &targets {
+            let (state_char, state_label, detail) = if !t.path.exists() {
+                (
+                    "—",
+                    "absent",
+                    format!("{} (not configured)", t.path.display()),
+                )
+            } else {
+                match std::fs::read_to_string(&t.path) {
+                    Ok(content) => match detect_attach(&content, t.shape) {
+                        AttachState::Connected => ("✓", "connected", t.path.display().to_string()),
+                        AttachState::NotConfigured => {
+                            ("✗", "missing", t.path.display().to_string())
+                        }
+                        AttachState::ParseFailed => ("✗", "unparsed", t.path.display().to_string()),
+                    },
+                    Err(_) => ("✗", "unreadable", t.path.display().to_string()),
+                }
+            };
+            if state_label == "connected" {
+                connected.push(t.name.to_string());
+            } else if state_label != "absent" {
+                not_configured.push(t.name.to_string());
+            }
+            registry_harnesses.push(json!({
+                "name": t.name,
+                "state": state_label,
+                "configPath": t.path.display().to_string(),
+            }));
+            rows.push((
+                t.name.to_string(),
+                format!(
+                    "  {:<16} {:<10} {}",
+                    t.name,
+                    format!("{} {}", state_char, state_label),
+                    detail
+                ),
+            ));
+        }
+        (connected, not_configured, registry_harnesses, rows)
+    };
+
+    let (mut connected, mut not_configured, mut registry_harnesses, mut rows) =
+        scan(&home, &project_path);
+
+    // --apply: reconcile. The plan wants `graphiq sync` to re-apply the harness
+    // configuration. For any discovered-but-unconfigured harness, re-run the
+    // fully-tested `setup` writer (idempotent), then re-scan to confirm.
+    if apply && !not_configured.is_empty() {
+        println!();
+        println!("  Re-applying graphiq config to missing harnesses via setup...");
+        // setup is idempotent and scoped to installed harnesses; --skip-index
+        // keeps it fast (sync never indexes).
+        let setup_status = std::process::Command::new("graphiq")
+            .arg("setup")
+            .arg("--project")
+            .arg(&project_path)
+            .arg("--skip-index")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
+            .status();
+        match setup_status {
+            Ok(s) if s.success() => {
+                let (c, nc, rh, r) = scan(&home, &project_path);
+                connected = c;
+                not_configured = nc;
+                registry_harnesses = rh;
+                rows = r;
+                println!("  re-applied; re-scanning.");
+            }
+            Ok(s) => {
+                eprintln!(
+                    "  warning: `graphiq setup` exited non-zero ({:?}); not re-scanning.",
+                    s.code()
+                );
+            }
+            Err(e) => {
+                eprintln!("  warning: could not run `graphiq setup`: {e}");
+            }
+        }
+    }
+
+    println!();
+    println!("  {:<16} {:<10} {}", "harness", "state", "config");
+    println!("  {:-<16} {:-<10} {:-<40}", "", "", "");
+    for (name, row) in &rows {
+        if let Some(ref f) = filter {
+            if !name.to_lowercase().contains(f) {
+                continue;
+            }
+        }
+        println!("{}", row);
+    }
+
+    println!();
+    if connected.is_empty() {
+        println!("  No harnesses have graphiq wired in yet.");
+        println!("  Run: graphiq setup --project {}", project_path.display());
+    } else {
+        println!("  connected: {}", connected.join(", "));
+        if !not_configured.is_empty() {
+            println!("  missing:   {}", not_configured.join(", "));
+            println!(
+                "  To wire them in: graphiq setup --project {}",
+                project_path.display()
+            );
+        }
+    }
+
+    // 2. Reconcile graphiq storage (registry).
+    if let Some(reg_path) = graphiq_registry_path() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let registry = json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "mcpBinary": mcp.as_ref().map(|p| p.display().to_string()),
+            "projectRoot": project_path.display().to_string(),
+            "syncedAt": now,
+            "harnesses": registry_harnesses,
+        });
+        if let Some(parent) = reg_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        match std::fs::write(
+            &reg_path,
+            serde_json::to_string_pretty(&registry).unwrap_or_default(),
+        ) {
+            Ok(()) => println!("  registry:    {}", reg_path.display()),
+            Err(e) => eprintln!("  warning: could not write registry: {e}"),
+        }
+    }
+}
+
+// ─── graphiq discover: top-down scan for installed agent harnesses ───────────
+//
+// `graphiq discover` inspects the user's computer to reliably find which agent
+// harnesses are installed (codex, forge, pi, opencode, claude, cursor, hermes,
+// windsurf, gemini, aider, openclaw). This is the plan's "top-down file search to
+// reliably find the users harness installs". It checks three signal types per
+// harness — config directory, binary on PATH, and macOS .app bundle — so it's
+// robust to any single install method. `setup` can use it to scope which
+// harnesses to configure instead of blindly writing configs that are ignored.
+
+/// How a harness was detected. A harness may match more than one; we report the
+/// strongest evidence first (config dir is the most reliable long-lived signal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetectReason {
+    ConfigDir,
+    BinaryOnPath,
+    MacosApp,
+}
+
+/// The install signature for one harness: every place graphiq knows to look.
+/// Kept data-only so detection is a pure function of (signature, probes).
+struct HarnessSignature {
+    name: &'static str,
+    /// Human-readable label.
+    label: &'static str,
+    /// Config/config-directory path, relative to $HOME (e.g. ".codex").
+    /// Empty = no config-dir signal.
+    config_dir: &'static str,
+    /// Binary name expected on PATH (e.g. "codex"). Empty = no PATH signal.
+    binary: &'static str,
+    /// macOS app bundle name under /Applications (e.g. "Cursor.app").
+    /// Empty = no macOS-app signal.
+    macos_app: &'static str,
+}
+
+/// One detected harness and why.
+#[derive(Debug, Clone)]
+struct DetectedHarness {
+    name: String,
+    label: String,
+    reason: DetectReason,
+    /// The concrete path/evidence that matched (for display + JSON).
+    evidence: String,
+}
+
+/// The catalog of harnesses graphiq knows how to discover and configure.
+/// Mirrors the set `setup` handles so discover and setup agree.
+fn harness_catalog() -> Vec<HarnessSignature> {
+    vec![
+        HarnessSignature {
+            name: "claude-desktop",
+            label: "Claude Desktop",
+            config_dir: "Library/Application Support/Claude",
+            binary: "",
+            macos_app: "Claude.app",
+        },
+        HarnessSignature {
+            name: "claude-code",
+            label: "Claude Code",
+            config_dir: ".claude",
+            binary: "claude",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "codex",
+            label: "Codex CLI",
+            config_dir: ".codex",
+            binary: "codex",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "opencode",
+            label: "OpenCode",
+            config_dir: ".config/opencode",
+            binary: "opencode",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "pi",
+            label: "Pi",
+            config_dir: ".pi/agent",
+            binary: "pi",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "cursor",
+            label: "Cursor",
+            config_dir: ".cursor",
+            binary: "",
+            macos_app: "Cursor.app",
+        },
+        HarnessSignature {
+            name: "hermes",
+            label: "Hermes Agent",
+            config_dir: ".hermes",
+            binary: "hermes",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "windsurf",
+            label: "Windsurf",
+            config_dir: ".windsurf",
+            binary: "",
+            macos_app: "Windsurf.app",
+        },
+        HarnessSignature {
+            name: "gemini",
+            label: "Gemini CLI",
+            config_dir: ".gemini",
+            binary: "gemini",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "aider",
+            label: "Aider",
+            config_dir: ".aider.conf.yml",
+            binary: "aider",
+            macos_app: "",
+        },
+        HarnessSignature {
+            name: "forge",
+            label: "Forge",
+            config_dir: ".forge",
+            binary: "forge-code",
+            macos_app: "Forge.app",
+        },
+        HarnessSignature {
+            name: "openclaw",
+            label: "OpenClaw",
+            config_dir: ".openclaw",
+            binary: "openclaw",
+            macos_app: "",
+        },
+    ]
+}
+
+/// Pure detection: given a signature and three probe results (does the config
+/// dir exist, is the binary on PATH, does the macOS app exist), return the
+/// strongest reason found, or None. Order matters: ConfigDir is the most stable
+/// signal (a binary may be renamed/uninstalled but the config persists), then
+/// BinaryOnPath, then MacosApp.
+fn detect_signature(
+    sig: &HarnessSignature,
+    config_exists: bool,
+    config_path: &str,
+    binary_on_path: bool,
+    binary_path: &str,
+    app_exists: bool,
+    app_path: &str,
+) -> Option<DetectedHarness> {
+    if config_exists && !sig.config_dir.is_empty() {
+        return Some(DetectedHarness {
+            name: sig.name.to_string(),
+            label: sig.label.to_string(),
+            reason: DetectReason::ConfigDir,
+            evidence: config_path.to_string(),
+        });
+    }
+    if binary_on_path && !sig.binary.is_empty() {
+        return Some(DetectedHarness {
+            name: sig.name.to_string(),
+            label: sig.label.to_string(),
+            reason: DetectReason::BinaryOnPath,
+            evidence: binary_path.to_string(),
+        });
+    }
+    if app_exists && !sig.macos_app.is_empty() {
+        return Some(DetectedHarness {
+            name: sig.name.to_string(),
+            label: sig.label.to_string(),
+            reason: DetectReason::MacosApp,
+            evidence: app_path.to_string(),
+        });
+    }
+    None
+}
+
+/// Resolve the full path for a harness's config-dir signal, given a home dir.
+/// Returns None if the signature has no config-dir signal.
+fn config_dir_path(home: &std::path::Path, sig: &HarnessSignature) -> Option<PathBuf> {
+    if sig.config_dir.is_empty() {
+        None
+    } else {
+        Some(home.join(sig.config_dir))
+    }
+}
+
+/// Check whether `binary` is on PATH. Returns the resolved path if found.
+/// Uses `which` on Unix and `where` on Windows so it works cross-platform.
+fn binary_on_path(binary: &str) -> Option<PathBuf> {
+    if binary.is_empty() {
+        return None;
+    }
+    let probe = if cfg!(windows) { "where" } else { "which" };
+    std::process::Command::new(probe)
+        .arg(binary)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| {
+            let line = s.lines().next()?.trim().to_string();
+            if line.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(line))
+            }
+        })
+}
+
+/// Run a full discovery scan against the real filesystem. Returns one entry per
+/// installed harness (strongest signal only), sorted by name for stable output.
+fn run_discovery(home: &std::path::Path) -> Vec<DetectedHarness> {
+    let mut found = Vec::new();
+    for sig in harness_catalog() {
+        let (config_exists, config_path) = match config_dir_path(home, &sig) {
+            Some(p) => (p.exists(), p.display().to_string()),
+            None => (false, String::new()),
+        };
+        let (binary_on_path_flag, binary_path) = match binary_on_path(sig.binary) {
+            Some(p) => (true, p.display().to_string()),
+            None => (false, String::new()),
+        };
+        // macOS app bundles only exist on macOS; skip the probe on other OSes.
+        let (app_exists, app_path) = if !sig.macos_app.is_empty() && cfg!(target_os = "macos") {
+            let p = PathBuf::from("/Applications").join(sig.macos_app);
+            (p.exists(), p.display().to_string())
+        } else {
+            (false, String::new())
+        };
+        if let Some(d) = detect_signature(
+            &sig,
+            config_exists,
+            &config_path,
+            binary_on_path_flag,
+            &binary_path,
+            app_exists,
+            &app_path,
+        ) {
+            found.push(d);
+        }
+    }
+    found.sort_by(|a, b| a.name.cmp(&b.name));
+    found
+}
+
+fn cmd_discover(json: bool) {
+    use serde_json::json;
+
+    let home = dirs::home_dir().unwrap_or_else(|| std::path::Path::new(".").to_path_buf());
+    let found = run_discovery(&home);
+
+    if json {
+        // Machine-readable: stable for scripts and for `graphiq sync`/setup to consume.
+        let entries: Vec<_> = found
+            .iter()
+            .map(|d| {
+                json!({
+                    "name": d.name,
+                    "label": d.label,
+                    "reason": match d.reason {
+                        DetectReason::ConfigDir => "config-dir",
+                        DetectReason::BinaryOnPath => "binary",
+                        DetectReason::MacosApp => "macos-app",
+                    },
+                    "evidence": d.evidence,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({ "harnesses": entries, "count": entries.len() }))
+                .unwrap_or_default()
+        );
+        return;
+    }
+
+    println!("╭──────────────────────────────────────────────╮");
+    println!("│            GraphIQ Discover                  │");
+    println!("╰──────────────────────────────────────────────╯");
+    if found.is_empty() {
+        println!("  No supported harnesses detected.");
+        return;
+    }
+    println!("  Detected {} installed harness(es):\n", found.len());
+    println!("  {:<16} {:<12} {}", "harness", "via", "evidence");
+    println!("  {:-<16} {:-<12} {:-<40}", "", "", "");
+    for d in &found {
+        let via = match d.reason {
+            DetectReason::ConfigDir => "config-dir",
+            DetectReason::BinaryOnPath => "binary",
+            DetectReason::MacosApp => "macos-app",
+        };
+        println!("  {:<16} {:<12} {}", d.name, via, d.evidence);
+    }
+    println!();
+    println!("  To configure graphiq for all of these:");
+    println!("    graphiq setup --project <path>");
+    println!("  Then verify with:");
+    println!("    graphiq sync");
+}
+
+// ─── graphiq git: current project scope for agents ───────────────────────────
+//
+// The plan wants graphiq to "index every pushed commit, and sync it back with
+// the local harness so search results are accurate and up-to-date with the
+// current project scope". In practice an agent needs to KNOW the scope first —
+// branch, clean/dirty state, ahead/behind, recent commits, active changes —
+// then re-index as needed. `graphiq git` surfaces exactly that from git itself.
+// It is read-only (never mutates the repo) and works in any git project.
+
+/// A recent commit in the project history.
+#[derive(Debug, Clone)]
+struct RecentCommit {
+    sha: String,
+    subject: String,
+    author: String,
+    date: String,
+}
+
+/// Run git in a project dir and return its UTF-8 stdout, or an error message.
+/// Kept in the CLI (not core) so the pure parsers below can be unit-tested
+/// without a real repo: they take the already-fetched string output.
+fn git_in(project: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let output = std::process::Command::new("git")
+        .args(args)
+        .current_dir(project)
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() {
+            format!("git {:?} failed", args)
+        } else {
+            stderr
+        });
+    }
+    String::from_utf8(output.stdout).map_err(|e| format!("git output was not valid UTF-8: {e}"))
+}
+
+/// Parse `git status -b --porcelain` branch line into branch name + ahead/behind.
+/// Pure: takes the porcelain output string.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct BranchStatus {
+    branch: String,
+    ahead: usize,
+    behind: usize,
+    /// true if HEAD is detached (no branch checked out).
+    detached: bool,
+}
+
+fn parse_branch_status(status_b_output: &str) -> BranchStatus {
+    let first = status_b_output.lines().next().unwrap_or("").trim();
+    let line = first.strip_prefix("## ").unwrap_or(first);
+    let mut bs = BranchStatus::default();
+    if line.starts_with("HEAD (no branch)") {
+        bs.detached = true;
+        bs.branch = "(detached)".to_string();
+    } else if line.starts_with("No commits yet on ") {
+        bs.branch = line.trim_start_matches("No commits yet on ").to_string();
+    } else {
+        let branch_end = line.find("...").unwrap_or_else(|| line.len());
+        bs.branch = line[..branch_end]
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_string();
+    }
+    if let Some(open) = line.rfind('[') {
+        if let Some(close) = line[open..].find(']') {
+            let bracket = &line[open + 1..open + close];
+            for tok in bracket.split(',') {
+                let tok = tok.trim();
+                if let Some(rest) = tok.strip_prefix("ahead ") {
+                    bs.ahead = rest.parse().unwrap_or(0);
+                } else if let Some(rest) = tok.strip_prefix("behind ") {
+                    bs.behind = rest.parse().unwrap_or(0);
+                }
+            }
+        }
+    }
+    bs
+}
+
+/// Count working-tree changes from `git status --porcelain` output. Pure.
+/// Returns (staged, unstaged, untracked) counts.
+fn count_changes(porcelain_output: &str) -> (usize, usize, usize) {
+    let mut staged = 0usize;
+    let mut unstaged = 0usize;
+    let mut untracked = 0usize;
+    for line in porcelain_output.lines() {
+        if line.len() < 2 {
+            continue;
+        }
+        let x = line.as_bytes()[0];
+        let y = line.as_bytes()[1];
+        if x == b'?' && y == b'?' {
+            untracked += 1;
+            continue;
+        }
+        if x != b' ' && x != b'?' {
+            staged += 1;
+        }
+        if y != b' ' && y != b'?' {
+            unstaged += 1;
+        }
+    }
+    (staged, unstaged, untracked)
+}
+
+/// Parse `git log --format=%H%x00%s%x00%an%x00%ad --date=short` output into
+/// commits. Fields are NUL-separated. Pure.
+fn parse_commits(log_output: &str, limit: usize) -> Vec<RecentCommit> {
+    log_output
+        .lines()
+        .filter_map(|line| {
+            let parts: Vec<&str> = line.split('\u{0}').collect();
+            if parts.len() < 4 {
+                return None;
+            }
+            Some(RecentCommit {
+                sha: parts[0].to_string(),
+                subject: parts[1].to_string(),
+                author: parts[2].to_string(),
+                date: parts[3].to_string(),
+            })
+        })
+        .take(limit)
+        .collect()
+}
+
+/// Summarize working-tree state as a single human word. Pure.
+fn tree_state_label(staged: usize, unstaged: usize, untracked: usize) -> &'static str {
+    if staged + unstaged + untracked == 0 {
+        "clean"
+    } else {
+        "dirty"
+    }
+}
+
+fn cmd_git(project: &std::path::Path, commits: usize, json: bool) {
+    use serde_json::json;
+
+    if git_in(project, &["rev-parse", "--is-inside-work-tree"]).is_err() {
+        eprintln!("error: {} is not inside a git work tree", project.display());
+        std::process::exit(1);
+    }
+
+    let remote_url = git_in(project, &["remote", "get-url", "origin"])
+        .ok()
+        .map(|s| s.trim().to_string());
+    let status_b = git_in(project, &["status", "-b", "--porcelain"]).unwrap_or_default();
+    let porcelain = git_in(project, &["status", "--porcelain"]).unwrap_or_default();
+    let head_sha = git_in(project, &["rev-parse", "--short", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let log = git_in(
+        project,
+        &[
+            "log",
+            "--format=%H%x00%s%x00%an%x00%ad",
+            "--date=short",
+            &format!("-n{}", commits.max(1)),
+        ],
+    )
+    .unwrap_or_default();
+
+    let branch = parse_branch_status(&status_b);
+    let (staged, unstaged, untracked) = count_changes(&porcelain);
+    let recent = parse_commits(&log, commits.max(1));
+    let state = tree_state_label(staged, unstaged, untracked);
+
+    if json {
+        let commits_json: Vec<_> = recent
+            .iter()
+            .map(|c| {
+                json!({ "sha": c.sha, "subject": c.subject, "author": c.author, "date": c.date })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "project": project.display().to_string(),
+                "remote": remote_url,
+                "branch": branch.branch,
+                "detached": branch.detached,
+                "head": head_sha,
+                "ahead": branch.ahead,
+                "behind": branch.behind,
+                "treeState": state,
+                "changes": { "staged": staged, "unstaged": unstaged, "untracked": untracked },
+                "commits": commits_json,
+            }))
+            .unwrap_or_default()
+        );
+        return;
+    }
+
+    println!("╭──────────────────────────────────────────────╮");
+    println!("│            GraphIQ Git Scope                 │");
+    println!("╰──────────────────────────────────────────────╯");
+    println!("  Project: {}", project.display());
+    if let Some(r) = &remote_url {
+        println!("  Remote:  {}", r);
+    }
+    if branch.detached {
+        println!("  HEAD:    {} (detached)", head_sha);
+    } else {
+        let ab = match (branch.ahead, branch.behind) {
+            (0, 0) => String::new(),
+            (a, 0) => format!(" (ahead {a})"),
+            (0, b) => format!(" (behind {b})"),
+            (a, b) => format!(" (ahead {a}, behind {b})"),
+        };
+        println!("  Branch:  {}{}", branch.branch, ab);
+        println!("  HEAD:    {}", head_sha);
+    }
+    println!("  Tree:    {}", state);
+    if staged + unstaged + untracked > 0 {
+        println!(
+            "  Changes: {} staged, {} unstaged, {} untracked",
+            staged, unstaged, untracked
+        );
+    }
+    if !recent.is_empty() {
+        println!();
+        println!("  Recent commits:");
+        for c in &recent {
+            let short_sha = &c.sha[..c.sha.len().min(7)];
+            let subj = if c.subject.len() > 64 {
+                format!("{}…", &c.subject[..62])
+            } else {
+                c.subject.clone()
+            };
+            println!("    {} {} — {} ({})", short_sha, subj, c.author, c.date);
+        }
+    }
+    println!();
+    println!("  Keep search in sync with the current scope:");
+    println!("    graphiq index {} --force-reindex", project.display());
+}
+
+// ─── graphiq projects: multi-project tracking across sessions ────────────────
+//
+// The plan: graphiq must "move around reliably during each session, with each
+// user project... retain existing information for when a user calls back to
+// that project again in a new session". Project-local .graphiq/graphiq.db
+// already retains each index; this command adds the missing piece — a central,
+// persistent registry of every project graphiq has indexed, so agents and users
+// can list them, see which still have a fresh index, and return to one without
+// re-indexing from scratch.
+
+/// One tracked project in the registry.
+#[derive(Debug, Clone)]
+struct TrackedProject {
+    path: String,
+    /// ISO-8601 timestamp of when it was last indexed (or first seen).
+    last_indexed_at: String,
+    /// File-count snapshot at last index time (0 if unknown).
+    files: u64,
+    /// Symbol-count snapshot at last index time.
+    symbols: u64,
+}
+
+/// Pure: parse the projects registry JSON into a list. Tolerates missing/
+/// malformed files (returns empty). Sorted by path for stable output.
+fn parse_projects_registry(content: &str) -> Vec<TrackedProject> {
+    let v: serde_json::Value = match serde_json::from_str(content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    if let Some(arr) = v.get("projects").and_then(|p| p.as_array()) {
+        for entry in arr {
+            let path = entry
+                .get("path")
+                .and_then(|p| p.as_str())
+                .unwrap_or("")
+                .to_string();
+            if path.is_empty() {
+                continue;
+            }
+            out.push(TrackedProject {
+                path,
+                last_indexed_at: entry
+                    .get("lastIndexedAt")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                files: entry.get("files").and_then(|f| f.as_u64()).unwrap_or(0),
+                symbols: entry.get("symbols").and_then(|s| s.as_u64()).unwrap_or(0),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    out
+}
+
+/// Pure: upsert a project into a registry list (replace if same path, else add).
+/// Returns the new list sorted by path.
+fn upsert_project(mut projects: Vec<TrackedProject>, p: TrackedProject) -> Vec<TrackedProject> {
+    if let Some(existing) = projects.iter_mut().find(|t| t.path == p.path) {
+        *existing = p;
+    } else {
+        projects.push(p);
+    }
+    projects.sort_by(|a, b| a.path.cmp(&b.path));
+    projects
+}
+
+/// Pure: remove a project by exact path. Returns the filtered list.
+fn forget_project(projects: Vec<TrackedProject>, path: &str) -> Vec<TrackedProject> {
+    projects.into_iter().filter(|t| t.path != path).collect()
+}
+
+/// Pure: serialize the registry list to pretty JSON.
+fn serialize_projects_registry(projects: &[TrackedProject]) -> String {
+    use serde_json::json;
+    let entries: Vec<_> = projects
+        .iter()
+        .map(|p| {
+            json!({
+                "path": p.path,
+                "lastIndexedAt": p.last_indexed_at,
+                "files": p.files,
+                "symbols": p.symbols,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&json!({ "projects": entries }))
+        .unwrap_or_else(|_| "{\"projects\":[]}".to_string())
+}
+
+/// Location of the persistent multi-project registry.
+fn projects_registry_path() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("graphiq").join("projects.json"))
+}
+
+/// Load the current registry from disk (empty if absent/malformed).
+fn load_projects_registry() -> Vec<TrackedProject> {
+    match projects_registry_path().and_then(|p| std::fs::read_to_string(p).ok()) {
+        Some(content) => parse_projects_registry(&content),
+        None => Vec::new(),
+    }
+}
+
+/// Does a project still have a usable on-disk index?
+fn project_index_health(project_path: &std::path::Path) -> &'static str {
+    let db = project_path.join(".graphiq").join("graphiq.db");
+    if !db.exists() {
+        return "no-index";
+    }
+    // Try a quick symbol count to confirm it's not empty/corrupt.
+    if let Ok(conn) = rusqlite::Connection::open(&db) {
+        if let Ok(n) = conn.query_row("SELECT COUNT(*) FROM symbols", [], |r| r.get::<_, i64>(0)) {
+            return if n > 0 { "ready" } else { "empty" };
+        }
+    }
+    "ready" // file exists but we couldn't probe; assume ready
+}
+
+/// Record (or refresh) a project in the persistent registry after a successful
+/// index. Best-effort: any failure is swallowed so it never breaks indexing.
+/// Captures a snapshot of files/symbols so `graphiq projects` can show at a
+/// glance whether an index is populated.
+fn record_indexed_project(path: &std::path::Path, db: &graphiq_core::db::GraphDb) {
+    let Some(reg_path) = projects_registry_path() else {
+        return;
+    };
+    let canonical = match path.canonicalize() {
+        Ok(p) => p.display().to_string(),
+        Err(_) => path.display().to_string(),
+    };
+    let (files, symbols) = match db.stats() {
+        Ok(s) => (s.files as u64, s.symbols as u64),
+        Err(_) => (0, 0),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let iso = format_unix_ts_iso(now);
+    let entry = TrackedProject {
+        path: canonical,
+        last_indexed_at: iso,
+        files,
+        symbols,
+    };
+    let updated = upsert_project(load_projects_registry(), entry);
+    if let Some(parent) = reg_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&reg_path, serialize_projects_registry(&updated));
+}
+
+/// Format a unix timestamp as an ISO-8601 UTC string (no deps). Pure.
+fn format_unix_ts_iso(secs: u64) -> String {
+    let days_since_epoch = (secs / 86400) as i64;
+    let sod = (secs % 86400) as u64;
+    let h = sod / 3600;
+    let m = (sod % 3600) / 60;
+    let s = sod % 60;
+    // Civil date from days-since-epoch (Howard Hinnant's algorithm).
+    let z = days_since_epoch + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = doy - (153 * mp + 2) / 5 + 1; // [1, 31]
+    let month = if mp < 10 { mp + 3 } else { mp - 9 }; // [1, 12]
+    let year = if month <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, d, h, m, s
+    )
+}
+
+fn cmd_projects(json: bool, forget: Option<&str>) {
+    let reg_path = match projects_registry_path() {
+        Some(p) => p,
+        None => {
+            eprintln!("error: cannot determine data directory for the projects registry");
+            std::process::exit(1);
+        }
+    };
+
+    // --forget <path|all>
+    if let Some(target) = forget {
+        let mut projects = load_projects_registry();
+        let before = projects.len();
+        if target == "all" {
+            projects.clear();
+        } else {
+            let resolved = std::path::Path::new(target)
+                .canonicalize()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| target.to_string());
+            projects = forget_project(projects, &resolved);
+        }
+        if let Some(parent) = reg_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::write(&reg_path, serialize_projects_registry(&projects)).ok();
+        println!(
+            "Forgot {} project(s). {} tracked remaining.",
+            before - projects.len(),
+            projects.len()
+        );
+        return;
+    }
+
+    let projects = load_projects_registry();
+    if projects.is_empty() {
+        if json {
+            println!("{}", serialize_projects_registry(&[]));
+        } else {
+            println!("No tracked projects yet.");
+            println!("Index one with: graphiq index /path/to/project");
+        }
+        return;
+    }
+
+    if json {
+        println!("{}", serialize_projects_registry(&projects));
+        return;
+    }
+
+    println!("╭──────────────────────────────────────────────╮");
+    println!("│            GraphIQ Projects                  │");
+    println!("╰──────────────────────────────────────────────╯");
+    println!("  {} tracked project(s):\n", projects.len());
+    println!(
+        "  {:<48} {:<8} {:<10} {}",
+        "project", "health", "symbols", "last indexed"
+    );
+    println!("  {:-<48} {:-<8} {:-<10} {:-<20}", "", "", "", "");
+    for p in &projects {
+        let path = std::path::Path::new(&p.path);
+        let health = if path.exists() {
+            project_index_health(path)
+        } else {
+            "gone"
+        };
+        let display_path = if p.path.len() > 46 {
+            format!("…{}", &p.path[p.path.len().saturating_sub(45)..])
+        } else {
+            p.path.clone()
+        };
+        println!(
+            "  {:<48} {:<8} {:<10} {}",
+            display_path, health, p.symbols, p.last_indexed_at
+        );
+    }
+    println!();
+    println!("  Return to a project: cd <path> && graphiq search <query>");
+    println!("  Forget one:          graphiq projects --forget <path>");
+}
+
 fn cmd_setup(
     project: Option<&std::path::Path>,
     skip_index: bool,
@@ -1494,66 +2959,120 @@ fn cmd_setup(
 
     // OpenCode
     if should_configure("opencode") {
-        let opencode_config =
-            dirs::home_dir().map(|d| d.join(".config").join("opencode").join("opencode.json"));
-
-        if let Some(ref config_path) = opencode_config {
-            let project_str = project_path.display().to_string();
-            let mut cmd = vec!["graphiq-mcp".to_string(), project_str.clone()];
-            if ephemeral {
-                cmd.push("--ephemeral".to_string());
-            }
-            let entry = json!({
-                "type": "local",
-                "command": cmd,
-                "enabled": true
+        // opencode reads opencode.jsonc (canonical) and opencode.json (legacy)
+        // and merges them. Write to whichever already exists (prefer .jsonc) so
+        // we don't spawn a second file, and parse JSONC safely so a commented
+        // config is preserved rather than destroyed.
+        let opencode_config = dirs::home_dir()
+            .map(|h| opencode_config_path(&h))
+            .and_then(|p| {
+                // Only proceed if the opencode config directory itself exists —
+                // creating a brand-new opencode.jsonc in a missing dir would
+                // imply opencode is installed when it may not be.
+                if p.parent().map_or(false, |d| d.exists()) {
+                    Some(p)
+                } else {
+                    None
+                }
             });
 
-            let (config, written) = if config_path.exists() {
-                match std::fs::read_to_string(config_path) {
-                    Ok(content) => {
-                        let mut parsed: Value = serde_json::from_str(&content).unwrap_or(json!({}));
-                        let mcp = parsed
-                            .as_object_mut()
-                            .unwrap()
-                            .entry("mcp")
-                            .or_insert_with(|| json!({}))
-                            .as_object_mut()
-                            .unwrap();
-                        let already = mcp
-                            .get("graphiq")
-                            .and_then(|v| v.get("command"))
-                            .and_then(|a| a.as_array())
-                            .and_then(|arr| arr.get(1))
-                            .and_then(|v| v.as_str())
-                            .map_or(false, |s| s == project_str);
-                        mcp.insert("graphiq".into(), entry);
-                        (pretty(&parsed), !already)
-                    }
-                    Err(_) => {
-                        let obj = json!({"mcp": {"graphiq": entry}});
-                        (pretty(&obj), true)
-                    }
+        if let Some(ref config_path) = opencode_config {
+            // Wrapped in a labeled block so recoverable opencode errors
+            // (unreadable/unparseable config) skip ONLY this harness via
+            // `break 'opencode` — they must not abort the whole setup run.
+            'opencode: {
+                let project_str = project_path.display().to_string();
+                let mut cmd = vec!["graphiq-mcp".to_string(), project_str.clone()];
+                if ephemeral {
+                    cmd.push("--ephemeral".to_string());
                 }
-            } else {
-                let obj = json!({"mcp": {"graphiq": entry}});
-                (pretty(&obj), true)
-            };
+                let entry = json!({
+                    "type": "local",
+                    "command": cmd,
+                    "enabled": true
+                });
 
-            if let Some(parent) = config_path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            match std::fs::write(config_path, &config) {
-                Ok(()) => {
-                    let status = if written { "configured" } else { "updated" };
-                    println!("  opencode:      {} {}", status, config_path.display());
-                    configured.push("opencode".to_string());
-                }
-                Err(e) => {
-                    eprintln!("  opencode:      failed to write config: {e}");
+                // Read existing config. If it exists but can't be parsed (even after
+                // JSONC stripping), DO NOT fall back to {} — that would overwrite
+                // and destroy the user's config. Instead, treat it as a hard error.
+                let mut parsed: Value = if config_path.exists() {
+                    match std::fs::read_to_string(config_path) {
+                        Ok(content) => match parse_jsonc_config(&content) {
+                            Some(v) => v,
+                            None => {
+                                eprintln!(
+                                    "  opencode:      failed to parse existing config at {}",
+                                    config_path.display()
+                                );
+                                eprintln!("  leaving it untouched; fix or back up the file and re-run setup.");
+                                failed.push("opencode".to_string());
+                                break 'opencode;
+                            }
+                        },
+                        Err(e) => {
+                            eprintln!("  opencode:      failed to read config: {e}");
+                            failed.push("opencode".to_string());
+                            break 'opencode;
+                        }
+                    }
+                } else {
+                    json!({})
+                };
+
+                // Ensure `parsed` is an object so we can insert the mcp key.
+                if !parsed.is_object() {
+                    eprintln!(
+                    "  opencode:      existing config at {} is not a JSON object; leaving it untouched",
+                    config_path.display()
+                );
                     failed.push("opencode".to_string());
+                    break 'opencode;
                 }
-            }
+
+                // Get or create the `mcp` object. If `mcp` exists but isn't an
+                // object (e.g. "mcp": false), refuse to overwrite rather than panic.
+                let mcp_obj = parsed
+                    .as_object_mut()
+                    .unwrap()
+                    .entry("mcp")
+                    .or_insert_with(|| json!({}));
+                if !mcp_obj.is_object() {
+                    eprintln!(
+                    "  opencode:      existing `mcp` key in {} is not an object; leaving it untouched",
+                    config_path.display()
+                );
+                    failed.push("opencode".to_string());
+                    break 'opencode;
+                }
+                let mcp = mcp_obj.as_object_mut().unwrap();
+                let already = mcp
+                    .get("graphiq")
+                    .and_then(|v| v.get("command"))
+                    .and_then(|a| a.as_array())
+                    .and_then(|arr| arr.get(1))
+                    .and_then(|v| v.as_str())
+                    .map_or(false, |s| s == project_str);
+                mcp.insert("graphiq".into(), entry);
+                let written = !already;
+                let config = pretty(&parsed);
+
+                if let Some(parent) = config_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                match std::fs::write(config_path, &config) {
+                    Ok(()) => {
+                        let status = if written { "configured" } else { "updated" };
+                        println!("  opencode:      {} {}", status, config_path.display());
+                        configured.push("opencode".to_string());
+                    }
+                    Err(e) => {
+                        eprintln!("  opencode:      failed to write config: {e}");
+                        failed.push("opencode".to_string());
+                    }
+                }
+            } // end 'opencode labeled block
+        } else {
+            skipped.push("opencode".to_string());
         }
     } else {
         skipped.push("opencode".to_string());
@@ -1564,51 +3083,62 @@ fn cmd_setup(
         let codex_config = dirs::home_dir().map(|d| d.join(".codex").join("config.toml"));
 
         if let Some(ref config_path) = codex_config {
-            let project_str = project_path.display().to_string();
-            let args_suffix = if ephemeral { ", \"--ephemeral\"" } else { "" };
+            // Labeled block so a codex read failure skips ONLY codex, not the
+            // rest of cmd_setup (Hermes/Cursor/Windsurf/Gemini/Aider/index).
+            'codex: {
+                let project_str = project_path.display().to_string();
+                let args_suffix = if ephemeral { ", \"--ephemeral\"" } else { "" };
 
-            let (content, written) = if config_path.exists() {
-                match std::fs::read_to_string(config_path) {
-                    Ok(existing) => {
-                        let already = existing.contains("[mcp_servers.graphiq]")
-                            && existing.contains(&project_str);
-                        if already {
-                            (existing, false)
-                        } else {
-                            let mut cleaned = existing;
-                            let section = format!(
+                let (content, written) = if config_path.exists() {
+                    match std::fs::read_to_string(config_path) {
+                        Ok(existing) => {
+                            // Detect an existing graphiq section EXACTLY (with a
+                            // terminator) so [mcp_servers.graphiqfoo] doesn't count.
+                            let has_graphiq = existing.lines().any(|l| {
+                                let t = l.trim();
+                                t == "[mcp_servers.graphiq]"
+                                    || t.starts_with("[mcp_servers.graphiq.")
+                                    || t.starts_with("[mcp_servers.graphiq ")
+                            });
+                            let same_project = existing.contains(&project_str);
+                            if has_graphiq && same_project {
+                                (existing, false)
+                            } else {
+                                let mut cleaned = existing;
+                                let section = format!(
                             "\n[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"{}]\nenabled = true\n",
                             project_str, args_suffix
                         );
-                            cleaned.push_str(&section);
-                            (cleaned, true)
+                                cleaned.push_str(&section);
+                                (cleaned, true)
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("  Codex:         failed to read config: {e}");
+                            failed.push("Codex".to_string());
+                            break 'codex;
                         }
                     }
-                    Err(e) => {
-                        eprintln!("  Codex:         failed to read config: {e}");
-                        failed.push("Codex".to_string());
-                        return;
-                    }
-                }
-            } else {
-                let section = format!(
+                } else {
+                    let section = format!(
                 "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"{}]\nenabled = true\n",
                 project_str, args_suffix
             );
-                (section, true)
-            };
+                    (section, true)
+                };
 
-            match std::fs::write(config_path, &content) {
-                Ok(()) => {
-                    let status = if written { "configured" } else { "updated" };
-                    println!("  Codex:         {} {}", status, config_path.display());
-                    configured.push("Codex".to_string());
+                match std::fs::write(config_path, &content) {
+                    Ok(()) => {
+                        let status = if written { "configured" } else { "updated" };
+                        println!("  Codex:         {} {}", status, config_path.display());
+                        configured.push("Codex".to_string());
+                    }
+                    Err(e) => {
+                        eprintln!("  Codex:         failed to write config: {e}");
+                        failed.push("Codex".to_string());
+                    }
                 }
-                Err(e) => {
-                    eprintln!("  Codex:         failed to write config: {e}");
-                    failed.push("Codex".to_string());
-                }
-            }
+            } // end 'codex labeled block
         }
     } else {
         skipped.push("Codex".to_string());
@@ -1822,6 +3352,94 @@ fn cmd_setup(
         }
     } else {
         skipped.push("Aider".to_string());
+    }
+
+    // Pi — pi does not support MCP; it integrates via a pi extension (the same
+    // approach Signet uses). Install the graphiq-pi extension into
+    // ~/.pi/agent/extensions/ so pi auto-discovers it and exposes the graphiq
+    // tools + /graphiq command. The extension shells out to this `graphiq` CLI.
+    if should_configure("pi") {
+        'pi: {
+            let home_dir =
+                dirs::home_dir().unwrap_or_else(|| std::path::Path::new(".").to_path_buf());
+            let pi_ext_dir = home_dir.join(".pi").join("agent").join("extensions");
+            // Only install where pi is actually present (the extensions dir exists).
+            if !pi_ext_dir.exists() {
+                skipped.push("pi".to_string());
+                break 'pi;
+            }
+            // Find the extension source bundled with this graphiq install.
+            let exe = std::env::current_exe().ok();
+            let candidates: Vec<PathBuf> = [
+                exe.as_ref().map(|e| {
+                    e.parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("integrations")
+                        .join("pi")
+                        .join("graphiq-pi.ts")
+                }),
+                exe.as_ref().map(|e| {
+                    e.parent()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join("..")
+                        .join("share")
+                        .join("graphiq")
+                        .join("graphiq-pi.ts")
+                }),
+                Some(PathBuf::from("/usr/local/share/graphiq/graphiq-pi.ts")),
+                Some(PathBuf::from("/opt/homebrew/share/graphiq/graphiq-pi.ts")),
+            ]
+            .into_iter()
+            .flatten()
+            .collect();
+            let src = candidates.iter().find(|p| p.exists());
+            let dest = pi_ext_dir.join("graphiq-pi.ts");
+            match src {
+                Some(src_path) => {
+                    if let Some(parent) = dest.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    match std::fs::copy(src_path, &dest) {
+                        Ok(_) => {
+                            println!("  Pi:            installed extension {}", dest.display());
+                            configured.push("Pi".to_string());
+                        }
+                        Err(e) => {
+                            eprintln!("  Pi:            failed to install extension: {e}");
+                            failed.push("Pi".to_string());
+                        }
+                    }
+                }
+                None => {
+                    // Development convenience: if running from the graphiq repo, the
+                    // source is at repo integrations/pi/graphiq-pi.ts.
+                    let dev_src = PathBuf::from("integrations/pi/graphiq-pi.ts");
+                    if dev_src.exists() {
+                        if let Some(parent) = dest.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+                        match std::fs::copy(&dev_src, &dest) {
+                            Ok(_) => {
+                                println!("  Pi:            installed extension {}", dest.display());
+                                configured.push("Pi".to_string());
+                            }
+                            Err(e) => {
+                                eprintln!("  Pi:            failed to install extension: {e}");
+                                failed.push("Pi".to_string());
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "  Pi:            graphiq-pi.ts not found beside the graphiq binary;"
+                        );
+                        eprintln!("                 reinstall graphiq to bundle the pi extension.");
+                        failed.push("Pi".to_string());
+                    }
+                }
+            }
+        }
+    } else {
+        skipped.push("pi".to_string());
     }
 
     if configured.is_empty() && skipped.is_empty() {
@@ -3629,5 +5247,519 @@ fn cmd_embed_test(text: &str) {
             eprintln!("FAILED to embed: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    #[test]
+    fn strip_jsonc_line_and_block_comments() {
+        let input = r#"{
+  // a line comment
+  "name": "value", /* block comment */
+  "n": 1
+}"#;
+        let out = strip_jsonc_comments(input);
+        // Comments gone, valid JSON, values preserved.
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["name"], "value");
+        assert_eq!(v["n"], 1);
+    }
+
+    #[test]
+    fn strip_jsonc_preserves_urls_and_strings() {
+        // `//` inside a string (a URL) must NOT be treated as a comment.
+        let input = r#"{
+  "$schema": "https://opencode.ai/config.json",
+  "url": "http://example.com/path"
+}"#;
+        let out = strip_jsonc_comments(input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["$schema"], "https://opencode.ai/config.json");
+        assert_eq!(v["url"], "http://example.com/path");
+    }
+
+    #[test]
+    fn strip_jsonc_preserves_escaped_quotes() {
+        // Escaped quote inside a string must not terminate it.
+        let input = r#"{ "msg": "she said \"hi\" // not a comment" }"#;
+        let out = strip_jsonc_comments(input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["msg"], "she said \"hi\" // not a comment");
+    }
+
+    #[test]
+    fn strip_jsonc_block_comment_separates_tokens() {
+        let input = r#"{ "a": 1,/*x*/"b": 2 }"#;
+        let out = strip_jsonc_comments(input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["a"], 1);
+        assert_eq!(v["b"], 2);
+    }
+
+    #[test]
+    fn strip_jsonc_unterminated_block_comment() {
+        // Should not panic; produces parseable (incomplete) output but no crash.
+        let input = "{ \"a\": 1 /* never closed";
+        let _ = strip_jsonc_comments(input);
+    }
+
+    #[test]
+    fn strip_jsonc_preserves_utf8() {
+        // Regression: the byte-casting implementation mangled multi-byte chars.
+        // Non-ASCII content (names, descriptions, emojis) must round-trip intact.
+        let input = "{ \"name\": \"café\", \"emoji\": \"🚀\", // 注释\n \"ok\": true }";
+        let out = strip_jsonc_comments(input);
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["name"], "café");
+        assert_eq!(v["emoji"], "🚀");
+        assert_eq!(v["ok"], true);
+    }
+
+    #[test]
+    fn parse_jsonc_config_returns_none_on_invalid() {
+        assert!(parse_jsonc_config("{ not valid json }").is_none());
+        assert!(parse_jsonc_config("").is_none());
+        assert!(parse_jsonc_config(r#"{ "ok": true } // trailing"#).is_some());
+    }
+
+    #[test]
+    fn opencode_config_path_prefers_existing_jsonc() {
+        let tmp = std::env::temp_dir().join(format!(
+            "gq-test-jsonc-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let dir = tmp.join(".config").join("opencode");
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Neither exists -> default to .jsonc (modern canonical).
+        let p = opencode_config_path(&tmp);
+        assert!(p.ends_with("opencode.jsonc"));
+
+        // Only .json exists -> use it (legacy).
+        std::fs::write(dir.join("opencode.json"), "{}").unwrap();
+        let p = opencode_config_path(&tmp);
+        assert!(p.ends_with("opencode.json"));
+
+        // Both exist -> prefer .jsonc.
+        std::fs::write(dir.join("opencode.jsonc"), "{}").unwrap();
+        let p = opencode_config_path(&tmp);
+        assert!(p.ends_with("opencode.jsonc"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── graphiq sync tests ──────────────────────────────────────────────
+
+    #[test]
+    fn sync_detect_attach_mcp_servers_json() {
+        let connected = r#"{"mcpServers":{"graphiq":{"command":"graphiq-mcp"}}}"#;
+        assert_eq!(
+            detect_attach(connected, AttachShape::McpServers),
+            AttachState::Connected
+        );
+        let other = r#"{"mcpServers":{"x":{"command":"y"}}}"#;
+        assert_eq!(
+            detect_attach(other, AttachShape::McpServers),
+            AttachState::NotConfigured
+        );
+    }
+
+    #[test]
+    fn sync_detect_attach_opencode_jsonc_with_comments() {
+        let jsonc = r#"{
+  // opencode
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": { "graphiq": { "command": ["graphiq-mcp", "."] } }
+}"#;
+        assert_eq!(
+            detect_attach(jsonc, AttachShape::Mcp),
+            AttachState::Connected
+        );
+        let none = r#"{ /* fine */ "mcp": { "other": {} } }"#;
+        assert_eq!(
+            detect_attach(none, AttachShape::Mcp),
+            AttachState::NotConfigured
+        );
+    }
+
+    #[test]
+    fn sync_detect_attach_codex_toml_exact_and_terminator() {
+        // exact section header -> connected
+        let connected = "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\n";
+        assert_eq!(
+            detect_attach(connected, AttachShape::CodexToml),
+            AttachState::Connected
+        );
+        // a different server -> not configured
+        let other = "[mcp_servers.something]\ncommand = \"x\"\n";
+        assert_eq!(
+            detect_attach(other, AttachShape::CodexToml),
+            AttachState::NotConfigured
+        );
+        // REGRESSION: a server named graphiqfoo must NOT match graphiq.
+        let lookalike = "[mcp_servers.graphiqfoo]\ncommand = \"x\"\n";
+        assert_eq!(
+            detect_attach(lookalike, AttachShape::CodexToml),
+            AttachState::NotConfigured
+        );
+    }
+
+    #[test]
+    fn sync_detect_attach_parse_failed_for_garbage() {
+        assert_eq!(
+            detect_attach("{ totally broken {{{", AttachShape::McpServers),
+            AttachState::ParseFailed
+        );
+    }
+
+    #[test]
+    fn sync_strip_jsonc_keeps_strings_and_utf8() {
+        let input = "{ \"url\": \"https://x.io/a\" /* c */ , \"n\": \"café\" // line\n }";
+        let out = sync_strip_jsonc(input);
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["url"], "https://x.io/a");
+        assert_eq!(v["n"], "café");
+    }
+
+    #[test]
+    fn sync_harness_targets_covers_known_harnesses() {
+        let home = std::path::Path::new("/tmp/fakehome");
+        let project = std::path::Path::new("/tmp/fakeproj");
+        let targets = harness_targets(home, project);
+        let names: Vec<&str> = targets.iter().map(|t| t.name).collect();
+        for expected in [
+            "claude-code",
+            "opencode",
+            "codex",
+            "cursor",
+            "windsurf",
+            "pi",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "missing harness target: {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_detect_attach_pi_extension() {
+        let installed = "/** GraphIQ extension for pi */\nexport default function(){}\npi.registerTool({name:\"graphiq_search\"})";
+        assert_eq!(
+            detect_attach(installed, AttachShape::PiExtension),
+            AttachState::Connected
+        );
+        // A different extension file is not a graphiq attach.
+        let other = "// some other pi extension";
+        assert_eq!(
+            detect_attach(other, AttachShape::PiExtension),
+            AttachState::NotConfigured
+        );
+    }
+
+    // ── graphiq discover tests ───────────────────────────────────────────
+
+    #[test]
+    fn detect_signature_prefers_config_dir_then_binary_then_app() {
+        let sig = HarnessSignature {
+            name: "codex",
+            label: "Codex CLI",
+            config_dir: ".codex",
+            binary: "codex",
+            macos_app: "",
+        };
+        // Only config dir present -> ConfigDir wins.
+        let d = detect_signature(&sig, true, "/h/.codex", false, "", false, "").unwrap();
+        assert_eq!(d.reason, DetectReason::ConfigDir);
+        assert_eq!(d.evidence, "/h/.codex");
+        // All three present -> ConfigDir still wins (most stable signal).
+        let d =
+            detect_signature(&sig, true, "/h/.codex", true, "/usr/bin/codex", false, "").unwrap();
+        assert_eq!(d.reason, DetectReason::ConfigDir);
+        // No config dir, binary on PATH -> BinaryOnPath.
+        let d = detect_signature(&sig, false, "", true, "/usr/bin/codex", false, "").unwrap();
+        assert_eq!(d.reason, DetectReason::BinaryOnPath);
+        // Nothing -> None.
+        assert!(detect_signature(&sig, false, "", false, "", false, "").is_none());
+    }
+
+    #[test]
+    fn detect_signature_macos_app_fallback() {
+        // A harness with only an app-bundle signal (e.g. a Cursor.app install
+        // where the config dir hasn't been created yet).
+        let sig = HarnessSignature {
+            name: "cursor",
+            label: "Cursor",
+            config_dir: ".cursor",
+            binary: "",
+            macos_app: "Cursor.app",
+        };
+        let d =
+            detect_signature(&sig, false, "", false, "", true, "/Applications/Cursor.app").unwrap();
+        assert_eq!(d.reason, DetectReason::MacosApp);
+        assert_eq!(d.evidence, "/Applications/Cursor.app");
+    }
+
+    #[test]
+    fn detect_signature_empty_binary_never_reports_binary() {
+        // claude-desktop has no PATH binary; an empty binary field must never
+        // produce a BinaryOnPath result even if the probe would otherwise match.
+        let sig = HarnessSignature {
+            name: "claude-desktop",
+            label: "Claude Desktop",
+            config_dir: "",
+            binary: "",
+            macos_app: "Claude.app",
+        };
+        // No config dir, no app, and no binary signal -> None.
+        assert!(detect_signature(&sig, false, "", true, "/x/claude", false, "").is_none());
+    }
+
+    #[test]
+    fn harness_catalog_is_complete_and_unique() {
+        let cat = harness_catalog();
+        let names: Vec<&str> = cat.iter().map(|s| s.name).collect();
+        // Every harness setup handles must be discoverable.
+        for expected in [
+            "claude-desktop",
+            "claude-code",
+            "codex",
+            "opencode",
+            "pi",
+            "cursor",
+            "hermes",
+            "windsurf",
+            "gemini",
+            "aider",
+            "forge",
+            "openclaw",
+        ] {
+            assert!(names.contains(&expected), "catalog missing: {expected}");
+        }
+        // Names are unique (no accidental duplicates that would double-report).
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(
+            sorted.len(),
+            names.len(),
+            "duplicate harness names in catalog"
+        );
+        // Each harness has at least one signal (otherwise it can never be detected).
+        for s in &cat {
+            assert!(
+                !s.config_dir.is_empty() || !s.binary.is_empty() || !s.macos_app.is_empty(),
+                "{} has no detection signal",
+                s.name
+            );
+        }
+    }
+
+    #[test]
+    fn config_dir_path_resolves_against_home() {
+        let sig = HarnessSignature {
+            name: "x",
+            label: "X",
+            config_dir: ".codex",
+            binary: "",
+            macos_app: "",
+        };
+        assert_eq!(
+            config_dir_path(std::path::Path::new("/home/u"), &sig),
+            Some(PathBuf::from("/home/u/.codex"))
+        );
+        // Empty config_dir -> None.
+        let sig2 = HarnessSignature {
+            name: "x",
+            label: "X",
+            config_dir: "",
+            binary: "",
+            macos_app: "",
+        };
+        assert_eq!(config_dir_path(std::path::Path::new("/h"), &sig2), None);
+    }
+
+    // ── graphiq git tests (pure parsers) ─────────────────────────────────
+
+    #[test]
+    fn git_parse_branch_status_normal() {
+        let s = parse_branch_status("## main...origin/main");
+        assert_eq!(s.branch, "main");
+        assert_eq!((s.ahead, s.behind), (0, 0));
+        assert!(!s.detached);
+    }
+
+    #[test]
+    fn git_parse_branch_status_ahead_behind() {
+        let s = parse_branch_status("## feat/x...origin/feat/x [ahead 2, behind 1]");
+        assert_eq!(s.branch, "feat/x");
+        assert_eq!((s.ahead, s.behind), (2, 1));
+    }
+
+    #[test]
+    fn git_parse_branch_status_detached_and_nocommits() {
+        let s = parse_branch_status("## HEAD (no branch)");
+        assert!(s.detached);
+        assert_eq!(s.branch, "(detached)");
+        let s2 = parse_branch_status("## No commits yet on main");
+        assert_eq!(s2.branch, "main");
+    }
+
+    #[test]
+    fn git_count_changes_classifies_staged_unstaged_untracked() {
+        // XY porcelain: X=index, Y=worktree. ?? = untracked.
+        let p = "M  modified-staged-only\n M modified-worktree-only\nMM modified-both\n?? untracked\nA  added-staged\n";
+        let (staged, unstaged, untracked) = count_changes(p);
+        // staged (X != ' '/'?'): M, M(both), A => 3
+        assert_eq!(staged, 3);
+        // unstaged (Y != ' '/'?'): M(worktree-only), M(both) => 2
+        assert_eq!(unstaged, 2);
+        // untracked: ??
+        assert_eq!(untracked, 1);
+    }
+
+    #[test]
+    fn git_count_changes_empty_is_clean() {
+        assert_eq!(count_changes(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn git_parse_commits_nul_separated() {
+        // %H%x00%s%x00%an%x00%ad
+        let log = "abc123\u{0}feat: add x\u{0}Alex\u{0}2026-06-22\ndef456\u{0}fix: y\u{0}Sam\u{0}2026-06-21\n";
+        let c = parse_commits(log, 10);
+        assert_eq!(c.len(), 2);
+        assert_eq!(c[0].sha, "abc123");
+        assert_eq!(c[0].subject, "feat: add x");
+        assert_eq!(c[0].author, "Alex");
+        assert_eq!(c[1].sha, "def456");
+    }
+
+    #[test]
+    fn git_parse_commits_respects_limit() {
+        let log = "a\u{0}s\u{0}n\u{0}d\nb\u{0}s\u{0}n\u{0}d\nc\u{0}s\u{0}n\u{0}d\n";
+        assert_eq!(parse_commits(log, 2).len(), 2);
+    }
+
+    #[test]
+    fn git_tree_state_label() {
+        assert_eq!(tree_state_label(0, 0, 0), "clean");
+        assert_eq!(tree_state_label(1, 0, 0), "dirty");
+        assert_eq!(tree_state_label(0, 5, 0), "dirty");
+        assert_eq!(tree_state_label(0, 0, 3), "dirty");
+    }
+
+    // ── graphiq projects tests (pure helpers) ────────────────────────────
+
+    #[test]
+    fn projects_parse_registry_roundtrip() {
+        let json = r#"{"projects":[
+          {"path":"/a","lastIndexedAt":"2026-06-22T01:00:00Z","files":10,"symbols":100},
+          {"path":"/b","lastIndexedAt":"2026-06-22T02:00:00Z","files":5,"symbols":50}
+        ]}"#;
+        let p = parse_projects_registry(json);
+        assert_eq!(p.len(), 2);
+        assert_eq!(p[0].path, "/a"); // sorted
+        assert_eq!(p[0].symbols, 100);
+    }
+
+    #[test]
+    fn projects_parse_tolerates_garbage() {
+        assert!(parse_projects_registry("").is_empty());
+        assert!(parse_projects_registry("not json").is_empty());
+        assert!(parse_projects_registry("{}").is_empty());
+    }
+
+    #[test]
+    fn projects_upsert_replaces_same_path() {
+        let base = vec![TrackedProject {
+            path: "/a".into(),
+            last_indexed_at: "old".into(),
+            files: 1,
+            symbols: 1,
+        }];
+        let updated = upsert_project(
+            base,
+            TrackedProject {
+                path: "/a".into(),
+                last_indexed_at: "new".into(),
+                files: 2,
+                symbols: 2,
+            },
+        );
+        assert_eq!(updated.len(), 1);
+        assert_eq!(updated[0].last_indexed_at, "new");
+        assert_eq!(updated[0].symbols, 2);
+    }
+
+    #[test]
+    fn projects_upsert_adds_new_sorted() {
+        let base = vec![TrackedProject {
+            path: "/b".into(),
+            last_indexed_at: "".into(),
+            files: 0,
+            symbols: 0,
+        }];
+        let updated = upsert_project(
+            base,
+            TrackedProject {
+                path: "/a".into(),
+                last_indexed_at: "".into(),
+                files: 0,
+                symbols: 0,
+            },
+        );
+        assert_eq!(updated.len(), 2);
+        assert_eq!(updated[0].path, "/a"); // sorted
+    }
+
+    #[test]
+    fn projects_forget_removes_by_path() {
+        let p = vec![
+            TrackedProject {
+                path: "/a".into(),
+                last_indexed_at: "".into(),
+                files: 0,
+                symbols: 0,
+            },
+            TrackedProject {
+                path: "/b".into(),
+                last_indexed_at: "".into(),
+                files: 0,
+                symbols: 0,
+            },
+        ];
+        let out = forget_project(p, "/a");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path, "/b");
+    }
+
+    #[test]
+    fn projects_serialize_is_valid_json() {
+        let p = vec![TrackedProject {
+            path: "/x".into(),
+            last_indexed_at: "2026-01-01T00:00:00Z".into(),
+            files: 3,
+            symbols: 9,
+        }];
+        let s = serialize_projects_registry(&p);
+        let v: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["projects"][0]["path"], "/x");
+        assert_eq!(v["projects"][0]["symbols"], 9);
+    }
+
+    #[test]
+    fn format_unix_ts_iso_matches_known_epoch() {
+        // Verified via Python datetime: 1782153600 == 2026-06-22T18:40:00Z.
+        assert_eq!(format_unix_ts_iso(1782153600), "2026-06-22T18:40:00Z");
+        // Unix epoch itself.
+        assert_eq!(format_unix_ts_iso(0), "1970-01-01T00:00:00Z");
     }
 }

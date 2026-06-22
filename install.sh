@@ -168,19 +168,22 @@ do_install() {
     need_cmd tar  "system package manager"
 
     if [ "$(uname -s)" = "Linux" ]; then
+        # graphiq's binaries load Vulkan lazily at runtime (wgpu dlopens it), so
+        # the binary STARTS and runs on CPU+rayon even with no Vulkan installed.
+        # This prompt only offers the loader+driver for optional GPU acceleration.
         if ! ldconfig -p 2>/dev/null | grep -q "libvulkan.so.1" && \
            ! [ -f /usr/lib/x86_64-linux-gnu/libvulkan.so.1 ] && \
            ! [ -f /usr/lib/aarch64-linux-gnu/libvulkan.so.1 ]; then
-            warn "Vulkan loader (libvulkan) not found — GPU acceleration requires it"
-            if confirm "Install Vulkan loader now?"; then
+            info "No Vulkan loader found — graphiq will run on CPU; install Vulkan for optional GPU acceleration."
+            if confirm "Install Vulkan (loader + Mesa driver) now?"; then
                 if command -v apt >/dev/null 2>&1; then
-                    sudo apt install -y libvulkan1
+                    sudo apt install -y libvulkan1 mesa-vulkan-drivers
                 elif command -v dnf >/dev/null 2>&1; then
-                    sudo dnf install -y vulkan-loader
+                    sudo dnf install -y vulkan-loader mesa-vulkan-drivers
                 elif command -v pacman >/dev/null 2>&1; then
                     sudo pacman -S --noconfirm vulkan-driver
                 else
-                    echo "  Install manually: libvulkan1 (apt), vulkan-loader (dnf), vulkan-driver (pacman)"
+                    echo "  Optional for GPU accel: libvulkan1 + mesa-vulkan-drivers (apt), vulkan-loader+mesa-vulkan-drivers (dnf), vulkan-driver (pacman)"
                 fi
             fi
         else

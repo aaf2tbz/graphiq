@@ -24,17 +24,28 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Compute next version
+      - name: Resolve release version
         id: next
         run: |
-          CURRENT=$(grep '^version = "' crates/graphiq-core/Cargo.toml | head -1 | sed 's/version = "//;s/"//')
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
-          NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
-          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          # The version is the source of truth in graphiq-core/Cargo.toml (set by
+          # a chore(release) bump, e.g. 4.3.0). Read it directly rather than
+          # computing PATCH+1 — that way merging a version-bump PR tags exactly
+          # the version the PR set, and a re-run on an unchanged main is a no-op
+          # (the tag already exists → skip). This avoids the off-by-one where
+          # auto-release would tag v4.3.1 when the PR bumped to v4.3.0.
+          VERSION="$(grep '^version = "' crates/graphiq-core/Cargo.toml | head -1 | sed 's/version = "//;s/"//')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
-          if git tag -l "v${NEW_VERSION}" | grep -q .; then
+          if [ -z "$VERSION" ]; then
+            echo "could not resolve version from Cargo.toml" >&2
+            exit 1
+          fi
+
+          if git tag -l "v${VERSION}" | grep -q .; then
+            echo "Tag v${VERSION} already exists — nothing to release."
             echo "skip=true" >> "$GITHUB_OUTPUT"
           else
+            echo "Tagging v${VERSION}."
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 

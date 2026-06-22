@@ -1,6 +1,6 @@
 {
   "name": "graphiq-desktop",
-  "version": "3.2.3",
+  "version": "4.3.0",
   "private": true,
   "description": "GraphIQ desktop application",
   "author": "Alex Mondello",
@@ -31,11 +31,15 @@
     "electron-builder": "^26.0.12",
     "electron-vite": "^3.1.0",
     "typescript": "^5.8.3",
-    "vite": "^6.3.5"
+    "vite": "^6.4.3"
   },
   "overrides": {
     "form-data": "^4.0.6",
-    "tmp": "^0.2.6"
+    "tmp": "^0.2.6",
+    "@babel/core": "^7.29.6",
+    "js-yaml": "^4.2.0",
+    "tar": "^7.5.16",
+    "undici": "^6.27.0"
   },
   "build": {
     "appId": "ai.graphiq.desktop",

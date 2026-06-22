@@ -13,6 +13,11 @@ regenerated on reinstall. Your project's own AGENTS.md is unaffected.
 | Before changing code | `blast` | Understand what you'll break |
 | Architecture questions | `interrogate` | How things fit together |
 | Results seem wrong | `doctor` then `upgrade_index` | Stale artifacts |
+| Wipe and start over | `clear` | Delete the index, fresh empty DB |
+| Which harnesses are wired | `sync` | Verify attach + write registry |
+| Find installed harnesses | `discover` | Scan the system |
+| Current git scope | `git` | Branch, tree state, recent commits |
+| List tracked projects | `projects` | Multi-project registry + health |
 
 ## Workflows
 
@@ -44,6 +49,15 @@ regenerated on reinstall. Your project's own AGENTS.md is unaffected.
 1. `doctor` — check which artifacts are stale or missing
 2. `upgrade_index` — rebuild them
 3. `search` again
+
+### Setup, harness, and project lifecycle
+
+1. `discover` — see which agent harnesses are installed on this machine
+2. `setup --project .` — wire graphiq into every installed harness
+3. `sync` — verify each harness is actually attached and write the registry
+4. `git` — check current branch / working-tree state before relying on results
+5. `projects` — list every indexed project and its index health
+6. `clear` — wipe the current index and start fresh when it's corrupt or stale
 
 ### I want to understand how code connects
 
