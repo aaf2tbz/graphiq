@@ -19,6 +19,19 @@
 
 ---
 
+## Latest benchmark — TensorFlow vs Grep
+
+> 6,461,740 lines · 433,898 symbols · 726,439 edges · 5 languages. The largest codebase ever benchmarked with GraphIQ (~20× prior scale). 100 questions per metric. [Full report](docs/benchmark-tensorflow.md) · [query sets](benches/queries/).
+
+| Metric | GraphIQ | Grep | Δ |
+|---|---:|---:|---:|
+| NDCG@10 | **0.201** | 0.123 | **+63%** |
+| MRR@10 | **0.558** | 0.343 | **+63%** |
+| Hit@10 | **0.85** | 0.52 | +33 pts |
+| Categories won | **8 / 10** | 2 / 10 | — |
+
+---
+
 ## Documentation
 
 ### Start here
