@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://github.com/aaf2tbz/graphiq/releases"><img src="https://img.shields.io/github/v/release/aaf2tbz/graphiq?include_prereleases&style=for-the-badge" alt="GitHub release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
-  <a href="docs/performance.md"><img src="https://img.shields.io/badge/NDCG%4010%20%2B48%25%20%7C%20MRR%4010%20%2B128%25-vs%20grep-black?style=for-the-badge" alt="Benchmark signal"></a>
+  <a href="docs/benchmark-tensorflow.md"><img src="https://img.shields.io/badge/NDCG%2FMRR%4010%20%2B63%25-VS%20GREP-black?style=for-the-badge" alt="Benchmark signal"></a>
   <a href="https://github.com/aaf2tbz/graphiq/actions/workflows/linux-smoke.yml"><img src="https://img.shields.io/github/actions/workflow/status/aaf2tbz/graphiq/linux-smoke.yml?branch=main&label=linux&style=for-the-badge" alt="Linux smoke"></a>
 </p>
 
