@@ -176,17 +176,7 @@ enum Commands {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
     },
-    Update {
-        #[arg(
-            long,
-            value_name = "DIR",
-            default_value = "/usr/local/bin",
-            help = "Installation directory for binaries"
-        )]
-        install_dir: Option<String>,
-        #[arg(short, long, help = "Skip confirmation prompts")]
-        yes: bool,
-    },
+    Update {},
     #[cfg(feature = "embed")]
     EmbedTest {
         text: Option<String>,
@@ -285,7 +275,7 @@ fn main() {
         Commands::Briefing { db, compact } => cmd_briefing(&db, compact),
         Commands::Context { symbol, db } => cmd_context(&symbol, &db),
         Commands::DeadCode { db } => cmd_dead_code(&db),
-        Commands::Update { install_dir, yes } => cmd_update(install_dir.as_deref(), yes),
+        Commands::Update {} => cmd_update(),
         #[cfg(feature = "embed")]
         Commands::EmbedTest { text } => cmd_embed_test(text.as_deref().unwrap_or("hello world")),
     }
@@ -4770,55 +4760,12 @@ fn vulkan_available() -> bool {
             .unwrap_or(false)
 }
 
-fn check_gpu_runtime() {
-    if std::env::consts::OS == "macos" {
-        println!("  GPU: Metal available (built-in)");
-    } else if vulkan_available() {
-        println!("  GPU: Vulkan loader found");
-    } else {
-        eprintln!("  GPU: Vulkan loader not found — GPU acceleration disabled");
-        eprintln!("    Install: sudo apt install -y libvulkan1");
-        eprintln!("    Or:      sudo dnf install vulkan-loader");
-    }
-}
-
-fn cmd_update(install_dir: Option<&str>, yes: bool) {
-    let current_bin = which_graphiq().unwrap_or_else(|| {
-        let exe = std::env::current_exe().unwrap_or_else(|_| {
-            eprintln!("  error: cannot determine current executable");
-            std::process::exit(1);
-        });
-        eprintln!(
-            "  warning: graphiq not found on PATH, using {}",
-            exe.display()
-        );
-        exe
-    });
-
-    let current_dir = current_bin.parent().map(PathBuf::from);
-    let install_dir = install_dir
-        .map(PathBuf::from)
-        .or(current_dir)
-        .unwrap_or_else(|| PathBuf::from("/usr/local/bin"));
-
-    let current_version = std::process::Command::new(&current_bin)
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "unknown".to_string());
-
+fn cmd_update() {
+    let current_version = env!("CARGO_PKG_VERSION");
     println!("  Current version: {}", current_version);
-    println!("  Checking for updates...");
+    println!("  Checking for latest release...");
 
-    let client = reqwest_or_curl();
-    let latest_version = match fetch_latest_version(&client) {
+    let latest_tag = match fetch_latest_version("") {
         Ok(v) => v,
         Err(e) => {
             eprintln!("  error: failed to check for updates: {e}");
@@ -4826,333 +4773,63 @@ fn cmd_update(install_dir: Option<&str>, yes: bool) {
         }
     };
 
-    if latest_version == current_version || format!("v{}", current_version) == latest_version {
-        println!("  Already up to date ({}).", latest_version);
+    // fetch_latest_version returns a v-prefixed tag (e.g. "v4.3.3").
+    let latest_version = latest_tag.strip_prefix('v').unwrap_or(&latest_tag);
+
+    if latest_version == current_version {
+        println!("  Already up to date ({}).", latest_tag);
         return;
     }
 
-    let tag = if latest_version.starts_with('v') {
-        latest_version.clone()
-    } else {
-        format!("v{}", latest_version)
-    };
+    println!("  Update available: {} -> {}", current_version, latest_tag);
+    println!("  Running the official install script...");
 
-    println!("  Update available: {} → {}", current_version, tag);
-    println!("  Installing to:   {}", install_dir.display());
-
-    let platform = detect_platform();
-    let archive = format!("graphiq-{}.tar.gz", platform);
-    let url = format!(
-        "https://github.com/aaf2tbz/graphiq/releases/download/{}/{}",
-        tag, archive
-    );
-
-    let tmpdir = tempfile::tempdir().unwrap_or_else(|e| {
-        eprintln!("  error: failed to create temp dir: {e}");
-        std::process::exit(1);
-    });
-    let archive_path = tmpdir.path().join(&archive);
-
-    print!("  Downloading {}... ", archive);
-    let download_status = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "120", "--retry", "3", &url, "-o"])
-        .arg(&archive_path)
-        .status();
-
-    match download_status {
-        Ok(s) if s.success() => println!("done"),
-        Ok(s) => {
-            println!("failed (exit {})", s.code().unwrap_or(-1));
-            eprintln!("  error: download failed. Check your connection.");
-            std::process::exit(1);
-        }
-        Err(e) => {
-            println!("failed");
-            eprintln!("  error: {}", e);
-            std::process::exit(1);
-        }
-    }
-
-    match fetch_release_digest(&tag, &archive)
-        .and_then(|expected| sha256_file(&archive_path).map(|actual| (expected, actual)))
+    // Delegate to install.sh, which handles download, SHA-256 verification,
+    // sudo, and installing over the existing binary location (detected via
+    // `command -v graphiq`). This is the same path a fresh install takes,
+    // so an update is guaranteed to produce the same result.
+    let script =
+        "curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash";
+    let status = match std::process::Command::new("bash")
+        .args(["-c", script])
+        .status()
     {
-        Ok((expected, actual)) if expected == actual => {
-            println!("  ✓ checksum verified");
-        }
-        Ok((expected, actual)) => {
-            eprintln!("  error: SHA256 checksum mismatch");
-            eprintln!("    expected: {expected}");
-            eprintln!("    actual:   {actual}");
-            std::process::exit(1);
-        }
+        Ok(s) => s,
         Err(e) => {
-            eprintln!("  error: checksum verification failed: {e}");
+            eprintln!("  error: failed to run install script: {e}");
             std::process::exit(1);
         }
-    }
-
-    println!("  Extracting...");
-    let extract_status = std::process::Command::new("tar")
-        .args(["xzf", archive_path.to_str().unwrap_or("")])
-        .current_dir(tmpdir.path())
-        .status();
-
-    if let Err(e) = extract_status {
-        eprintln!("  error: extraction failed: {e}");
-        std::process::exit(1);
-    }
-
-    let need_sudo = if install_dir.exists() {
-        !can_write_to_dir(&install_dir)
-    } else {
-        install_dir
-            .parent()
-            .map(|p| !can_write_to_dir(p))
-            .unwrap_or(true)
     };
 
-    let mut installed = 0;
-    for bin in &["graphiq", "graphiq-mcp", "graphiq-bench"] {
-        let src = tmpdir.path().join(bin);
-        if !src.exists() {
-            continue;
-        }
-        let dst = install_dir.join(bin);
-
-        if !install_dir.exists() {
-            if need_sudo {
-                let status = std::process::Command::new("sudo")
-                    .args(["mkdir", "-p"])
-                    .arg(&install_dir)
-                    .status();
-                if !matches!(status, Ok(s) if s.success()) {
-                    eprintln!("  error: failed to create {}", install_dir.display());
-                    std::process::exit(1);
-                }
-            } else {
-                std::fs::create_dir_all(&install_dir).unwrap_or_else(|e| {
-                    eprintln!("  error: failed to create {}: {e}", install_dir.display());
-                    std::process::exit(1);
-                });
-            }
-        }
-
-        match install_binary(&src, &dst, need_sudo) {
-            Ok(()) => {
-                println!("  ✓ {} → {}", bin, dst.display());
-                installed += 1;
-            }
-            Err(e) => eprintln!("  ✗ {}: {}", bin, e),
-        }
-    }
-
-    if installed == 0 {
-        eprintln!("  error: no binaries were installed");
+    if !status.success() {
+        eprintln!(
+            "  error: install script failed (exit {})",
+            status.code().unwrap_or(-1)
+        );
         std::process::exit(1);
     }
 
-    let new_version = std::process::Command::new(install_dir.join("graphiq"))
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                Some(String::from_utf8_lossy(&o.stdout).trim().to_string())
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| "unknown".to_string());
+    println!();
+    println!("  graphiq updated to {}.", latest_tag);
 
-    println!("  Updated to {}.", new_version);
-
-    if let Some(path_bin) = which_graphiq() {
-        if path_bin != install_dir.join("graphiq") {
-            eprintln!(
-                "  warning: {} shadows the updated binary at {}",
-                path_bin.display(),
-                install_dir.join("graphiq").display()
-            );
-            eprintln!(
-                "  Put {} earlier in PATH or remove the old binary manually.",
-                install_dir.display()
-            );
-        }
-    } else {
-        eprintln!("  warning: {} is not on PATH", install_dir.display());
-    }
-
-    check_gpu_runtime();
-
-    let mcp_running = std::process::Command::new("pgrep")
-        .args(["-x", "graphiq-mcp"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
-
-    if mcp_running {
-        println!();
-        if yes {
-            restart_mcp();
-        } else {
-            println!("  GraphIQ MCP server is running.");
-            println!("  Restart graphiq? [y/N] ");
-            if confirm("") {
-                restart_mcp();
-            } else {
-                println!("  Skipped restart. Run `graphiq update` again or restart manually.");
-            }
-        }
+    // Re-link any connected harnesses to the freshly installed binary so the
+    // update takes effect for MCP servers and connector configs immediately.
+    println!();
+    println!("  Re-linking harnesses (graphiq sync --apply)...");
+    match std::process::Command::new("graphiq")
+        .args(["sync", "--apply"])
+        .status()
+    {
+        Ok(s) if s.success() => println!("  harnesses re-linked."),
+        Ok(s) => eprintln!(
+            "  warning: graphiq sync exited {} - run `graphiq sync --apply` manually",
+            s.code().unwrap_or(-1)
+        ),
+        Err(e) => eprintln!("  warning: could not run graphiq sync: {e}"),
     }
 
     println!();
     println!("  Done.");
-}
-
-fn restart_mcp() {
-    println!("  Restarting graphiq-mcp...");
-    let kill_ok = std::process::Command::new("pkill")
-        .args(["-x", "graphiq-mcp"])
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-
-    if kill_ok {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        println!("  ✓ graphiq-mcp stopped.");
-        println!("  Your harness will auto-reconnect on next request.");
-    } else {
-        println!("  graphiq-mcp was not running or already stopped.");
-    }
-}
-
-fn fetch_release_digest(tag: &str, asset_name: &str) -> Result<String, String> {
-    let url = format!("https://api.github.com/repos/aaf2tbz/graphiq/releases/tags/{tag}");
-    let output = std::process::Command::new("curl")
-        .args(["-fsSL", "--max-time", "15", &url])
-        .output()
-        .map_err(|e| format!("curl failed: {e}"))?;
-
-    if !output.status.success() {
-        return Err(format!("failed to fetch release metadata for {tag}"));
-    }
-
-    let body = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| format!("invalid release metadata: {e}"))?;
-    let assets = parsed
-        .get("assets")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| "release metadata has no assets array".to_string())?;
-
-    for asset in assets {
-        let name = asset.get("name").and_then(|v| v.as_str()).unwrap_or("");
-        if name != asset_name {
-            continue;
-        }
-        let digest = asset.get("digest").and_then(|v| v.as_str()).unwrap_or("");
-        let digest = digest.strip_prefix("sha256:").unwrap_or(digest).trim();
-        if digest.is_empty() {
-            return Err(format!(
-                "{asset_name} has no sha256 digest in release metadata"
-            ));
-        }
-        return Ok(digest.to_string());
-    }
-
-    Err(format!(
-        "{asset_name} not found in release metadata for {tag}"
-    ))
-}
-
-fn sha256_file(path: &std::path::Path) -> Result<String, String> {
-    let mut command = if cmd_exists("sha256sum") {
-        let mut cmd = std::process::Command::new("sha256sum");
-        cmd.arg(path);
-        cmd
-    } else if cmd_exists("shasum") {
-        let mut cmd = std::process::Command::new("shasum");
-        cmd.args(["-a", "256"]).arg(path);
-        cmd
-    } else {
-        return Err("no sha256sum or shasum found".to_string());
-    };
-
-    let output = command
-        .output()
-        .map_err(|e| format!("failed to compute sha256: {e}"))?;
-    if !output.status.success() {
-        return Err("sha256 command failed".to_string());
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .split_whitespace()
-        .next()
-        .map(|s| s.to_string())
-        .ok_or_else(|| "sha256 command produced no digest".to_string())
-}
-
-fn install_binary(
-    src: &std::path::Path,
-    dst: &std::path::Path,
-    need_sudo: bool,
-) -> Result<(), String> {
-    let tmp = dst.with_file_name(format!(
-        "{}.tmp.{}",
-        dst.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("graphiq-bin"),
-        std::process::id()
-    ));
-
-    if need_sudo {
-        let copy = std::process::Command::new("sudo")
-            .arg("cp")
-            .arg(src)
-            .arg(&tmp)
-            .status()
-            .map_err(|e| format!("sudo cp failed: {e}"))?;
-        if !copy.success() {
-            return Err("sudo cp failed".to_string());
-        }
-
-        let chmod = std::process::Command::new("sudo")
-            .args(["chmod", "755"])
-            .arg(&tmp)
-            .status()
-            .map_err(|e| format!("sudo chmod failed: {e}"))?;
-        if !chmod.success() {
-            let _ = std::process::Command::new("sudo")
-                .arg("rm")
-                .arg(&tmp)
-                .status();
-            return Err("sudo chmod failed".to_string());
-        }
-
-        let mv = std::process::Command::new("sudo")
-            .arg("mv")
-            .arg(&tmp)
-            .arg(dst)
-            .status()
-            .map_err(|e| format!("sudo mv failed: {e}"))?;
-        if !mv.success() {
-            let _ = std::process::Command::new("sudo")
-                .arg("rm")
-                .arg(&tmp)
-                .status();
-            return Err("sudo mv failed".to_string());
-        }
-        return Ok(());
-    }
-
-    std::fs::copy(src, &tmp).map_err(|e| format!("copy failed: {e}"))?;
-    std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-        .map_err(|e| format!("chmod failed: {e}"))?;
-    std::fs::rename(&tmp, dst).map_err(|e| {
-        let _ = std::fs::remove_file(&tmp);
-        format!("rename failed: {e}")
-    })?;
-    Ok(())
 }
 
 fn fetch_latest_version(_client: &str) -> Result<String, String> {
@@ -5189,32 +4866,6 @@ fn fetch_latest_version(_client: &str) -> Result<String, String> {
     }
 
     Err("could not parse tag_name from release response".into())
-}
-
-fn reqwest_or_curl() -> String {
-    "curl".to_string()
-}
-
-fn can_write_to_dir(dir: &std::path::Path) -> bool {
-    if !dir.exists() {
-        return false;
-    }
-    let test_file = dir.join(".graphiq_write_test");
-    let can_write = std::fs::write(&test_file, b"t").is_ok();
-    let _ = std::fs::remove_file(&test_file);
-    can_write
-}
-
-fn detect_platform() -> String {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    match (os, arch) {
-        ("macos", "aarch64") => "aarch64-apple-darwin".to_string(),
-        ("macos", "x86_64") => "x86_64-apple-darwin".to_string(),
-        ("linux", "x86_64") => "x86_64-unknown-linux-gnu".to_string(),
-        ("linux", "aarch64") => "aarch64-unknown-linux-gnu".to_string(),
-        _ => format!("{}-{}", arch, os),
-    }
 }
 
 #[cfg(feature = "embed")]
