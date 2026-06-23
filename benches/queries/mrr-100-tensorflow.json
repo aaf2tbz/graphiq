@@ -1,0 +1,502 @@
+[
+  {
+    "query": "AdamOptimizer",
+    "category": "exact",
+    "expected_symbol": "AdamOptimizer"
+  },
+  {
+    "query": "GradientDescentOptimizer",
+    "category": "exact",
+    "expected_symbol": "GradientDescentOptimizer"
+  },
+  {
+    "query": "apply_gradients",
+    "category": "exact",
+    "expected_symbol": "apply_gradients"
+  },
+  {
+    "query": "batch_normalization",
+    "category": "exact",
+    "expected_symbol": "batch_normalization"
+  },
+  {
+    "query": "embedding_lookup",
+    "category": "exact",
+    "expected_symbol": "embedding_lookup"
+  },
+  {
+    "query": "export_meta_graph",
+    "category": "exact",
+    "expected_symbol": "export_meta_graph"
+  },
+  {
+    "query": "parse_example",
+    "category": "exact",
+    "expected_symbol": "parse_example"
+  },
+  {
+    "query": "clip_by_global_norm",
+    "category": "exact",
+    "expected_symbol": "clip_by_global_norm"
+  },
+  {
+    "query": "ExponentialMovingAverage",
+    "category": "exact",
+    "expected_symbol": "ExponentialMovingAverage"
+  },
+  {
+    "query": "RandomShuffleQueue",
+    "category": "exact",
+    "expected_symbol": "RandomShuffleQueue"
+  },
+  {
+    "query": "merge_all_summaries",
+    "category": "exact",
+    "expected_symbol": "merge_all_summaries"
+  },
+  {
+    "query": "gradient descent optimizer",
+    "category": "partial",
+    "expected_symbol": "GradientDescentOptimizer"
+  },
+  {
+    "query": "apply adam gradient update",
+    "category": "partial",
+    "expected_symbol": "apply_gradients"
+  },
+  {
+    "query": "global variable init",
+    "category": "partial",
+    "expected_symbol": "global_variables_initializer"
+  },
+  {
+    "query": "fifo queue data flow",
+    "category": "partial",
+    "expected_symbol": "FIFOQueue"
+  },
+  {
+    "query": "queue runner coordinator",
+    "category": "partial",
+    "expected_symbol": "QueueRunner"
+  },
+  {
+    "query": "sparse softmax cross entropy loss",
+    "category": "partial",
+    "expected_symbol": "sparse_softmax_cross_entropy"
+  },
+  {
+    "query": "moving average exponential decay",
+    "category": "partial",
+    "expected_symbol": "ExponentialMovingAverage"
+  },
+  {
+    "query": "one hot encoding",
+    "category": "partial",
+    "expected_symbol": "one_hot"
+  },
+  {
+    "query": "depthwise convolution two d",
+    "category": "partial",
+    "expected_symbol": "depthwise_conv2d"
+  },
+  {
+    "query": "strided slice tensor region",
+    "category": "partial",
+    "expected_symbol": "strided_slice"
+  },
+  {
+    "query": "adaptive moment estimation optimizer",
+    "category": "abstract",
+    "expected_symbol": "AdamOptimizer"
+  },
+  {
+    "query": "recording operations for reverse mode autodiff",
+    "category": "abstract",
+    "expected_symbol": "GradientTape"
+  },
+  {
+    "query": "streaming input pipeline that prefetches batches",
+    "category": "abstract",
+    "expected_symbol": "Dataset"
+  },
+  {
+    "query": "coordinate distributed queue workers",
+    "category": "abstract",
+    "expected_symbol": "QueueRunner"
+  },
+  {
+    "query": "mutable tensor that persists across runs",
+    "category": "abstract",
+    "expected_symbol": "Variable"
+  },
+  {
+    "query": "group of ops runnable together to fetch results",
+    "category": "abstract",
+    "expected_symbol": "Session"
+  },
+  {
+    "query": "fully connected neural layer",
+    "category": "abstract",
+    "expected_symbol": "Dense"
+  },
+  {
+    "query": "gated recurrent unit for sequences",
+    "category": "abstract",
+    "expected_symbol": "GRU"
+  },
+  {
+    "query": "weight decay regularization penalty",
+    "category": "abstract",
+    "expected_symbol": "Regularizer"
+  },
+  {
+    "query": "half sum of squares of weights loss",
+    "category": "abstract",
+    "expected_symbol": "L2Loss"
+  },
+  {
+    "query": "decaying average of model parameters",
+    "category": "abstract",
+    "expected_symbol": "ExponentialMovingAverage"
+  },
+  {
+    "query": "multiply two matrices together",
+    "category": "descriptive",
+    "expected_symbol": "matmul"
+  },
+  {
+    "query": "apply relu activation to a layer",
+    "category": "descriptive",
+    "expected_symbol": "relu"
+  },
+  {
+    "query": "normalize a batch of activations",
+    "category": "descriptive",
+    "expected_symbol": "batch_normalization"
+  },
+  {
+    "query": "look up rows of an embedding matrix by id",
+    "category": "descriptive",
+    "expected_symbol": "embedding_lookup"
+  },
+  {
+    "query": "randomly drop units during training",
+    "category": "descriptive",
+    "expected_symbol": "dropout"
+  },
+  {
+    "query": "convert integer labels to one hot vectors",
+    "category": "descriptive",
+    "expected_symbol": "one_hot"
+  },
+  {
+    "query": "stack a list of tensors along a new axis",
+    "category": "descriptive",
+    "expected_symbol": "stack"
+  },
+  {
+    "query": "compute the mean of a tensor along an axis",
+    "category": "descriptive",
+    "expected_symbol": "reduce_mean"
+  },
+  {
+    "query": "concatenate tensors along axis zero",
+    "category": "descriptive",
+    "expected_symbol": "concat"
+  },
+  {
+    "query": "reshape a tensor to a flat vector",
+    "category": "descriptive",
+    "expected_symbol": "reshape"
+  },
+  {
+    "query": "compute softmax over the last dimension",
+    "category": "descriptive",
+    "expected_symbol": "softmax"
+  },
+  {
+    "query": "create a constant tensor filled with zeros",
+    "category": "descriptive",
+    "expected_symbol": "zeros"
+  },
+  {
+    "query": "assert two tensors are elementwise equal",
+    "category": "error/debug",
+    "expected_symbol": "assert_equal"
+  },
+  {
+    "query": "print a tensor value while running the graph",
+    "category": "error/debug",
+    "expected_symbol": "Print"
+  },
+  {
+    "query": "verify all tensor values are finite",
+    "category": "error/debug",
+    "expected_symbol": "verify_tensor_all_finite"
+  },
+  {
+    "query": "enable nan and inf checking on ops",
+    "category": "error/debug",
+    "expected_symbol": "enable_check_numerics"
+  },
+  {
+    "query": "disable nan and inf checking on ops",
+    "category": "error/debug",
+    "expected_symbol": "disable_check_numerics"
+  },
+  {
+    "query": "assert a specific tensor shape",
+    "category": "error/debug",
+    "expected_symbol": "assert_shapes"
+  },
+  {
+    "query": "raise when a gradient overflows",
+    "category": "error/debug",
+    "expected_symbol": "clip_by_global_norm"
+  },
+  {
+    "query": "assert first tensor less than second",
+    "category": "error/debug",
+    "expected_symbol": "assert_less"
+  },
+  {
+    "query": "assert first tensor greater than second",
+    "category": "error/debug",
+    "expected_symbol": "assert_greater"
+  },
+  {
+    "query": "error type for invalid argument to an op",
+    "category": "error/debug",
+    "expected_symbol": "InvalidArgumentError"
+  },
+  {
+    "query": "op not found in the registered kernel list",
+    "category": "error/debug",
+    "expected_symbol": "NotFoundError"
+  },
+  {
+    "query": "unimplemented operation on this device",
+    "category": "error/debug",
+    "expected_symbol": "UnimplementedError"
+  },
+  {
+    "query": "which op computes gradients for a target",
+    "category": "relationship",
+    "expected_symbol": "gradients"
+  },
+  {
+    "query": "which optimizer method consumes gradients",
+    "category": "relationship",
+    "expected_symbol": "apply_gradients"
+  },
+  {
+    "query": "which method starts iterating a dataset",
+    "category": "relationship",
+    "expected_symbol": "make_one_shot_iterator"
+  },
+  {
+    "query": "which function writes variables to a checkpoint",
+    "category": "relationship",
+    "expected_symbol": "save"
+  },
+  {
+    "query": "which counterpart restores a saved graph",
+    "category": "relationship",
+    "expected_symbol": "import_meta_graph"
+  },
+  {
+    "query": "which session method executes ops and returns tensors",
+    "category": "relationship",
+    "expected_symbol": "run"
+  },
+  {
+    "query": "which op dequeues from a fifo queue",
+    "category": "relationship",
+    "expected_symbol": "dequeue"
+  },
+  {
+    "query": "which initializer sets up trainable variables",
+    "category": "relationship",
+    "expected_symbol": "global_variables_initializer"
+  },
+  {
+    "query": "which strategy allreduces gradients across replicas",
+    "category": "relationship",
+    "expected_symbol": "MirroredStrategy"
+  },
+  {
+    "query": "which summary op records a scalar metric",
+    "category": "relationship",
+    "expected_symbol": "scalar"
+  },
+  {
+    "query": "which assertion enforces less than ordering",
+    "category": "relationship",
+    "expected_symbol": "assert_less"
+  },
+  {
+    "query": "train loop combining optimizer gradients and summary",
+    "category": "cross-cutting",
+    "expected_symbol": "Optimizer"
+  },
+  {
+    "query": "save model then restore for serving inference",
+    "category": "cross-cutting",
+    "expected_symbol": "save"
+  },
+  {
+    "query": "define a reusable layer inside a variable scope",
+    "category": "cross-cutting",
+    "expected_symbol": "variable_scope"
+  },
+  {
+    "query": "pipeline that shuffles batches and prefetches",
+    "category": "cross-cutting",
+    "expected_symbol": "Dataset"
+  },
+  {
+    "query": "profile a session run to inspect memory",
+    "category": "cross-cutting",
+    "expected_symbol": "Profiler"
+  },
+  {
+    "query": "clip gradients then apply with the optimizer",
+    "category": "cross-cutting",
+    "expected_symbol": "clip_by_global_norm"
+  },
+  {
+    "query": "register a c plus plus op and call from python",
+    "category": "cross-cutting",
+    "expected_symbol": "OpKernel"
+  },
+  {
+    "query": "mirror variables across gpus for data parallel training",
+    "category": "cross-cutting",
+    "expected_symbol": "MirroredStrategy"
+  },
+  {
+    "query": "initialize global variables and start queues",
+    "category": "cross-cutting",
+    "expected_symbol": "global_variables_initializer"
+  },
+  {
+    "query": "record scalars and histograms for tensorboard",
+    "category": "cross-cutting",
+    "expected_symbol": "summary"
+  },
+  {
+    "query": "dropout behavior train versus eval",
+    "category": "behavioral",
+    "expected_symbol": "dropout"
+  },
+  {
+    "query": "how exponential moving average decays",
+    "category": "behavioral",
+    "expected_symbol": "ExponentialMovingAverage"
+  },
+  {
+    "query": "how global step advances during apply",
+    "category": "behavioral",
+    "expected_symbol": "apply_gradients"
+  },
+  {
+    "query": "how gradient tape watches variables",
+    "category": "behavioral",
+    "expected_symbol": "watch"
+  },
+  {
+    "query": "batch norm momentum moving statistics",
+    "category": "behavioral",
+    "expected_symbol": "batch_normalization"
+  },
+  {
+    "query": "optimizer minimize versus compute then apply",
+    "category": "behavioral",
+    "expected_symbol": "minimize"
+  },
+  {
+    "query": "how a queue blocks on empty dequeue",
+    "category": "behavioral",
+    "expected_symbol": "dequeue"
+  },
+  {
+    "query": "how prefetch overlaps producer and consumer",
+    "category": "behavioral",
+    "expected_symbol": "prefetch"
+  },
+  {
+    "query": "matmul in math_ops python",
+    "category": "file-path",
+    "expected_symbol": "matmul"
+  },
+  {
+    "query": "GradientTape autograd module",
+    "category": "file-path",
+    "expected_symbol": "GradientTape"
+  },
+  {
+    "query": "AdamOptimizer training module",
+    "category": "file-path",
+    "expected_symbol": "AdamOptimizer"
+  },
+  {
+    "query": "Dataset data module entry",
+    "category": "file-path",
+    "expected_symbol": "Dataset"
+  },
+  {
+    "query": "OpKernel c plus plus framework",
+    "category": "file-path",
+    "expected_symbol": "OpKernel"
+  },
+  {
+    "query": "minimize loss with adam",
+    "category": "nl-medium",
+    "expected_symbol": "AdamOptimizer"
+  },
+  {
+    "query": "shuffling queue for inputs",
+    "category": "nl-medium",
+    "expected_symbol": "RandomShuffleQueue"
+  },
+  {
+    "query": "init all global vars",
+    "category": "nl-medium",
+    "expected_symbol": "global_variables_initializer"
+  },
+  {
+    "query": "concat tensors on an axis",
+    "category": "nl-medium",
+    "expected_symbol": "concat"
+  },
+  {
+    "query": "sigmoid elementwise activation",
+    "category": "nl-medium",
+    "expected_symbol": "sigmoid"
+  },
+  {
+    "query": "run and evaluate tensor in session",
+    "category": "nl-medium",
+    "expected_symbol": "Session"
+  },
+  {
+    "query": "placeholder to feed inputs",
+    "category": "nl-medium",
+    "expected_symbol": "placeholder"
+  },
+  {
+    "query": "add scalar summary metric",
+    "category": "nl-medium",
+    "expected_symbol": "scalar"
+  },
+  {
+    "query": "reshape tensor to new shape",
+    "category": "nl-medium",
+    "expected_symbol": "reshape"
+  },
+  {
+    "query": "get tensor shape as tensor",
+    "category": "nl-medium",
+    "expected_symbol": "shape"
+  }
+]

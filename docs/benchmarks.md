@@ -1,5 +1,67 @@
 # Benchmarks
 
+## Latest benchmark result: TensorFlow — 6,461,740-line codebase, 433,898 symbols, against baseline Grep
+
+The largest codebase ever benchmarked with GraphIQ (~20× the scale of the v3 codebases below): **TensorFlow**, a multi-language codebase (C/C++, Python, Java, Go, CSS/HTML) spanning **22,812 files / 433,898 symbols / 726,439 edges**. Two separate benchmarks — each with its **own 100-question set** — against baseline Grep. [Full report](benchmark-tensorflow.md) · query sets: [`ndcg-100-tensorflow.json`](../benches/queries/ndcg-100-tensorflow.json), [`mrr-100-tensorflow.json`](../benches/queries/mrr-100-tensorflow.json).
+
+### Headline
+
+| Metric | GraphIQ | Grep | Advantage |
+|---|---:|---:|---:|
+| **NDCG@10** (100 queries, graded relevance) | **0.201** | 0.123 | **+63%** |
+| **MRR@10** (100 queries, single expected symbol) | **0.558** | 0.343 | **+63%** |
+| **Hit@10** | **0.85** | 0.52 | +33 pts |
+| Categories won (of 10) | **8** | 2 | — |
+
+One-time index cost: **≈27 minutes** (1604s) for a 2.4 GB index. The deep/source-graph phase (type-flow, error-type, data-shape edges) dominates at ~70% of that time — exactly what powers structural retrieval at this scale.
+
+### NDCG@10 by category (100 questions)
+
+| Category | GraphIQ | Grep | Δ | Winner |
+|---|---:|---:|---:|:---:|
+| behavioral | 0.307 | 0.095 | +0.212 | **GraphIQ** |
+| nl-medium | 0.263 | 0.057 | +0.206 | **GraphIQ** |
+| cross-cutting | 0.224 | 0.026 | +0.198 | **GraphIQ** |
+| file-path | 0.223 | 0.031 | +0.192 | **GraphIQ** |
+| symbol-exact | 0.285 | 0.604 | −0.319 | Grep |
+| nl-descriptive | 0.171 | 0.025 | +0.146 | **GraphIQ** |
+| error-debug | 0.162 | 0.032 | +0.130 | **GraphIQ** |
+| symbol-partial | 0.163 | 0.214 | −0.051 | Grep |
+| relationship | 0.130 | 0.087 | +0.043 | **GraphIQ** |
+| nl-abstract | 0.099 | 0.000 | +0.099 | **GraphIQ** |
+| **OVERALL** | **0.201** | **0.123** | **+0.078 (+63%)** | **GraphIQ** |
+
+### MRR@10 by category (100 questions)
+
+| Category | GraphIQ | Grep | Δ | Winner |
+|---|---:|---:|---:|:---:|
+| file-path | 0.900 | 0.667 | +0.233 | **GraphIQ** |
+| descriptive | 0.639 | 0.159 | +0.480 | **GraphIQ** |
+| partial | 0.619 | 0.664 | −0.045 | Grep |
+| error/debug | 0.607 | 0.125 | +0.482 | **GraphIQ** |
+| nl-medium | 0.542 | 0.250 | +0.292 | **GraphIQ** |
+| behavioral | 0.525 | 0.216 | +0.309 | **GraphIQ** |
+| cross-cutting | 0.458 | 0.350 | +0.108 | **GraphIQ** |
+| relationship | 0.341 | 0.176 | +0.165 | **GraphIQ** |
+| abstract | 0.322 | 0.024 | +0.298 | **GraphIQ** |
+| exact | 0.786 | 1.000 | −0.214 | Grep |
+| **OVERALL** | **0.558** | **0.343** | **+0.215 (+63%)** | **GraphIQ** |
+
+### Hit@K (MRR question set)
+
+| Cutoff | GraphIQ | Grep | Δ |
+|---|---:|---:|---:|
+| Hit@1 | 43/100 | 27/100 | +16 |
+| Hit@3 | 61/100 | 40/100 | +21 |
+| Hit@5 | 75/100 | 42/100 | +33 |
+| Hit@10 | 85/100 | 52/100 | +33 |
+
+**The pattern:** GraphIQ dominates natural-language, behavioral, cross-cutting, error-path, and relationship queries — anywhere a developer is *describing* what they want rather than naming it. On `nl-abstract`, grep scores **0.000** because it cannot match concepts by name at all. Grep only wins when the query is a literal substring of the answer (`symbol-exact` / `exact` / `partial`), where substring matching is trivially optimal. The advantage holds at 433K symbols — ~20× the scale of the v3 codebases below.
+
+---
+
+## v3 benchmarks (3 codebases × 100 queries each)
+
 **Current benchmark: v3** — 3 codebases, 50 NDCG + 50 MRR queries per codebase (300 total), fresh indexes and new query sets. The 5-codebase benchmarks in the [research notes](research.md#phase-22-5-codebase-benchmarks--deep-graph-edges) were run on the v1 pipeline (spectral/holographic artifacts) and do not reflect the current system.
 
 ## Methodology

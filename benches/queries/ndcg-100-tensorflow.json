@@ -1,0 +1,1044 @@
+[
+  {
+    "query": "How does TensorFlow compute gradients automatically via reverse mode",
+    "category": "nl-descriptive",
+    "relevance": {
+      "GradientTape": 3,
+      "gradients": 2,
+      "compute_gradients": 2,
+      "Optimizer": 2,
+      "apply_gradients": 1,
+      "GradientDescentOptimizer": 1
+    }
+  },
+  {
+    "query": "Train a linear model by minimizing a loss with gradient descent",
+    "category": "nl-descriptive",
+    "relevance": {
+      "GradientDescentOptimizer": 3,
+      "minimize": 2,
+      "compute_gradients": 2,
+      "apply_gradients": 1,
+      "Optimizer": 1
+    }
+  },
+  {
+    "query": "Matrix multiplication primitive for two tensors",
+    "category": "nl-descriptive",
+    "relevance": {
+      "matmul": 3,
+      "einsum": 2,
+      "tensordot": 2,
+      "batch_matmul": 1,
+      "reshape": 1
+    }
+  },
+  {
+    "query": "Apply the rectified linear unit activation to a tensor",
+    "category": "nl-descriptive",
+    "relevance": {
+      "relu": 3,
+      "leaky_relu": 2,
+      "relu6": 2,
+      "elu": 1,
+      "sigmoid": 1
+    }
+  },
+  {
+    "query": "Convert categorical labels into one-hot encoded vectors",
+    "category": "nl-descriptive",
+    "relevance": {
+      "one_hot": 3,
+      "cast": 1,
+      "concat": 1
+    }
+  },
+  {
+    "query": "Normalize activations across a batch during training",
+    "category": "nl-descriptive",
+    "relevance": {
+      "batch_normalization": 3,
+      "fused_batch_norm": 2
+    }
+  },
+  {
+    "query": "Read variable-length examples from a TFRecords file",
+    "category": "nl-descriptive",
+    "relevance": {
+      "parse_example": 3,
+      "parse_single_example": 2,
+      "TFRecordReader": 1,
+      "tf_record_iterator": 1
+    }
+  },
+  {
+    "query": "Randomly set units to zero during training to prevent overfitting",
+    "category": "nl-descriptive",
+    "relevance": {
+      "dropout": 3,
+      "rate": 2
+    }
+  },
+  {
+    "query": "Compute the softmax probability distribution over logits",
+    "category": "nl-descriptive",
+    "relevance": {
+      "softmax": 3,
+      "log_softmax": 2,
+      "sparse_softmax_cross_entropy": 2,
+      "sigmoid_cross_entropy": 1
+    }
+  },
+  {
+    "query": "Average values across a specified axis of a tensor",
+    "category": "nl-descriptive",
+    "relevance": {
+      "reduce_mean": 3,
+      "reduce_sum": 2,
+      "reduce_max": 2,
+      "mean": 1,
+      "reduce_min": 1
+    }
+  },
+  {
+    "query": "Stack tensors element-wise into a new dimension",
+    "category": "nl-descriptive",
+    "relevance": {
+      "stack": 3,
+      "unstack": 2,
+      "concat": 2,
+      "gather": 1,
+      "pack": 1
+    }
+  },
+  {
+    "query": "Look up embeddings by integer ids",
+    "category": "nl-descriptive",
+    "relevance": {
+      "embedding_lookup": 3,
+      "embedding_lookup_sparse": 2,
+      "gather": 1
+    }
+  },
+  {
+    "query": "Automatic differentiation engine for differentiable computation",
+    "category": "nl-abstract",
+    "relevance": {
+      "GradientTape": 3,
+      "gradients": 2,
+      "Gradient": 2,
+      "jacobian": 1,
+      "compute_gradients": 1
+    }
+  },
+  {
+    "query": "Optimization strategy using adaptive moment estimation",
+    "category": "nl-abstract",
+    "relevance": {
+      "AdamOptimizer": 3,
+      "apply_gradients": 2,
+      "Optimizer": 2,
+      "MomentumOptimizer": 1,
+      "RMSPropOptimizer": 1
+    }
+  },
+  {
+    "query": "Container that holds a mutable value across executions",
+    "category": "nl-abstract",
+    "relevance": {
+      "Variable": 3,
+      "variable_scope": 2,
+      "get_variable": 2,
+      "global_variables": 1,
+      "trainable_variables": 1
+    }
+  },
+  {
+    "query": "Eager execution context manager for recording operations",
+    "category": "nl-abstract",
+    "relevance": {
+      "GradientTape": 3,
+      "watch": 2,
+      "stop_recording": 2,
+      "Gradient": 1
+    }
+  },
+  {
+    "query": "Input pipeline abstraction for streaming datasets",
+    "category": "nl-abstract",
+    "relevance": {
+      "Dataset": 3,
+      "from_tensor_slices": 2,
+      "make_one_shot_iterator": 2,
+      "Iterator": 1,
+      "prefetch": 1
+    }
+  },
+  {
+    "query": "Distributed execution coordination primitive for queues",
+    "category": "nl-abstract",
+    "relevance": {
+      "QueueRunner": 3,
+      "FIFOQueue": 2,
+      "RandomShuffleQueue": 2,
+      "Coordinator": 1
+    }
+  },
+  {
+    "query": "Mechanism to save and restore model variables to disk",
+    "category": "nl-abstract",
+    "relevance": {
+      "save": 3,
+      "export_meta_graph": 2,
+      "SavedModel": 2,
+      "restore": 1,
+      "Saver": 1
+    }
+  },
+  {
+    "query": "Neural network layer performing fully connected transformation",
+    "category": "nl-abstract",
+    "relevance": {
+      "Dense": 3,
+      "Conv2D": 2,
+      "flatten": 2,
+      "Embedding": 1,
+      "dropout": 1
+    }
+  },
+  {
+    "query": "Recurrent cell with gated memory for sequence learning",
+    "category": "nl-abstract",
+    "relevance": {
+      "LSTM": 3,
+      "GRU": 2,
+      "LSTMCell": 2,
+      "RNN": 1,
+      "dropout": 1
+    }
+  },
+  {
+    "query": "Regularization penalizing large weights to improve generalization",
+    "category": "nl-abstract",
+    "relevance": {
+      "Regularizer": 3,
+      "L2Loss": 2,
+      "L1L2": 2,
+      "IdentityRegularizer": 1
+    }
+  },
+  {
+    "query": "Penalty term computing half the sum of squared weights",
+    "category": "nl-abstract",
+    "relevance": {
+      "L2Loss": 3,
+      "Regularizer": 2,
+      "L1L2": 2,
+      "L2": 1,
+      "L1": 1
+    }
+  },
+  {
+    "query": "Decaying moving statistic used to smooth model parameters",
+    "category": "nl-abstract",
+    "relevance": {
+      "ExponentialMovingAverage": 3,
+      "apply": 2,
+      "assign": 2
+    }
+  },
+  {
+    "query": "Mechanism to run operations and fetch tensor values",
+    "category": "nl-abstract",
+    "relevance": {
+      "Session": 3,
+      "InteractiveSession": 2,
+      "run": 2,
+      "get_session": 1,
+      "Graph": 1
+    }
+  },
+  {
+    "query": "End to end training loop with optimizers gradients and summaries",
+    "category": "cross-cutting",
+    "relevance": {
+      "Optimizer": 3,
+      "minimize": 2,
+      "compute_gradients": 2,
+      "summary": 2,
+      "merge_all_summaries": 1,
+      "global_variables_initializer": 1
+    }
+  },
+  {
+    "query": "Saving a trained model and restoring it for inference later",
+    "category": "cross-cutting",
+    "relevance": {
+      "save": 3,
+      "export_meta_graph": 2,
+      "SavedModel": 2,
+      "import_meta_graph": 2,
+      "restore": 1,
+      "global_variables_initializer": 1
+    }
+  },
+  {
+    "query": "Defining and using variables inside reusable name scopes",
+    "category": "cross-cutting",
+    "relevance": {
+      "variable_scope": 3,
+      "name_scope": 2,
+      "get_variable": 2,
+      "reuse": 1,
+      "Variable": 1
+    }
+  },
+  {
+    "query": "Building an input data pipeline that prefetches batches",
+    "category": "cross-cutting",
+    "relevance": {
+      "Dataset": 3,
+      "from_tensor_slices": 2,
+      "batch": 2,
+      "prefetch": 2,
+      "shuffle": 2,
+      "Iterator": 1,
+      "map": 1
+    }
+  },
+  {
+    "query": "Registering custom ops written in C++ and calling them from Python",
+    "category": "cross-cutting",
+    "relevance": {
+      "OpKernel": 3,
+      "Compute": 2,
+      "CreateOp": 1,
+      "py_func": 1
+    }
+  },
+  {
+    "query": "Distributed training across GPUs with mirrored variables",
+    "category": "cross-cutting",
+    "relevance": {
+      "MirroredStrategy": 3,
+      "distribute": 2,
+      "AllReduce": 2,
+      "TPUStrategy": 1,
+      "scope": 1
+    }
+  },
+  {
+    "query": "Profiling a session run to capture timeline and memory",
+    "category": "cross-cutting",
+    "relevance": {
+      "Profiler": 3,
+      "trace": 2,
+      "run_metadata": 2,
+      "RunOptions": 1
+    }
+  },
+  {
+    "query": "Gradient clipping to prevent exploding gradients during training",
+    "category": "cross-cutting",
+    "relevance": {
+      "clip_by_global_norm": 3,
+      "gradients": 2,
+      "Optimizer": 2,
+      "clip_by_norm": 1,
+      "minimize": 1
+    }
+  },
+  {
+    "query": "Summarizing scalar and histogram metrics for TensorBoard",
+    "category": "cross-cutting",
+    "relevance": {
+      "summary": 3,
+      "scalar": 2,
+      "histogram": 2,
+      "merge_all_summaries": 1,
+      "image": 1
+    }
+  },
+  {
+    "query": "Restoring all global variables at session initialization",
+    "category": "cross-cutting",
+    "relevance": {
+      "global_variables_initializer": 3,
+      "global_variables": 2,
+      "Session": 2,
+      "get_session": 1,
+      "restore": 1
+    }
+  },
+  {
+    "query": "Assert a tensor condition and raise InvalidArgument if false",
+    "category": "error-debug",
+    "relevance": {
+      "Assert": 3,
+      "assert_equal": 2,
+      "assert_near": 1,
+      "assert_less": 1
+    }
+  },
+  {
+    "query": "Assert two tensors are elementwise equal",
+    "category": "error-debug",
+    "relevance": {
+      "assert_equal": 3,
+      "Assert": 2,
+      "assert_near": 1,
+      "assert_less": 1
+    }
+  },
+  {
+    "query": "Catch NaN or Inf values in gradients to catch training instability",
+    "category": "error-debug",
+    "relevance": {
+      "enable_check_numerics": 3,
+      "verify_tensor_all_finite": 2,
+      "disable_check_numerics": 2,
+      "Assert": 1
+    }
+  },
+  {
+    "query": "Detect and report gradient computation failures during backprop",
+    "category": "error-debug",
+    "relevance": {
+      "verify_tensor_all_finite": 3,
+      "enable_check_numerics": 2,
+      "gradients": 2,
+      "disable_check_numerics": 1
+    }
+  },
+  {
+    "query": "Validate that all values in a tensor are finite",
+    "category": "error-debug",
+    "relevance": {
+      "verify_tensor_all_finite": 3,
+      "enable_check_numerics": 2,
+      "reduce_any": 1,
+      "disable_check_numerics": 1
+    }
+  },
+  {
+    "query": "Throw when a tensor shape does not match an expected signature",
+    "category": "error-debug",
+    "relevance": {
+      "assert_shapes": 3,
+      "shape": 2,
+      "assert_near": 1,
+      "assert_less": 1
+    }
+  },
+  {
+    "query": "Assert that the first tensor is less than the second",
+    "category": "error-debug",
+    "relevance": {
+      "assert_less": 3,
+      "assert_greater": 2,
+      "Assert": 1,
+      "assert_near": 1
+    }
+  },
+  {
+    "query": "Assert that the first tensor exceeds the second",
+    "category": "error-debug",
+    "relevance": {
+      "assert_greater": 3,
+      "assert_less": 2,
+      "Assert": 1,
+      "assert_near": 1
+    }
+  },
+  {
+    "query": "Symbol defined in the python ops math_ops file for matmul",
+    "category": "file-path",
+    "relevance": {
+      "matmul": 2,
+      "einsum": 1,
+      "tensordot": 1
+    }
+  },
+  {
+    "query": "Where is the GradientTape class defined in the autograd module",
+    "category": "file-path",
+    "relevance": {
+      "GradientTape": 3,
+      "Gradient": 2,
+      "watch": 1,
+      "stop_recording": 1
+    }
+  },
+  {
+    "query": "The FIFOQueue implementation in the queue data flow ops",
+    "category": "file-path",
+    "relevance": {
+      "FIFOQueue": 3,
+      "RandomShuffleQueue": 2,
+      "QueueRunner": 1,
+      "enqueue": 1
+    }
+  },
+  {
+    "query": "Adam optimizer definition in the training module",
+    "category": "file-path",
+    "relevance": {
+      "AdamOptimizer": 3,
+      "Optimizer": 2,
+      "minimize": 2,
+      "apply_gradients": 1
+    }
+  },
+  {
+    "query": "The Dataset API entry point in the data module",
+    "category": "file-path",
+    "relevance": {
+      "Dataset": 3,
+      "from_tensor_slices": 2,
+      "make_one_shot_iterator": 2,
+      "Iterator": 1,
+      "prefetch": 1
+    }
+  },
+  {
+    "query": "C++ kernel base class in the framework kernels",
+    "category": "file-path",
+    "relevance": {
+      "OpKernel": 3,
+      "Compute": 2
+    }
+  },
+  {
+    "query": "Convolution op in the nn ops python module",
+    "category": "file-path",
+    "relevance": {
+      "conv2d": 3,
+      "max_pool": 2,
+      "conv3d": 1,
+      "atrous_conv2d": 1
+    }
+  },
+  {
+    "query": "The Saver in the python training saver module",
+    "category": "file-path",
+    "relevance": {
+      "save": 3,
+      "export_meta_graph": 2,
+      "restore": 2,
+      "get_session": 1
+    }
+  },
+  {
+    "query": "Which optimizer applies gradients computed by compute_gradients",
+    "category": "relationship",
+    "relevance": {
+      "apply_gradients": 3,
+      "Optimizer": 2,
+      "minimize": 2,
+      "compute_gradients": 1,
+      "gradients": 1
+    }
+  },
+  {
+    "query": "What does the iterator yield from a from_tensor_slices dataset",
+    "category": "relationship",
+    "relevance": {
+      "make_one_shot_iterator": 3,
+      "get_next": 2,
+      "Dataset": 2,
+      "from_tensor_slices": 1,
+      "Iterator": 1
+    }
+  },
+  {
+    "query": "Which function feeds parsed examples into a model input layer",
+    "category": "relationship",
+    "relevance": {
+      "parse_example": 3,
+      "parse_single_example": 2,
+      "Dataset": 2,
+      "map": 1
+    }
+  },
+  {
+    "query": "Which op is registered as the gradient for matmul during backprop",
+    "category": "relationship",
+    "relevance": {
+      "gradients": 3,
+      "compute_gradients": 2,
+      "GradientTape": 2,
+      "Gradient": 1,
+      "apply_gradients": 1
+    }
+  },
+  {
+    "query": "Which saver counterpart restores variables that export_meta_graph wrote",
+    "category": "relationship",
+    "relevance": {
+      "restore": 3,
+      "import_meta_graph": 2,
+      "save": 2,
+      "export_meta_graph": 1,
+      "global_variables_initializer": 1
+    }
+  },
+  {
+    "query": "Which method on a session fetches tensor values after running ops",
+    "category": "relationship",
+    "relevance": {
+      "run": 3,
+      "Session": 2,
+      "InteractiveSession": 2,
+      "get_session": 1,
+      "eval": 1
+    }
+  },
+  {
+    "query": "Which initializer counterpart complements global_variables_initializer",
+    "category": "relationship",
+    "relevance": {
+      "global_variables": 3,
+      "global_variables_initializer": 2,
+      "trainable_variables": 2,
+      "local_variables_initializer": 1
+    }
+  },
+  {
+    "query": "Which queue counterpart dequeues what FIFOQueue enqueues",
+    "category": "relationship",
+    "relevance": {
+      "dequeue": 3,
+      "FIFOQueue": 2,
+      "enqueue": 2,
+      "dequeue_many": 1,
+      "QueueRunner": 1
+    }
+  },
+  {
+    "query": "Accumulate gradients across many replicas",
+    "category": "relationship",
+    "relevance": {
+      "scatter_add": 3,
+      "assign_add": 2,
+      "AllReduce": 2,
+      "MirroredStrategy": 1,
+      "Optimizer": 1
+    }
+  },
+  {
+    "query": "Which assertion guards less-than ordering between tensors",
+    "category": "relationship",
+    "relevance": {
+      "assert_less": 3,
+      "assert_greater": 2,
+      "Assert": 2,
+      "assert_near": 1,
+      "assert_shapes": 1
+    }
+  },
+  {
+    "query": "Behavior of dropout at training time versus inference time",
+    "category": "behavioral",
+    "relevance": {
+      "dropout": 3,
+      "rate": 2,
+      "identity": 1
+    }
+  },
+  {
+    "query": "How does exponential moving average decay variables over steps",
+    "category": "behavioral",
+    "relevance": {
+      "ExponentialMovingAverage": 3,
+      "apply": 2,
+      "assign": 1
+    }
+  },
+  {
+    "query": "Behavior of global step increment during optimizer apply",
+    "category": "behavioral",
+    "relevance": {
+      "apply_gradients": 3,
+      "Optimizer": 2,
+      "minimize": 2,
+      "global_step": 1,
+      "create_global_step": 1
+    }
+  },
+  {
+    "query": "How does gradient tape watch variables for differentiation",
+    "category": "behavioral",
+    "relevance": {
+      "watch": 3,
+      "GradientTape": 2,
+      "stop_recording": 2,
+      "reset": 1
+    }
+  },
+  {
+    "query": "Behavior of batch normalization momentum during moving average updates",
+    "category": "behavioral",
+    "relevance": {
+      "batch_normalization": 3,
+      "fused_batch_norm": 2
+    }
+  },
+  {
+    "query": "How does assign add accumulate into a variable",
+    "category": "behavioral",
+    "relevance": {
+      "assign_add": 3,
+      "assign": 2,
+      "scatter_add": 2,
+      "assign_sub": 1,
+      "Variable": 1
+    }
+  },
+  {
+    "query": "Behavior of leaky relu for negative inputs",
+    "category": "behavioral",
+    "relevance": {
+      "leaky_relu": 3,
+      "relu": 2,
+      "relu6": 2,
+      "elu": 1,
+      "crelu": 1
+    }
+  },
+  {
+    "query": "How does depthwise conv apply a filter per input channel",
+    "category": "behavioral",
+    "relevance": {
+      "depthwise_conv2d": 3,
+      "conv2d": 2,
+      "separable_conv2d": 2,
+      "conv2d_transpose": 1,
+      "atrous_conv2d": 1
+    }
+  },
+  {
+    "query": "How does strided slice extract a sub-region of a tensor",
+    "category": "behavioral",
+    "relevance": {
+      "strided_slice": 3,
+      "slice": 2,
+      "gather": 2,
+      "gather_nd": 1,
+      "boolean_mask": 1
+    }
+  },
+  {
+    "query": "Apply adam optimizer to minimize the loss",
+    "category": "nl-medium",
+    "relevance": {
+      "AdamOptimizer": 3,
+      "minimize": 2,
+      "Optimizer": 2,
+      "apply_gradients": 1,
+      "MomentumOptimizer": 1
+    }
+  },
+  {
+    "query": "Create a queue that shuffles its contents randomly",
+    "category": "nl-medium",
+    "relevance": {
+      "RandomShuffleQueue": 3,
+      "FIFOQueue": 2,
+      "shuffle": 2,
+      "QueueRunner": 1,
+      "dequeue": 1
+    }
+  },
+  {
+    "query": "Initialize all global variables before training",
+    "category": "nl-medium",
+    "relevance": {
+      "global_variables_initializer": 3,
+      "global_variables": 2,
+      "Session": 2,
+      "get_session": 1,
+      "local_variables_initializer": 1
+    }
+  },
+  {
+    "query": "Concatenate tensors along an existing axis",
+    "category": "nl-medium",
+    "relevance": {
+      "concat": 3,
+      "stack": 2,
+      "pack": 2,
+      "reshape": 1,
+      "gather": 1
+    }
+  },
+  {
+    "query": "Compute the elementwise sigmoid activation",
+    "category": "nl-medium",
+    "relevance": {
+      "sigmoid": 3,
+      "softmax": 2,
+      "tanh": 2,
+      "relu": 1,
+      "sigmoid_cross_entropy": 1
+    }
+  },
+  {
+    "query": "Run the graph and evaluate a tensor in a session",
+    "category": "nl-medium",
+    "relevance": {
+      "Session": 3,
+      "InteractiveSession": 2,
+      "run": 2,
+      "get_session": 1,
+      "eval": 1
+    }
+  },
+  {
+    "query": "Create a placeholder for feeding input data into the graph",
+    "category": "nl-medium",
+    "relevance": {
+      "placeholder": 3,
+      "placeholder_with_default": 2,
+      "constant": 1,
+      "Variable": 1
+    }
+  },
+  {
+    "query": "Add a scalar summary for TensorBoard visualization",
+    "category": "nl-medium",
+    "relevance": {
+      "scalar": 3,
+      "summary": 2,
+      "histogram": 2,
+      "merge_all_summaries": 1,
+      "image": 1
+    }
+  },
+  {
+    "query": "Get the shape of a tensor as a tensor",
+    "category": "nl-medium",
+    "relevance": {
+      "shape": 3,
+      "size": 2,
+      "rank": 2,
+      "reshape": 1,
+      "expand_dims": 1
+    }
+  },
+  {
+    "query": "Reshape a tensor to a new configuration",
+    "category": "nl-medium",
+    "relevance": {
+      "reshape": 3,
+      "flatten": 2,
+      "transpose": 2,
+      "stack": 1,
+      "concat": 1
+    }
+  },
+  {
+    "query": "global variable initializer",
+    "category": "symbol-partial",
+    "relevance": {
+      "global_variables_initializer": 3,
+      "global_variables": 2,
+      "initialize_all_variables": 2,
+      "local_variables_initializer": 1,
+      "variables_initializer": 1
+    }
+  },
+  {
+    "query": "gradient descent optimizer",
+    "category": "symbol-partial",
+    "relevance": {
+      "GradientDescentOptimizer": 3,
+      "Optimizer": 2,
+      "minimize": 2,
+      "apply_gradients": 1,
+      "AdamOptimizer": 1
+    }
+  },
+  {
+    "query": "fifo queue data flow",
+    "category": "symbol-partial",
+    "relevance": {
+      "FIFOQueue": 3,
+      "RandomShuffleQueue": 2,
+      "QueueRunner": 2,
+      "dequeue": 1,
+      "enqueue": 1
+    }
+  },
+  {
+    "query": "exponential moving average",
+    "category": "symbol-partial",
+    "relevance": {
+      "ExponentialMovingAverage": 3,
+      "apply": 2,
+      "assign": 1
+    }
+  },
+  {
+    "query": "sparse softmax cross entropy",
+    "category": "symbol-partial",
+    "relevance": {
+      "sparse_softmax_cross_entropy": 3,
+      "softmax": 2,
+      "sigmoid_cross_entropy": 2,
+      "log_softmax": 1,
+      "one_hot": 1
+    }
+  },
+  {
+    "query": "convolution transpose layer",
+    "category": "symbol-partial",
+    "relevance": {
+      "conv2d_transpose": 3,
+      "conv2d": 2,
+      "depthwise_conv2d": 2,
+      "atrous_conv2d": 1,
+      "separable_conv2d": 1
+    }
+  },
+  {
+    "query": "depthwise convolution op",
+    "category": "symbol-partial",
+    "relevance": {
+      "depthwise_conv2d": 3,
+      "conv2d": 2,
+      "separable_conv2d": 2,
+      "conv2d_transpose": 1,
+      "atrous_conv2d": 1
+    }
+  },
+  {
+    "query": "bias add layer",
+    "category": "symbol-partial",
+    "relevance": {
+      "bias_add": 3,
+      "add": 2,
+      "conv2d": 2,
+      "Dense": 1,
+      "matmul": 1
+    }
+  },
+  {
+    "query": "matmul",
+    "category": "symbol-exact",
+    "relevance": {
+      "matmul": 3,
+      "einsum": 2,
+      "tensordot": 2,
+      "batch_matmul": 1
+    }
+  },
+  {
+    "query": "softmax",
+    "category": "symbol-exact",
+    "relevance": {
+      "softmax": 3,
+      "log_softmax": 2,
+      "sparse_softmax_cross_entropy": 2,
+      "sigmoid": 1
+    }
+  },
+  {
+    "query": "relu",
+    "category": "symbol-exact",
+    "relevance": {
+      "relu": 3,
+      "leaky_relu": 2,
+      "relu6": 2,
+      "elu": 1,
+      "sigmoid": 1
+    }
+  },
+  {
+    "query": "dropout",
+    "category": "symbol-exact",
+    "relevance": {
+      "dropout": 3,
+      "rate": 2,
+      "identity": 1
+    }
+  },
+  {
+    "query": "conv2d",
+    "category": "symbol-exact",
+    "relevance": {
+      "conv2d": 3,
+      "max_pool": 2,
+      "conv3d": 1,
+      "atrous_conv2d": 1
+    }
+  },
+  {
+    "query": "AdamOptimizer",
+    "category": "symbol-exact",
+    "relevance": {
+      "AdamOptimizer": 3,
+      "Optimizer": 2,
+      "minimize": 2,
+      "apply_gradients": 1
+    }
+  },
+  {
+    "query": "GradientTape",
+    "category": "symbol-exact",
+    "relevance": {
+      "GradientTape": 3,
+      "Gradient": 2,
+      "watch": 2,
+      "stop_recording": 1,
+      "jacobian": 1
+    }
+  },
+  {
+    "query": "FIFOQueue",
+    "category": "symbol-exact",
+    "relevance": {
+      "FIFOQueue": 3,
+      "RandomShuffleQueue": 2,
+      "QueueRunner": 1,
+      "enqueue": 1
+    }
+  },
+  {
+    "query": "global_variables_initializer",
+    "category": "symbol-exact",
+    "relevance": {
+      "global_variables_initializer": 3,
+      "global_variables": 2,
+      "get_session": 1,
+      "local_variables_initializer": 1
+    }
+  },
+  {
+    "query": "embedding_lookup",
+    "category": "symbol-exact",
+    "relevance": {
+      "embedding_lookup": 3,
+      "embedding_lookup_sparse": 2,
+      "gather": 2
+    }
+  },
+  {
+    "query": "one_hot",
+    "category": "symbol-exact",
+    "relevance": {
+      "one_hot": 3,
+      "cast": 2,
+      "concat": 1,
+      "gather": 1
+    }
+  },
+  {
+    "query": "ExponentialMovingAverage",
+    "category": "symbol-exact",
+    "relevance": {
+      "ExponentialMovingAverage": 3,
+      "apply": 2,
+      "assign": 1
+    }
+  }
+]
