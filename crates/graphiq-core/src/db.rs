@@ -72,23 +72,6 @@ CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(
     tokenize='porter unicode61'
 );
 
-CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
-    INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
-    SELECT new.id, new.name, new.name_decomposed, new.qualified_name, new.signature, new.source, new.doc_comment, f.path, new.kind, new.language, new.search_hints
-    FROM files f WHERE f.id = new.file_id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
-    DELETE FROM symbols_fts WHERE rowid = old.id;
-END;
-
-CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE ON symbols BEGIN
-    DELETE FROM symbols_fts WHERE rowid = old.id;
-    INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
-    SELECT new.id, new.name, new.name_decomposed, new.qualified_name, new.signature, new.source, new.doc_comment, f.path, new.kind, new.language, new.search_hints
-    FROM files f WHERE f.id = new.file_id;
-END;
-
 CREATE TABLE IF NOT EXISTS edges (
     id INTEGER PRIMARY KEY,
     source_id INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
@@ -135,6 +118,28 @@ CREATE TABLE IF NOT EXISTS symbol_embeddings (
     dim INTEGER NOT NULL DEFAULT 768,
     PRIMARY KEY (symbol_id)
 );
+"#;
+
+/// Triggers for the contentful FTS table. `importance`, line ranges, and
+/// metadata are deliberately absent from the update trigger because none of
+/// them are indexed by FTS5.
+const FTS_TRIGGERS: &str = r#"
+CREATE TRIGGER IF NOT EXISTS symbols_ai AFTER INSERT ON symbols BEGIN
+    INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
+    SELECT new.id, new.name, new.name_decomposed, new.qualified_name, new.signature, new.source, new.doc_comment, f.path, new.kind, new.language, new.search_hints
+    FROM files f WHERE f.id = new.file_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_ad AFTER DELETE ON symbols BEGIN
+    DELETE FROM symbols_fts WHERE rowid = old.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS symbols_au AFTER UPDATE OF name, qualified_name, kind, signature, source, doc_comment, name_decomposed, language, search_hints, file_id ON symbols BEGIN
+    DELETE FROM symbols_fts WHERE rowid = old.id;
+    INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
+    SELECT new.id, new.name, new.name_decomposed, new.qualified_name, new.signature, new.source, new.doc_comment, f.path, new.kind, new.language, new.search_hints
+    FROM files f WHERE f.id = new.file_id;
+END;
 "#;
 
 #[derive(Debug, thiserror::Error)]
@@ -205,21 +210,81 @@ impl GraphDb {
     /// phases in this transaction instead of introducing concurrent DB writes.
     pub fn begin_bulk_index(&self) -> Result<(), DbError> {
         self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        if let Err(err) = self.conn.execute_batch(
+            "DROP TRIGGER IF EXISTS symbols_ai;
+             DROP TRIGGER IF EXISTS symbols_ad;
+             DROP TRIGGER IF EXISTS symbols_au;",
+        ) {
+            let _ = self.conn.execute_batch("ROLLBACK");
+            let _ = self.reset_fts_triggers();
+            return Err(err.into());
+        }
         Ok(())
     }
 
     pub fn commit_bulk_index(&self) -> Result<(), DbError> {
-        self.conn.execute_batch("COMMIT")?;
+        self.finish_bulk_index(true)
+    }
+
+    /// Commit a clean bulk transaction without rebuilding FTS. This is used
+    /// for no-op reindexes: the existing FTS content is already current, so
+    /// scanning every symbol again would only add avoidable work.
+    pub fn commit_bulk_index_without_fts(&self) -> Result<(), DbError> {
+        self.finish_bulk_index(false)
+    }
+
+    fn finish_bulk_index(&self, rebuild_fts: bool) -> Result<(), DbError> {
+        let result: Result<(), rusqlite::Error> = (|| {
+            if rebuild_fts {
+                // Rebuild the contentful FTS table once after all base-table
+                // and derived-hint writes. Per-row triggers cause repeated
+                // delete / insert churn and large transient SQLite memory use.
+                self.conn.execute_batch(
+                    "DELETE FROM symbols_fts;
+                     INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
+                     SELECT s.id, s.name, s.name_decomposed, s.qualified_name, s.signature, s.source, s.doc_comment, f.path, s.kind, s.language, s.search_hints
+                     FROM symbols s JOIN files f ON f.id = s.file_id;",
+                )?;
+            }
+            self.conn.execute_batch(FTS_TRIGGERS)?;
+            self.conn.execute_batch("COMMIT")?;
+            Ok(())
+        })();
+
+        if let Err(err) = result {
+            // A failed rebuild or trigger creation must not leave the
+            // connection inside a transaction with FTS triggers disabled.
+            let _ = self.conn.execute_batch("ROLLBACK");
+            let _ = self.reset_fts_triggers();
+            return Err(err.into());
+        }
         Ok(())
     }
 
     pub fn rollback_bulk_index(&self) -> Result<(), DbError> {
-        self.conn.execute_batch("ROLLBACK")?;
+        let rollback = self.conn.execute_batch("ROLLBACK");
+        // The rollback restores the old trigger DDL transactionally, but
+        // recreating them also repairs databases created before the selective
+        // update trigger was introduced.
+        let restore = self.reset_fts_triggers();
+        rollback?;
+        restore?;
         Ok(())
     }
 
     fn init_schema(&self) -> Result<(), DbError> {
         self.conn.execute_batch(SCHEMA_V1)?;
+        self.reset_fts_triggers()?;
+        Ok(())
+    }
+
+    fn reset_fts_triggers(&self) -> Result<(), DbError> {
+        self.conn.execute_batch(
+            "DROP TRIGGER IF EXISTS symbols_ai;
+             DROP TRIGGER IF EXISTS symbols_ad;
+             DROP TRIGGER IF EXISTS symbols_au;",
+        )?;
+        self.conn.execute_batch(FTS_TRIGGERS)?;
         Ok(())
     }
 
@@ -331,6 +396,12 @@ impl GraphDb {
         Ok(self
             .conn
             .query_row("SELECT COUNT(*) FROM files", [], |row| row.get(0))?)
+    }
+
+    pub fn file_paths(&self) -> Result<Vec<String>, DbError> {
+        let mut stmt = self.conn.prepare("SELECT path FROM files")?;
+        let paths = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        paths.collect::<SqlResult<Vec<_>>>().map_err(DbError::from)
     }
 
     // --- Symbols ---
@@ -521,6 +592,63 @@ impl GraphDb {
         )?)
     }
 
+    pub fn incoming_edges_for_file(
+        &self,
+        file_id: i64,
+    ) -> Result<Vec<(i64, String, String, EdgeKind, f64, serde_json::Value)>, DbError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT e.source_id, s.name, s.kind, e.kind, e.weight, e.metadata
+             FROM edges e JOIN symbols s ON s.id = e.target_id
+             WHERE s.file_id = ?1",
+        )?;
+        let rows: Vec<(i64, String, String, String, f64, String)> = stmt
+            .query_map(params![file_id], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+
+        Ok(rows
+            .into_iter()
+            .filter_map(|(source_id, name, kind, edge_kind, weight, metadata)| {
+                Some((
+                    source_id,
+                    name,
+                    kind,
+                    EdgeKind::from_str(&edge_kind)?,
+                    weight,
+                    serde_json::from_str(&metadata).unwrap_or(serde_json::Value::Null),
+                ))
+            })
+            .collect())
+    }
+
+    pub fn symbol_id_by_file_name_kind(
+        &self,
+        file_id: i64,
+        name: &str,
+        kind: &str,
+    ) -> Result<Option<i64>, DbError> {
+        let result = self.conn.query_row(
+            "SELECT id FROM symbols
+             WHERE file_id = ?1 AND name = ?2 AND kind = ?3
+             ORDER BY line_start, id LIMIT 1",
+            params![file_id, name, kind],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(id) => Ok(Some(id)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(DbError::from(e)),
+        }
+    }
+
     pub fn edge_count(&self) -> Result<i64, DbError> {
         Ok(self
             .conn
@@ -583,19 +711,11 @@ impl GraphDb {
     }
 
     pub fn update_search_hints(&self, symbol_id: i64, hints: &str) -> Result<(), DbError> {
+        // The selective symbols_au trigger keeps FTS in sync. Avoid the old
+        // manual DELETE/INSERT pair, which duplicated the trigger work.
         self.conn.execute(
             "UPDATE symbols SET search_hints = ?1 WHERE id = ?2",
             params![hints, symbol_id],
-        )?;
-        self.conn.execute(
-            "DELETE FROM symbols_fts WHERE rowid = ?1",
-            params![symbol_id],
-        )?;
-        self.conn.execute(
-            "INSERT INTO symbols_fts(rowid, name, name_decomposed, qualified_name, signature, source, doc_comment, file_path, kind, language, search_hints)
-             SELECT s.id, s.name, s.name_decomposed, s.qualified_name, s.signature, s.source, s.doc_comment, f.path, s.kind, s.language, ?2
-             FROM symbols s JOIN files f ON f.id = s.file_id WHERE s.id = ?1",
-            params![symbol_id, hints],
         )?;
         Ok(())
     }
@@ -1016,6 +1136,96 @@ mod tests {
         db.rollback_bulk_index().unwrap();
 
         assert!(db.get_file_by_path("src/transient.ts").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_bulk_index_rebuilds_fts_after_commit() {
+        let db = GraphDb::open_in_memory().unwrap();
+        let fid = db
+            .upsert_file("src/search.ts", "typescript", "abc", 1000, 10)
+            .unwrap();
+        let sym = SymbolBuilder::new(
+            fid,
+            "findNeedle".into(),
+            SymbolKind::Function,
+            "fn findNeedle() {}".into(),
+            "typescript".into(),
+        )
+        .lines(1, 1)
+        .build();
+
+        db.begin_bulk_index().unwrap();
+        let id = db.insert_symbol(&sym).unwrap();
+        db.update_search_hints(id, "needle search hint").unwrap();
+        let before_commit: i64 = db
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM symbols_fts WHERE rowid = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(before_commit, 0);
+
+        db.commit_bulk_index().unwrap();
+        let after_commit: String = db
+            .conn()
+            .query_row(
+                "SELECT search_hints FROM symbols_fts WHERE rowid = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(after_commit, "needle search hint");
+    }
+
+    #[test]
+    fn test_bulk_index_rollback_restores_fts_triggers() {
+        let db = GraphDb::open_in_memory().unwrap();
+        let fid = db
+            .upsert_file("src/search.ts", "typescript", "abc", 1000, 10)
+            .unwrap();
+        let stable = SymbolBuilder::new(
+            fid,
+            "stable".into(),
+            SymbolKind::Function,
+            "fn stable() {}".into(),
+            "typescript".into(),
+        )
+        .lines(1, 1)
+        .build();
+        let stable_id = db.insert_symbol(&stable).unwrap();
+
+        db.begin_bulk_index().unwrap();
+        let transient = SymbolBuilder::new(
+            fid,
+            "transient".into(),
+            SymbolKind::Function,
+            "fn transient() {}".into(),
+            "typescript".into(),
+        )
+        .lines(2, 2)
+        .build();
+        db.insert_symbol(&transient).unwrap();
+        db.rollback_bulk_index().unwrap();
+
+        let fts_count: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM symbols_fts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(fts_count, 1);
+
+        db.update_search_hints(stable_id, "restored trigger")
+            .unwrap();
+        let hint: String = db
+            .conn()
+            .query_row(
+                "SELECT search_hints FROM symbols_fts WHERE rowid = ?1",
+                params![stable_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(hint, "restored trigger");
     }
 
     #[test]

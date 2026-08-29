@@ -12,8 +12,9 @@
 //! `compute_numeric_bridges`, `compute_deep_graph`, and `generate_search_hints`
 //! to populate all derived data.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
@@ -33,6 +34,35 @@ use crate::symbol::{SymbolBuilder, SymbolKind};
 /// compute all derived artifacts.
 pub struct Indexer<'a> {
     db: &'a GraphDb,
+}
+
+struct FilePlan {
+    existing: Option<crate::symbol::SourceFile>,
+    changed: bool,
+}
+
+struct ParsedFile {
+    result: ParseResult,
+    call_sites: Vec<calls::CallSite>,
+}
+
+struct PreservedInboundEdge {
+    source_id: i64,
+    target_file_id: i64,
+    target_name: String,
+    target_kind: String,
+    kind: EdgeKind,
+    weight: f64,
+    metadata: serde_json::Value,
+}
+
+impl ParsedFile {
+    fn empty() -> Self {
+        Self {
+            result: ParseResult::empty(),
+            call_sites: Vec::new(),
+        }
+    }
 }
 
 impl<'a> Indexer<'a> {
@@ -71,7 +101,7 @@ impl<'a> Indexer<'a> {
             .unwrap_or(0);
         self.db.set_meta("indexed_at", &now.to_string())?;
         let files: Vec<PathBuf> = walk_project(root).collect();
-        let stats = self.index_files(root, &files)?;
+        let stats = self.index_files_with_pruning(root, &files, true)?;
         Ok(stats)
     }
 
@@ -80,12 +110,28 @@ impl<'a> Indexer<'a> {
         root: &Path,
         files: &[PathBuf],
     ) -> Result<IndexStats, Box<dyn std::error::Error>> {
+        self.index_files_with_pruning(root, files, false)
+    }
+
+    fn index_files_with_pruning(
+        &self,
+        root: &Path,
+        files: &[PathBuf],
+        prune_missing: bool,
+    ) -> Result<IndexStats, Box<dyn std::error::Error>> {
         self.db.begin_bulk_index()?;
-        let result = self.index_files_in_transaction(root, files);
+        let result = self.index_files_in_transaction(root, files, prune_missing);
         match result {
             Ok(stats) => {
-                self.db.commit_bulk_index()?;
-                Ok(stats)
+                let commit = if stats.files_indexed == 0 && stats.files_deleted == 0 {
+                    self.db.commit_bulk_index_without_fts()
+                } else {
+                    self.db.commit_bulk_index()
+                };
+                match commit {
+                    Ok(()) => Ok(stats),
+                    Err(err) => Err(Box::new(err)),
+                }
             }
             Err(err) => {
                 let _ = self.db.rollback_bulk_index();
@@ -98,16 +144,37 @@ impl<'a> Indexer<'a> {
         &self,
         root: &Path,
         files: &[PathBuf],
+        prune_missing: bool,
     ) -> Result<IndexStats, Box<dyn std::error::Error>> {
         use std::time::Instant;
 
         let total_start = Instant::now();
         let mut phase_start = Instant::now();
         let mut stats = IndexStats::default();
+        let mut files_deleted = 0usize;
+
+        if prune_missing {
+            let current_paths: HashSet<String> = files
+                .iter()
+                .filter_map(|path| path.strip_prefix(root).ok())
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect();
+            for path in self.db.file_paths()? {
+                if !current_paths.contains(&path) && self.db.delete_file(&path)? {
+                    files_deleted += 1;
+                }
+            }
+            if files_deleted > 0 {
+                eprintln!(
+                    "  pruned {} file(s) no longer present in project",
+                    files_deleted
+                );
+            }
+        }
+        stats.files_deleted = files_deleted;
 
         let file_data: Vec<_> = files
-            .iter()
-            .par_bridge()
+            .par_iter()
             .filter_map(|path| {
                 let rel = path.strip_prefix(root).ok()?;
                 let content = std::fs::read(path).ok()?;
@@ -135,15 +202,59 @@ impl<'a> Indexer<'a> {
         let mut global_name_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
         let mut pending_rels: Vec<PendingEdge> = Vec::new();
         let mut pending_contains: Vec<(i64, i64)> = Vec::new();
+        let mut preserved_inbound: Vec<PreservedInboundEdge> = Vec::new();
         let mut pending_calls: Vec<PendingCallEdge> = Vec::new();
         let mut pending_imports: Vec<PendingImportEdge> = Vec::new();
 
-        for (rel_path, source, lang, hash, mtime, line_count) in &file_data {
+        // Determine which files need parsing before entering the parallel
+        // parse phase. This keeps all SQLite access on the single writer
+        // connection while allowing Tree-sitter and call extraction to use
+        // Rayon workers.
+        let file_plans: Vec<FilePlan> = file_data
+            .iter()
+            .map(|(rel_path, _, _, hash, _, _)| {
+                let path_str = rel_path.to_string_lossy();
+                let existing = self.db.get_file_by_path(&path_str)?;
+                let changed = existing
+                    .as_ref()
+                    .map(|f| f.content_hash != *hash)
+                    .unwrap_or(true);
+                Ok::<FilePlan, crate::db::DbError>(FilePlan { existing, changed })
+            })
+            .collect::<Result<_, _>>()?;
+
+        let parsed_files: Vec<ParsedFile> = file_data
+            .par_iter()
+            .zip(file_plans.par_iter())
+            .map(|((rel_path, source, lang, _, _, _), plan)| {
+                if !plan.changed || is_data_file(rel_path, source.len() as u64) {
+                    return ParsedFile::empty();
+                }
+
+                let path_str = rel_path.to_string_lossy();
+                let chunker = get_chunker(*lang);
+                let mut result = chunker.parse(source, &path_str);
+                // Call extraction only needs the tree during this worker call.
+                // Dropping it before returning keeps the collected results
+                // compact while preserving the existing call-site behavior.
+                let call_sites = result
+                    .tree
+                    .take()
+                    .map(|tree| calls::extract_calls(source, &tree, lang.as_str()))
+                    .unwrap_or_default();
+                ParsedFile { result, call_sites }
+            })
+            .collect();
+
+        for (((rel_path, _source, lang, hash, mtime, line_count), plan), parsed_file) in file_data
+            .iter()
+            .zip(file_plans.iter())
+            .zip(parsed_files.iter())
+        {
             let path_str = rel_path.to_string_lossy();
 
-            let existing = self.db.get_file_by_path(&path_str)?;
-            if let Some(ref f) = existing {
-                if f.content_hash == *hash {
+            if let Some(ref f) = plan.existing {
+                if !plan.changed {
                     for sym in self.db.symbols_by_file(f.id)? {
                         global_name_to_ids
                             .entry(sym.name.clone())
@@ -152,8 +263,20 @@ impl<'a> Indexer<'a> {
                     }
                     continue;
                 }
+                for (source_id, target_name, target_kind, kind, weight, metadata) in
+                    self.db.incoming_edges_for_file(f.id)?
+                {
+                    preserved_inbound.push(PreservedInboundEdge {
+                        source_id,
+                        target_file_id: f.id,
+                        target_name,
+                        target_kind,
+                        kind,
+                        weight,
+                        metadata,
+                    });
+                }
                 self.db.delete_symbols_for_file(f.id)?;
-                self.db.delete_edges_for_symbols(f.id)?;
             }
 
             let file_id =
@@ -166,12 +289,7 @@ impl<'a> Indexer<'a> {
             // every JSON key from a package-lock.json otherwise dominates the
             // graph with thousands of low-value Constant symbols and silently
             // pollutes search results and the codebase briefing.
-            let result = if is_data_file(rel_path, source.len() as u64) {
-                ParseResult::empty()
-            } else {
-                let chunker = get_chunker(*lang);
-                chunker.parse(source, &path_str)
-            };
+            let result = &parsed_file.result;
 
             let mut file_name_to_id: HashMap<String, i64> = HashMap::new();
             let mut containers: Vec<(String, SymbolKind, i64)> = Vec::new();
@@ -223,6 +341,11 @@ impl<'a> Indexer<'a> {
                 }
             }
 
+            // Calls, imports, and structural relations all use the same
+            // per-file lookup. Sharing it avoids cloning the complete map for
+            // every extracted relation/call/import.
+            let file_name_to_id = Arc::new(file_name_to_id);
+
             for rel in &result.structural_rels {
                 let edge_kind = match rel.rel_type.as_str() {
                     "implements" => Some(EdgeKind::Implements),
@@ -236,29 +359,25 @@ impl<'a> Indexer<'a> {
                         source_name: rel.source_name.clone(),
                         target_name: rel.target_name.clone(),
                         edge_kind: kind,
-                        file_scope: Some(file_name_to_id.clone()),
+                        file_scope: Some(Arc::clone(&file_name_to_id)),
                     });
                 }
             }
 
-            if let Some(ref tree) = result.tree {
-                let call_sites = calls::extract_calls(source, tree, lang.as_str());
-                for cs in &call_sites {
-                    let caller_id =
-                        find_enclosing_symbol(&file_name_to_id, &result.symbols, cs.line);
-                    pending_calls.push(PendingCallEdge {
-                        caller_id,
-                        callee_name: cs.callee.clone(),
-                        file_name_to_id: file_name_to_id.clone(),
-                    });
-                }
+            for cs in &parsed_file.call_sites {
+                let caller_id = find_enclosing_symbol(&file_name_to_id, &result.symbols, cs.line);
+                pending_calls.push(PendingCallEdge {
+                    caller_id,
+                    callee_name: cs.callee.clone(),
+                    file_name_to_id: Arc::clone(&file_name_to_id),
+                });
             }
 
             for imp in &result.imports {
                 for name in &imp.names {
                     pending_imports.push(PendingImportEdge {
                         importer_file_id: file_id,
-                        importer_names: file_name_to_id.clone(),
+                        importer_names: Arc::clone(&file_name_to_id),
                         imported_name: name.clone(),
                         module_path: imp.module_path.clone(),
                     });
@@ -268,12 +387,57 @@ impl<'a> Indexer<'a> {
             stats.imports_extracted += result.imports.len();
             stats.rels_extracted += result.structural_rels.len();
         }
+
+        // Reconnect inbound structural edges whose target symbols survived a
+        // file replacement. Deleting and reinserting a changed file otherwise
+        // removes valid edges from unchanged callers/importers.
+        for edge in preserved_inbound {
+            if !is_relinkable_edge_kind(edge.kind) || self.db.get_symbol(edge.source_id)?.is_none()
+            {
+                continue;
+            }
+            let Some(target_id) = self.db.symbol_id_by_file_name_kind(
+                edge.target_file_id,
+                &edge.target_name,
+                &edge.target_kind,
+            )?
+            else {
+                continue;
+            };
+            if edge.source_id != target_id {
+                if self
+                    .db
+                    .insert_edge(
+                        edge.source_id,
+                        target_id,
+                        edge.kind,
+                        edge.weight,
+                        edge.metadata,
+                    )
+                    .is_ok()
+                {
+                    stats.edges_inserted += 1;
+                }
+            }
+        }
         eprintln!(
             "  phase parse/symbol extraction: {} changed files, {} symbols in {:.2}s",
             stats.files_indexed,
             stats.symbols_indexed,
             phase_start.elapsed().as_secs_f64()
         );
+        // With no changed files, the existing graph and derived artifacts are
+        // already valid. Avoid rerunning every derived pass on every no-op
+        // filesystem scan.
+        if stats.files_indexed == 0 && stats.files_deleted == 0 {
+            eprintln!("  phase derived indexing: skipped (no changed files)");
+            eprintln!(
+                "  total index pipeline: {:.2}s",
+                total_start.elapsed().as_secs_f64()
+            );
+            return Ok(stats);
+        }
+
         phase_start = Instant::now();
 
         for (container_id, member_id) in &pending_contains {
@@ -1254,6 +1418,17 @@ fn is_container_kind(kind: crate::symbol::SymbolKind) -> bool {
     )
 }
 
+fn is_relinkable_edge_kind(kind: EdgeKind) -> bool {
+    !matches!(
+        kind,
+        EdgeKind::SharesConstant
+            | EdgeKind::ReferencesConstant
+            | EdgeKind::SharesType
+            | EdgeKind::SharesErrorType
+            | EdgeKind::SharesDataShape
+    )
+}
+
 fn is_container_kind_str(kind: &str) -> bool {
     matches!(
         kind,
@@ -1265,18 +1440,18 @@ struct PendingEdge {
     source_name: String,
     target_name: String,
     edge_kind: EdgeKind,
-    file_scope: Option<HashMap<String, i64>>,
+    file_scope: Option<Arc<HashMap<String, i64>>>,
 }
 
 struct PendingCallEdge {
     caller_id: Option<i64>,
     callee_name: String,
-    file_name_to_id: HashMap<String, i64>,
+    file_name_to_id: Arc<HashMap<String, i64>>,
 }
 
 struct PendingImportEdge {
     importer_file_id: i64,
-    importer_names: HashMap<String, i64>,
+    importer_names: Arc<HashMap<String, i64>>,
     imported_name: String,
     module_path: String,
 }
@@ -1306,6 +1481,7 @@ fn get_chunker(lang: Language) -> Box<dyn LanguageChunker> {
 #[derive(Debug, Default)]
 pub struct IndexStats {
     pub files_indexed: usize,
+    pub files_deleted: usize,
     pub symbols_indexed: usize,
     pub imports_extracted: usize,
     pub rels_extracted: usize,
@@ -1681,6 +1857,79 @@ mod tests {
         let indexer = Indexer::new(&db);
         let stats = indexer.index_project(tmp.path()).unwrap();
         assert_eq!(stats.files_indexed, 0);
+    }
+
+    #[test]
+    fn test_noop_reindex_preserves_existing_fts() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("main.rs"),
+            "pub fn searchable_symbol() -> i32 { 1 }\n",
+        )
+        .unwrap();
+
+        let db = GraphDb::open_in_memory().unwrap();
+        let indexer = Indexer::new(&db);
+        indexer.index_project(tmp.path()).unwrap();
+        let before: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM symbols_fts", [], |row| row.get(0))
+            .unwrap();
+
+        let stats = indexer.index_project(tmp.path()).unwrap();
+        let after: i64 = db
+            .conn()
+            .query_row("SELECT count(*) FROM symbols_fts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(stats.files_indexed, 0);
+        assert_eq!(stats.symbols_indexed, 0);
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn test_reindex_prunes_deleted_files() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("keep.rs"), "pub fn keep() {}\n").unwrap();
+        let deleted = tmp.path().join("deleted.rs");
+        std::fs::write(&deleted, "pub fn deleted() {}\n").unwrap();
+
+        let db = GraphDb::open_in_memory().unwrap();
+        let indexer = Indexer::new(&db);
+        indexer.index_project(tmp.path()).unwrap();
+        assert!(db.get_file_by_path("deleted.rs").unwrap().is_some());
+
+        std::fs::remove_file(deleted).unwrap();
+        let stats = indexer.index_project(tmp.path()).unwrap();
+
+        assert_eq!(stats.files_deleted, 1);
+        assert!(db.get_file_by_path("deleted.rs").unwrap().is_none());
+        assert!(db.symbols_by_name("deleted").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_reindex_changed_target_preserves_inbound_edges() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("target.ts");
+        std::fs::write(&target, "export function target() { return 'old'; }\n").unwrap();
+        std::fs::write(
+            tmp.path().join("caller.ts"),
+            "import { target } from './target';\nexport function caller() { return target(); }\n",
+        )
+        .unwrap();
+
+        let db = GraphDb::open_in_memory().unwrap();
+        let indexer = Indexer::new(&db);
+        indexer.index_project(tmp.path()).unwrap();
+        assert_eq!(db.edges_by_kind(EdgeKind::Calls, 100).unwrap().len(), 1);
+
+        std::fs::write(&target, "export function target() { return 'new'; }\n").unwrap();
+        indexer.index_project(tmp.path()).unwrap();
+
+        assert_eq!(db.edges_by_kind(EdgeKind::Calls, 100).unwrap().len(), 1);
+        assert_eq!(
+            db.edges_by_kind(EdgeKind::References, 100).unwrap().len(),
+            1
+        );
     }
 
     #[test]

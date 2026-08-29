@@ -9,6 +9,8 @@
 //! These edges are computed after structural indexing and stored in the edges
 //! table with appropriate `EdgeKind` values.
 
+use aho_corasick::AhoCorasick;
+
 use crate::db::GraphDb;
 use rusqlite::params;
 use std::collections::{HashMap, HashSet};
@@ -560,7 +562,11 @@ fn extract_string_literals(source: &str) -> Vec<String> {
     literals
 }
 
-fn extract_comment_refs(source: &str, symbol_names: &[String]) -> HashSet<String> {
+fn extract_comment_refs(
+    source: &str,
+    matcher: &AhoCorasick,
+    symbol_names: &[String],
+) -> HashSet<String> {
     let mut refs = HashSet::new();
     for line in source.lines() {
         let trimmed = line.trim();
@@ -572,8 +578,8 @@ fn extract_comment_refs(source: &str, symbol_names: &[String]) -> HashSet<String
             .trim_start_matches('*')
             .trim_start_matches('#')
             .trim();
-        for name in symbol_names {
-            if comment_text.contains(name.as_str()) {
+        for mat in matcher.find_overlapping_iter(comment_text.as_bytes()) {
+            if let Some(name) = symbol_names.get(mat.pattern().as_usize()) {
                 refs.insert(name.clone());
             }
         }
@@ -605,10 +611,15 @@ pub fn compute_source_graph_edges(
 
     let n = symbols.len();
     let total_syms = n as f64;
-    let symbol_names: Vec<String> = symbols
-        .iter()
-        .map(|(_, name, _, _, _)| name.clone())
-        .collect();
+    let mut symbol_names = Vec::new();
+    let mut seen_names = HashSet::new();
+    for (_, name, _, _, _) in &symbols {
+        if seen_names.insert(name.clone()) {
+            symbol_names.push(name.clone());
+        }
+    }
+    let comment_matcher = AhoCorasick::new(&symbol_names)
+        .map_err(|e| format!("build comment reference matcher: {e}"))?;
 
     let mut string_to_symbols: HashMap<String, Vec<usize>> = HashMap::new();
     let mut comment_to_symbols: HashMap<String, Vec<usize>> = HashMap::new();
@@ -636,7 +647,7 @@ pub fn compute_source_graph_edges(
                     .push(i);
             }
         }
-        for ref_name in extract_comment_refs(source, &symbol_names) {
+        for ref_name in extract_comment_refs(source, &comment_matcher, &symbol_names) {
             if ref_name != *name {
                 comment_to_symbols.entry(ref_name).or_default().push(i);
             }
@@ -779,5 +790,14 @@ mod tests {
         assert!(fields.contains("config"));
         assert!(fields.contains("timeout"));
         assert!(fields.contains("socket_addr"));
+    }
+
+    #[test]
+    fn test_comment_refs_preserve_overlapping_matches() {
+        let names = vec!["foo".to_string(), "foobar".to_string()];
+        let matcher = AhoCorasick::new(&names).unwrap();
+        let refs = extract_comment_refs("// foobar is handled here", &matcher, &names);
+        assert!(refs.contains("foo"));
+        assert!(refs.contains("foobar"));
     }
 }
