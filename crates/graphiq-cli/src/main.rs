@@ -21,6 +21,11 @@ enum Commands {
         db: PathBuf,
         #[arg(long)]
         force_reindex: bool,
+        #[arg(
+            long,
+            help = "Experimental: index test-to-production executable evidence; use a separate --db"
+        )]
+        executable_evidence: bool,
         #[cfg(feature = "embed")]
         #[arg(long)]
         embed: bool,
@@ -37,6 +42,11 @@ enum Commands {
         file: Option<String>,
         #[arg(long)]
         blast: bool,
+        #[arg(
+            long,
+            help = "Experimental: include executable-evidence edges in GraphWalk"
+        )]
+        executable_evidence: bool,
         #[arg(short, long, default_value_t = 3)]
         depth: usize,
     },
@@ -74,6 +84,11 @@ enum Commands {
         path: PathBuf,
         #[arg(long, default_value = ".graphiq/graphiq.db")]
         db: PathBuf,
+        #[arg(
+            long,
+            help = "Experimental: rebuild test-to-production executable evidence"
+        )]
+        executable_evidence: bool,
     },
     Clear {
         #[arg(long, default_value = ".graphiq/graphiq.db")]
@@ -192,16 +207,17 @@ fn main() {
             path,
             db,
             force_reindex,
+            executable_evidence,
             ..
-        } => cmd_index(&path, &db, false, force_reindex),
+        } => cmd_index(&path, &db, false, force_reindex, executable_evidence),
         #[cfg(feature = "embed")]
         Commands::Index {
             path,
             db,
             embed,
             force_reindex,
-            ..
-        } => cmd_index(&path, &db, embed, force_reindex),
+            executable_evidence,
+        } => cmd_index(&path, &db, embed, force_reindex, executable_evidence),
 
         Commands::Search {
             query,
@@ -210,8 +226,18 @@ fn main() {
             debug,
             file,
             blast,
+            executable_evidence,
             depth,
-        } => cmd_search(&query, &db, top, debug, file.as_deref(), blast, depth),
+        } => cmd_search(
+            &query,
+            &db,
+            top,
+            debug,
+            file.as_deref(),
+            blast,
+            executable_evidence,
+            depth,
+        ),
         Commands::Blast {
             symbol,
             db,
@@ -236,7 +262,11 @@ fn main() {
             json,
         ),
         Commands::Status { db } => cmd_status(&db),
-        Commands::Reindex { path, db } => cmd_reindex(&path, &db),
+        Commands::Reindex {
+            path,
+            db,
+            executable_evidence,
+        } => cmd_reindex(&path, &db, executable_evidence),
         Commands::Clear { db, yes } => cmd_clear(&db, yes),
         Commands::Sync {
             project,
@@ -304,6 +334,7 @@ fn cmd_index(
     db_path: &std::path::Path,
     do_embed: bool,
     force_reindex: bool,
+    executable_evidence: bool,
 ) {
     let db_path = resolve_db(path, db_path);
 
@@ -326,7 +357,8 @@ fn cmd_index(
     let db = open_db_or_exit(&db_path);
 
     print!("Indexing {} ... ", path.display());
-    let indexer = graphiq_core::index::Indexer::new(&db);
+    let indexer =
+        graphiq_core::index::Indexer::new(&db).with_executable_evidence(executable_evidence);
     match indexer.index_project(path) {
         Ok(stats) => {
             println!("done");
@@ -338,6 +370,12 @@ fn cmd_index(
                 stats.calls_extracted,
                 stats.edges_inserted
             );
+            if executable_evidence {
+                println!(
+                    "  Executable evidence edges: {}",
+                    stats.executable_evidence_edges
+                );
+            }
         }
         Err(e) => {
             println!("failed");
@@ -383,6 +421,7 @@ fn cmd_search(
     debug: bool,
     file_filter: Option<&str>,
     with_blast: bool,
+    executable_evidence: bool,
     blast_depth: usize,
 ) {
     if !db_path.exists() {
@@ -417,7 +456,13 @@ fn cmd_search(
     let cache = graphiq_core::cache::HotCache::with_defaults();
     cache.prewarm(&db, 200);
 
-    let cruncher = graphiq_core::cruncher::build_cruncher_index(&db).ok();
+    let cruncher = graphiq_core::cruncher::build_cruncher_index_with_options(
+        &db,
+        graphiq_core::cruncher::CruncherBuildOptions {
+            include_executable_evidence: executable_evidence,
+        },
+    )
+    .ok();
 
     let mut engine = graphiq_core::search::SearchEngine::new(&db, &cache);
     if let Some(ref ci) = cruncher {
@@ -648,7 +693,7 @@ fn cmd_status(db_path: &std::path::Path) {
     }
 }
 
-fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
+fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path, executable_evidence: bool) {
     if !db_path.exists() {
         eprintln!("database not found: {}", db_path.display());
         eprintln!("run `graphiq index` first to create the database");
@@ -658,7 +703,8 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
     let db = open_db_or_exit(db_path);
 
     print!("Reindexing {} ... ", path.display());
-    let indexer = graphiq_core::index::Indexer::new(&db);
+    let indexer =
+        graphiq_core::index::Indexer::new(&db).with_executable_evidence(executable_evidence);
     match indexer.index_project(path) {
         Ok(stats) => {
             println!("done");
@@ -670,6 +716,12 @@ fn cmd_reindex(path: &std::path::Path, db_path: &std::path::Path) {
                 stats.calls_extracted,
                 stats.edges_inserted
             );
+            if executable_evidence {
+                println!(
+                    "  Executable evidence edges: {}",
+                    stats.executable_evidence_edges
+                );
+            }
         }
         Err(e) => {
             println!("failed");

@@ -592,6 +592,43 @@ impl GraphDb {
         )?)
     }
 
+    /// Delete derived edges carrying a specific metadata source marker.
+    ///
+    /// Derived edge families can be rebuilt from the current source tree. Keep
+    /// this operation metadata-scoped so an experimental family does not
+    /// remove manually-authored or future first-class edges of the same kind.
+    pub fn delete_edges_with_metadata_source(
+        &self,
+        kind: EdgeKind,
+        source: &str,
+    ) -> Result<usize, DbError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, metadata FROM edges WHERE kind = ?1")?;
+        let rows: Vec<(i64, String)> = stmt
+            .query_map(params![kind.as_str()], |row| {
+                let id: i64 = row.get(0)?;
+                let metadata: String = row.get(1)?;
+                Ok((id, metadata))
+            })?
+            .collect::<SqlResult<Vec<_>>>()?;
+        let ids: Vec<i64> = rows
+            .into_iter()
+            .filter_map(|(id, metadata)| {
+                let value: serde_json::Value = serde_json::from_str(&metadata).ok()?;
+                (value.get("source").and_then(serde_json::Value::as_str) == Some(source))
+                    .then_some(id)
+            })
+            .collect();
+        drop(stmt);
+
+        for id in &ids {
+            self.conn
+                .execute("DELETE FROM edges WHERE id = ?1", params![id])?;
+        }
+        Ok(ids.len())
+    }
+
     pub fn incoming_edges_for_file(
         &self,
         file_id: i64,
@@ -657,7 +694,8 @@ impl GraphDb {
 
     pub fn outgoing_edges_grouped(&self) -> Result<Vec<(i64, String, String)>, DbError> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.source_id, e.kind, s.name
+            "SELECT e.source_id, e.kind, s.name,
+                    CASE WHEN e.kind = 'tests' THEN e.metadata END
              FROM edges e JOIN symbols s ON s.id = e.target_id
              ORDER BY e.source_id",
         )?;
@@ -666,14 +704,28 @@ impl GraphDb {
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
             ))
         })?;
-        rows.collect::<SqlResult<Vec<_>>>().map_err(DbError::from)
+        rows.filter_map(|row| match row {
+            Ok((source_id, kind, name, metadata)) => {
+                let generated = kind == EdgeKind::Tests.as_str()
+                    && metadata
+                        .as_deref()
+                        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                        .is_some_and(|value| crate::test_evidence::is_generated_edge(&value));
+                (!generated).then_some(Ok((source_id, kind, name)))
+            }
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<SqlResult<Vec<_>>>()
+        .map_err(DbError::from)
     }
 
     pub fn incoming_edges_grouped(&self) -> Result<Vec<(i64, String, String)>, DbError> {
         let mut stmt = self.conn.prepare(
-            "SELECT e.target_id, e.kind, s.name
+            "SELECT e.target_id, e.kind, s.name,
+                    CASE WHEN e.kind = 'tests' THEN e.metadata END
              FROM edges e JOIN symbols s ON s.id = e.source_id
              ORDER BY e.target_id",
         )?;
@@ -682,9 +734,22 @@ impl GraphDb {
                 row.get::<_, i64>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
             ))
         })?;
-        rows.collect::<SqlResult<Vec<_>>>().map_err(DbError::from)
+        rows.filter_map(|row| match row {
+            Ok((target_id, kind, name, metadata)) => {
+                let generated = kind == EdgeKind::Tests.as_str()
+                    && metadata
+                        .as_deref()
+                        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+                        .is_some_and(|value| crate::test_evidence::is_generated_edge(&value));
+                (!generated).then_some(Ok((target_id, kind, name)))
+            }
+            Err(error) => Some(Err(error)),
+        })
+        .collect::<SqlResult<Vec<_>>>()
+        .map_err(DbError::from)
     }
 
     pub fn container_for(&self, symbol_id: i64) -> Result<Option<(i64, String)>, DbError> {

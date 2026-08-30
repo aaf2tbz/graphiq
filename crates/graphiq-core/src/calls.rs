@@ -27,21 +27,43 @@ impl CallSite {
 }
 
 pub fn extract_calls(source: &str, tree: &Tree, language: &str) -> Vec<CallSite> {
+    extract_calls_impl(source, tree, language, false)
+}
+
+/// Extract calls while retaining common assertion builtins.
+///
+/// Normal indexing intentionally omits language builtins such as `assert`.
+/// Executable Evidence needs those calls as observation witnesses, so it uses
+/// this opt-in variant without changing the baseline call graph.
+pub fn extract_calls_with_assertions(source: &str, tree: &Tree, language: &str) -> Vec<CallSite> {
+    extract_calls_impl(source, tree, language, true)
+}
+
+fn extract_calls_impl(
+    source: &str,
+    tree: &Tree,
+    language: &str,
+    include_assertions: bool,
+) -> Vec<CallSite> {
     let source_bytes = source.as_bytes();
     match language {
-        "typescript" | "javascript" | "tsx" | "jsx" => walk_and_collect(source_bytes, tree),
+        "typescript" | "javascript" | "tsx" | "jsx" => {
+            walk_and_collect(source_bytes, tree, include_assertions)
+        }
         "rust" => {
-            let mut calls = walk_and_collect(source_bytes, tree);
+            let mut calls = walk_and_collect(source_bytes, tree, include_assertions);
             extract_rust_use_paths(source_bytes, tree, &mut calls);
             calls
         }
         "python" => {
-            let mut calls = walk_and_collect(source_bytes, tree);
+            let mut calls = walk_and_collect(source_bytes, tree, include_assertions);
             dedup_calls(&mut calls);
             calls
         }
-        "go" | "java" | "c" | "cpp" | "ruby" => walk_and_collect(source_bytes, tree),
-        _ => regex_extract_calls(source),
+        "go" | "java" | "c" | "cpp" | "ruby" => {
+            walk_and_collect(source_bytes, tree, include_assertions)
+        }
+        _ => regex_extract_calls(source, include_assertions),
     }
 }
 
@@ -71,7 +93,12 @@ fn field_text(node: tree_sitter::Node, field: &str, source: &[u8]) -> Option<Str
         .filter(|s| !s.is_empty())
 }
 
-fn extract_call_expression(source: &[u8], node: tree_sitter::Node, calls: &mut Vec<CallSite>) {
+fn extract_call_expression(
+    source: &[u8],
+    node: tree_sitter::Node,
+    calls: &mut Vec<CallSite>,
+    include_assertions: bool,
+) {
     if is_inside_string(node) {
         return;
     }
@@ -114,7 +141,10 @@ fn extract_call_expression(source: &[u8], node: tree_sitter::Node, calls: &mut V
         None => (String::new(), None),
     };
 
-    if !callee.is_empty() && !is_keyword_or_builtin(&callee) {
+    if !callee.is_empty()
+        && (!is_keyword_or_builtin(&callee)
+            || (include_assertions && is_assertion_builtin(&callee)))
+    {
         let nt = node_text(node, source);
         let line = node.start_position().row;
         calls.push(CallSite {
@@ -129,7 +159,7 @@ fn extract_call_expression(source: &[u8], node: tree_sitter::Node, calls: &mut V
         let mut cursor = fn_node.walk();
         for child in fn_node.children(&mut cursor) {
             if child.is_named() && child.kind() == "call_expression" {
-                extract_call_expression(source, child, calls);
+                extract_call_expression(source, child, calls, include_assertions);
             }
         }
     }
@@ -138,22 +168,27 @@ fn extract_call_expression(source: &[u8], node: tree_sitter::Node, calls: &mut V
         let mut cursor = args.walk();
         for child in args.children(&mut cursor) {
             if child.is_named() && child.kind() == "call_expression" {
-                extract_call_expression(source, child, calls);
+                extract_call_expression(source, child, calls, include_assertions);
             }
         }
     }
 }
 
-fn walk_and_collect(source: &[u8], tree: &Tree) -> Vec<CallSite> {
+fn walk_and_collect(source: &[u8], tree: &Tree, include_assertions: bool) -> Vec<CallSite> {
     let mut calls = Vec::new();
-    walk_call_nodes(source, tree.root_node(), &mut calls);
+    walk_call_nodes(source, tree.root_node(), &mut calls, include_assertions);
     calls
 }
 
-fn walk_call_nodes(source: &[u8], node: tree_sitter::Node, calls: &mut Vec<CallSite>) {
+fn walk_call_nodes(
+    source: &[u8],
+    node: tree_sitter::Node,
+    calls: &mut Vec<CallSite>,
+    include_assertions: bool,
+) {
     match node.kind() {
         "call_expression" | "call" => {
-            extract_call_expression(source, node, calls);
+            extract_call_expression(source, node, calls, include_assertions);
             return;
         }
         "method_invocation" => {
@@ -174,13 +209,38 @@ fn walk_call_nodes(source: &[u8], node: tree_sitter::Node, calls: &mut Vec<CallS
                 });
             }
         }
+        "macro_invocation" if include_assertions => {
+            if is_inside_string(node) {
+                return;
+            }
+            let macro_name = field_text(node, "macro", source)
+                .or_else(|| field_text(node, "name", source))
+                .or_else(|| {
+                    node_text(node, source)
+                        .split('!')
+                        .next()
+                        .and_then(|name| name.rsplit("::").next())
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                })
+                .unwrap_or_default();
+            if is_assertion_builtin(&macro_name) {
+                calls.push(CallSite {
+                    callee: macro_name,
+                    receiver: None,
+                    node_text: node_text(node, source),
+                    line: node.start_position().row,
+                });
+            }
+        }
         "await_expression" | "yield_expression" => {
             let value = node
                 .child_by_field_name("argument")
                 .or_else(|| node.child_by_field_name("value"));
             if let Some(val) = value {
                 if val.kind() == "call_expression" {
-                    extract_call_expression(source, val, calls);
+                    extract_call_expression(source, val, calls, include_assertions);
                 }
             }
         }
@@ -189,7 +249,7 @@ fn walk_call_nodes(source: &[u8], node: tree_sitter::Node, calls: &mut Vec<CallS
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        walk_call_nodes(source, child, calls);
+        walk_call_nodes(source, child, calls, include_assertions);
     }
 }
 
@@ -285,25 +345,139 @@ fn dedup_calls(calls: &mut Vec<CallSite>) {
     calls.retain(|c| seen.insert(c.display_name()));
 }
 
-fn regex_extract_calls(source: &str) -> Vec<CallSite> {
+fn regex_extract_calls(source: &str, include_assertions: bool) -> Vec<CallSite> {
+    let masked = if include_assertions {
+        mask_comments_and_strings(source)
+    } else {
+        source.as_bytes().to_vec()
+    };
+    let scan_source = std::str::from_utf8(&masked).unwrap_or(source);
     let re = regex::Regex::new(r"(?:^|[^.\w])(\w+)\s*\(").unwrap();
     let mut calls = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for cap in re.captures_iter(source) {
+    for cap in re.captures_iter(scan_source) {
         if let Some(name) = cap.get(1) {
             let s = name.as_str().to_string();
             let line = source[..name.start()].lines().count();
-            if seen.insert(s.clone()) && !is_keyword_or_builtin(&s) {
+            if seen.insert(s.clone())
+                && (!is_keyword_or_builtin(&s) || (include_assertions && is_assertion_builtin(&s)))
+            {
+                let node_range = cap.get(0).unwrap();
                 calls.push(CallSite {
                     callee: s,
                     receiver: None,
-                    node_text: cap.get(0).unwrap().as_str().to_string(),
+                    node_text: source
+                        .get(node_range.start()..node_range.end())
+                        .unwrap_or_default()
+                        .to_string(),
                     line,
                 });
             }
         }
     }
     calls
+}
+
+/// Mask strings and comments without changing byte offsets for the fallback
+/// extractor. Tree-sitter already excludes these regions for supported
+/// languages; the fallback needs the same safety property for unknown files.
+fn mask_comments_and_strings(source: &str) -> Vec<u8> {
+    #[derive(Clone, Copy)]
+    enum State {
+        Normal,
+        LineComment,
+        BlockComment,
+        SingleQuoted,
+        DoubleQuoted,
+        BacktickQuoted,
+    }
+
+    let mut bytes = source.as_bytes().to_vec();
+    let mut state = State::Normal;
+    let mut i = 0;
+    while i < bytes.len() {
+        match state {
+            State::Normal => match bytes[i] {
+                b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                    bytes[i] = b' ';
+                    bytes[i + 1] = b' ';
+                    i += 2;
+                    state = State::LineComment;
+                }
+                b'/' if bytes.get(i + 1) == Some(&b'*') => {
+                    bytes[i] = b' ';
+                    bytes[i + 1] = b' ';
+                    i += 2;
+                    state = State::BlockComment;
+                }
+                b'\'' => {
+                    bytes[i] = b' ';
+                    i += 1;
+                    state = State::SingleQuoted;
+                }
+                b'"' => {
+                    bytes[i] = b' ';
+                    i += 1;
+                    state = State::DoubleQuoted;
+                }
+                b'`' => {
+                    bytes[i] = b' ';
+                    i += 1;
+                    state = State::BacktickQuoted;
+                }
+                _ => i += 1,
+            },
+            State::LineComment => {
+                if bytes[i] == b'\n' {
+                    state = State::Normal;
+                    i += 1;
+                } else {
+                    bytes[i] = b' ';
+                    i += 1;
+                }
+            }
+            State::BlockComment => {
+                if bytes[i] == b'*' && bytes.get(i + 1) == Some(&b'/') {
+                    bytes[i] = b' ';
+                    bytes[i + 1] = b' ';
+                    i += 2;
+                    state = State::Normal;
+                } else {
+                    if bytes[i] != b'\n' {
+                        bytes[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+            State::SingleQuoted | State::DoubleQuoted | State::BacktickQuoted => {
+                let quote = match state {
+                    State::SingleQuoted => b'\'',
+                    State::DoubleQuoted => b'"',
+                    State::BacktickQuoted => b'`',
+                    State::Normal | State::LineComment | State::BlockComment => unreachable!(),
+                };
+                if bytes[i] == b'\\' {
+                    bytes[i] = b' ';
+                    if let Some(next) = bytes.get_mut(i + 1) {
+                        if *next != b'\n' {
+                            *next = b' ';
+                        }
+                    }
+                    i += 2;
+                } else if bytes[i] == quote {
+                    bytes[i] = b' ';
+                    i += 1;
+                    state = State::Normal;
+                } else {
+                    if bytes[i] != b'\n' {
+                        bytes[i] = b' ';
+                    }
+                    i += 1;
+                }
+            }
+        }
+    }
+    bytes
 }
 
 fn is_keyword_or_builtin(s: &str) -> bool {
@@ -412,21 +586,74 @@ fn is_keyword_or_builtin(s: &str) -> bool {
     )
 }
 
+fn is_assertion_builtin(s: &str) -> bool {
+    let lower = s.to_lowercase();
+    let base = lower.trim_end_matches('!');
+    base == "assert"
+        || base.starts_with("assert_")
+        || matches!(base, "panic" | "unreachable" | "unimplemented" | "todo")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_regex_fallback() {
-        let calls = regex_extract_calls("unknown_lang_func();");
+        let calls = regex_extract_calls("unknown_lang_func();", false);
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].callee, "unknown_lang_func");
     }
 
     #[test]
     fn test_regex_filters_keywords() {
-        let calls = regex_extract_calls("for (var i = 0; i < 10; i++) {}");
+        let calls = regex_extract_calls("for (var i = 0; i < 10; i++) {}", false);
         assert!(!calls.iter().any(|c| c.callee == "for" || c.callee == "var"));
+    }
+
+    #[test]
+    fn evidence_regex_ignores_comments_and_strings() {
+        let source = "// assert(produce());\nlet text = \"assert(produce())\";\nproduce();";
+        let calls = regex_extract_calls(source, true);
+        assert_eq!(
+            calls.iter().filter(|call| call.callee == "produce").count(),
+            1
+        );
+        assert!(!calls.iter().any(|call| call.callee == "assert"));
+    }
+
+    #[test]
+    fn assertion_builtins_are_opt_in() {
+        let source = "assert(value); produce();";
+        let baseline = regex_extract_calls(source, false);
+        assert!(!baseline.iter().any(|call| call.callee == "assert"));
+
+        let evidence = regex_extract_calls(source, true);
+        assert!(evidence.iter().any(|call| call.callee == "assert"));
+        assert!(evidence.iter().any(|call| call.callee == "produce"));
+        assert!(is_assertion_builtin("assert_eq!"));
+        assert!(is_assertion_builtin("panic!"));
+        assert!(!is_assertion_builtin("assertion_helper"));
+    }
+
+    #[test]
+    fn rust_assertion_macros_are_evidence_only() {
+        let source = "fn test_case() { let value = produce(); assert_eq!(value, true); }";
+        let mut parser = tree_sitter::Parser::new();
+        let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+        parser.set_language(&language).unwrap();
+        let tree = parser.parse(source, None).unwrap();
+
+        let baseline = extract_calls(source, &tree, "rust");
+        assert!(!baseline
+            .iter()
+            .any(|call| call.callee.starts_with("assert")));
+
+        let evidence = extract_calls_with_assertions(source, &tree, "rust");
+        assert!(evidence
+            .iter()
+            .any(|call| call.callee.starts_with("assert")));
+        assert!(evidence.iter().any(|call| call.callee == "produce"));
     }
 
     #[test]

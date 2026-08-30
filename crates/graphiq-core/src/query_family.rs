@@ -172,6 +172,7 @@ const ERROR_SIGNALS: &[&str] = &[
     "error",
     "panic",
     "failed",
+    "fails",
     "failure",
     "deadlock",
     "timeout",
@@ -189,6 +190,17 @@ const ERROR_SIGNALS: &[&str] = &[
     "connection refused",
     "access denied",
     "permission denied",
+    // Security/content-safety diagnostics have the same answer shape as
+    // failure queries: prefer the guard or scanner over a generic memory or
+    // prompt wrapper. Keep these as explicit phrases to avoid classifying
+    // ordinary mentions of `content` or `instruction` as errors.
+    "prompt injection",
+    "injection",
+    "tool directive",
+    "dangerous shell",
+    "malicious",
+    "instruction-shaped",
+    "unsafe content",
 ];
 
 pub fn classify_query_family(query: &str) -> QueryFamily {
@@ -334,11 +346,14 @@ fn is_relationship(lower: &str) -> bool {
         "who calls ",
         "what invokes ",
         "who invokes ",
+        "what uses ",
+        "who uses ",
         "callers of ",
         "callees of ",
         "what connects ",
         "what links ",
         "relationship between ",
+        "depends on ",
         "dependents of ",
         "dependencies of ",
     ];
@@ -349,6 +364,9 @@ fn is_relationship(lower: &str) -> bool {
     }
     if lower.starts_with("how does ") && (lower.contains(" connect ") || lower.contains(" relate "))
     {
+        return true;
+    }
+    if lower.starts_with("what does ") && (lower.contains(" invoke ") || lower.contains(" call ")) {
         return true;
     }
     false
@@ -498,6 +516,10 @@ mod tests {
         );
         assert_eq!(
             classify_query_family("failed to start daemon"),
+            QueryFamily::ErrorDebug
+        );
+        assert_eq!(
+            classify_query_family("reject prompt injection hidden in memory content"),
             QueryFamily::ErrorDebug
         );
     }

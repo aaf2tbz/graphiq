@@ -12,7 +12,7 @@
 //! `compute_numeric_bridges`, `compute_deep_graph`, and `generate_search_hints`
 //! to populate all derived data.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -34,16 +34,49 @@ use crate::symbol::{SymbolBuilder, SymbolKind};
 /// compute all derived artifacts.
 pub struct Indexer<'a> {
     db: &'a GraphDb,
+    executable_evidence: bool,
 }
 
 struct FilePlan {
     existing: Option<crate::symbol::SourceFile>,
     changed: bool,
+    evidence_candidate: bool,
 }
 
 struct ParsedFile {
     result: ParseResult,
     call_sites: Vec<calls::CallSite>,
+    evidence_call_sites: Vec<calls::CallSite>,
+}
+
+#[derive(Clone)]
+struct SymbolRefInfo {
+    name: String,
+    file_path: String,
+    kind: SymbolKind,
+    metadata: serde_json::Value,
+}
+
+struct PendingTestEvidence {
+    test_id: i64,
+    callee_name: String,
+    receiver: Option<String>,
+    node_text: String,
+    line: usize,
+    local_name_to_ids: Arc<HashMap<String, Vec<i64>>>,
+}
+
+#[derive(Default)]
+struct TestEvidenceAggregate {
+    calls: Vec<PendingTestEvidenceCall>,
+    resolutions: BTreeSet<String>,
+}
+
+struct PendingTestEvidenceCall {
+    callee_name: String,
+    receiver: Option<String>,
+    node_text: String,
+    line: usize,
 }
 
 struct PreservedInboundEdge {
@@ -61,13 +94,56 @@ impl ParsedFile {
         Self {
             result: ParseResult::empty(),
             call_sites: Vec::new(),
+            evidence_call_sites: Vec::new(),
         }
     }
 }
 
 impl<'a> Indexer<'a> {
     pub fn new(db: &'a GraphDb) -> Self {
-        Self { db }
+        Self {
+            db,
+            executable_evidence: false,
+        }
+    }
+
+    /// Enable the isolated Executable Evidence experiment.
+    ///
+    /// This records test-to-production `Tests` edges with provenance metadata.
+    /// The mode is deliberately opt-in and should use a separate database; the
+    /// default indexer remains the speed-only baseline.
+    pub fn with_executable_evidence(mut self, enabled: bool) -> Self {
+        self.executable_evidence = enabled;
+        self
+    }
+
+    fn validate_executable_evidence_mode(&self) -> Result<(), Box<dyn std::error::Error>> {
+        const META_KEY: &str = "feature.executable_evidence";
+        let requested = if self.executable_evidence {
+            "enabled"
+        } else {
+            "disabled"
+        };
+
+        if let Some(existing) = self.db.get_meta(META_KEY)? {
+            if existing != requested {
+                return Err(format!(
+                    "index feature mismatch: executable evidence is {existing}, requested {requested}; use a separate --db for the experiment"
+                )
+                .into());
+            }
+        } else {
+            let stats = self.db.stats()?;
+            if self.executable_evidence && (stats.files > 0 || stats.symbols > 0 || stats.edges > 0)
+            {
+                return Err(
+                    "cannot enable executable evidence on an existing index; use a separate --db or --force-reindex"
+                        .into(),
+                );
+            }
+            self.db.set_meta(META_KEY, requested)?;
+        }
+        Ok(())
     }
 
     fn resolve_import_to_file(
@@ -153,6 +229,8 @@ impl<'a> Indexer<'a> {
         let mut stats = IndexStats::default();
         let mut files_deleted = 0usize;
 
+        self.validate_executable_evidence_mode()?;
+
         if prune_missing {
             let current_paths: HashSet<String> = files
                 .iter()
@@ -205,6 +283,10 @@ impl<'a> Indexer<'a> {
         let mut preserved_inbound: Vec<PreservedInboundEdge> = Vec::new();
         let mut pending_calls: Vec<PendingCallEdge> = Vec::new();
         let mut pending_imports: Vec<PendingImportEdge> = Vec::new();
+        let mut pending_test_evidence: Vec<PendingTestEvidence> = Vec::new();
+        let mut test_assertions: HashMap<i64, Vec<calls::CallSite>> = HashMap::new();
+        let mut test_symbol_ids: HashSet<i64> = HashSet::new();
+        let mut symbol_refs: HashMap<i64, SymbolRefInfo> = HashMap::new();
 
         // Determine which files need parsing before entering the parallel
         // parse phase. This keeps all SQLite access on the single writer
@@ -219,15 +301,36 @@ impl<'a> Indexer<'a> {
                     .as_ref()
                     .map(|f| f.content_hash != *hash)
                     .unwrap_or(true);
-                Ok::<FilePlan, crate::db::DbError>(FilePlan { existing, changed })
+                let evidence_candidate = self.executable_evidence
+                    && (crate::test_evidence::is_test_path(&path_str)
+                        || existing
+                            .as_ref()
+                            .map(|file| {
+                                self.db.symbols_by_file(file.id).map(|symbols| {
+                                    symbols.iter().any(|symbol| {
+                                        crate::test_evidence::is_test_symbol_name(&symbol.name)
+                                    })
+                                })
+                            })
+                            .transpose()?
+                            .unwrap_or(false));
+                Ok::<FilePlan, crate::db::DbError>(FilePlan {
+                    existing,
+                    changed,
+                    evidence_candidate,
+                })
             })
             .collect::<Result<_, _>>()?;
 
+        let executable_evidence = self.executable_evidence;
         let parsed_files: Vec<ParsedFile> = file_data
             .par_iter()
             .zip(file_plans.par_iter())
             .map(|((rel_path, source, lang, _, _, _), plan)| {
-                if !plan.changed || is_data_file(rel_path, source.len() as u64) {
+                let parse_for_evidence = executable_evidence && plan.evidence_candidate;
+                if (!plan.changed && !parse_for_evidence)
+                    || is_data_file(rel_path, source.len() as u64)
+                {
                     return ParsedFile::empty();
                 }
 
@@ -239,10 +342,34 @@ impl<'a> Indexer<'a> {
                 // compact while preserving the existing call-site behavior.
                 let call_sites = result
                     .tree
-                    .take()
-                    .map(|tree| calls::extract_calls(source, &tree, lang.as_str()))
+                    .as_ref()
+                    .map(|tree| calls::extract_calls(source, tree, lang.as_str()))
                     .unwrap_or_default();
-                ParsedFile { result, call_sites }
+                let evidence_candidate = executable_evidence
+                    && (plan.evidence_candidate
+                        || result.symbols.iter().any(|symbol| {
+                            symbol
+                                .name
+                                .as_deref()
+                                .is_some_and(crate::test_evidence::is_test_symbol_name)
+                        }));
+                let evidence_call_sites = if evidence_candidate {
+                    result
+                        .tree
+                        .as_ref()
+                        .map(|tree| {
+                            calls::extract_calls_with_assertions(source, tree, lang.as_str())
+                        })
+                        .unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                result.tree = None;
+                ParsedFile {
+                    result,
+                    call_sites,
+                    evidence_call_sites,
+                }
             })
             .collect();
 
@@ -255,17 +382,56 @@ impl<'a> Indexer<'a> {
 
             if let Some(ref f) = plan.existing {
                 if !plan.changed {
-                    for sym in self.db.symbols_by_file(f.id)? {
+                    let existing_symbols = self.db.symbols_by_file(f.id)?;
+                    let mut local_name_to_id = HashMap::new();
+                    let mut local_name_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
+                    for sym in existing_symbols {
+                        local_name_to_id.insert(sym.name.clone(), sym.id);
+                        local_name_to_ids
+                            .entry(sym.name.clone())
+                            .or_default()
+                            .push(sym.id);
                         global_name_to_ids
                             .entry(sym.name.clone())
                             .or_default()
                             .push(sym.id);
+                        symbol_refs.insert(
+                            sym.id,
+                            SymbolRefInfo {
+                                name: sym.name.clone(),
+                                file_path: path_str.to_string(),
+                                kind: sym.kind,
+                                metadata: sym.metadata.clone(),
+                            },
+                        );
+                        if self.executable_evidence
+                            && crate::test_evidence::is_test_symbol(&path_str, &sym.name)
+                        {
+                            test_symbol_ids.insert(sym.id);
+                        }
+                    }
+                    if self.executable_evidence && plan.evidence_candidate {
+                        collect_test_evidence_calls(
+                            &parsed_file.evidence_call_sites,
+                            &parsed_file.result.symbols,
+                            Arc::new(local_name_to_id),
+                            Arc::new(local_name_to_ids),
+                            &test_symbol_ids,
+                            &mut pending_test_evidence,
+                            &mut test_assertions,
+                        );
                     }
                     continue;
                 }
                 for (source_id, target_name, target_kind, kind, weight, metadata) in
                     self.db.incoming_edges_for_file(f.id)?
                 {
+                    if self.executable_evidence
+                        && kind == EdgeKind::Tests
+                        && crate::test_evidence::is_generated_edge(&metadata)
+                    {
+                        continue;
+                    }
                     preserved_inbound.push(PreservedInboundEdge {
                         source_id,
                         target_file_id: f.id,
@@ -292,6 +458,7 @@ impl<'a> Indexer<'a> {
             let result = &parsed_file.result;
 
             let mut file_name_to_id: HashMap<String, i64> = HashMap::new();
+            let mut file_name_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
             let mut containers: Vec<(String, SymbolKind, i64)> = Vec::new();
 
             for sym in &result.symbols {
@@ -319,10 +486,28 @@ impl<'a> Indexer<'a> {
                 if let Ok(id) = self.db.insert_symbol(&built) {
                     stats.symbols_indexed += 1;
                     file_name_to_id.insert(sym_name.clone(), id);
+                    file_name_to_ids
+                        .entry(sym_name.clone())
+                        .or_default()
+                        .push(id);
                     global_name_to_ids
                         .entry(sym_name.clone())
                         .or_default()
                         .push(id);
+                    symbol_refs.insert(
+                        id,
+                        SymbolRefInfo {
+                            name: sym_name.clone(),
+                            file_path: path_str.to_string(),
+                            kind: sym.kind,
+                            metadata: sym.metadata.clone(),
+                        },
+                    );
+                    if self.executable_evidence
+                        && crate::test_evidence::is_test_symbol(&path_str, &sym_name)
+                    {
+                        test_symbol_ids.insert(id);
+                    }
 
                     if is_container_kind(sym.kind) {
                         containers.push((sym_name.clone(), sym.kind, id));
@@ -345,6 +530,7 @@ impl<'a> Indexer<'a> {
             // per-file lookup. Sharing it avoids cloning the complete map for
             // every extracted relation/call/import.
             let file_name_to_id = Arc::new(file_name_to_id);
+            let file_name_to_ids = Arc::new(file_name_to_ids);
 
             for rel in &result.structural_rels {
                 let edge_kind = match rel.rel_type.as_str() {
@@ -371,6 +557,18 @@ impl<'a> Indexer<'a> {
                     callee_name: cs.callee.clone(),
                     file_name_to_id: Arc::clone(&file_name_to_id),
                 });
+            }
+
+            if self.executable_evidence {
+                collect_test_evidence_calls(
+                    &parsed_file.evidence_call_sites,
+                    &parsed_file.result.symbols,
+                    Arc::clone(&file_name_to_id),
+                    Arc::clone(&file_name_to_ids),
+                    &test_symbol_ids,
+                    &mut pending_test_evidence,
+                    &mut test_assertions,
+                );
             }
 
             for imp in &result.imports {
@@ -438,6 +636,21 @@ impl<'a> Indexer<'a> {
             return Ok(stats);
         }
 
+        // Executable evidence is a derived relation. When the experiment is
+        // enabled, rebuild all of its observations whenever the project graph
+        // changes so newly resolvable calls and removed calls cannot leave
+        // stale evidence behind. This work is completely outside the default
+        // speed-only indexing path.
+        if self.executable_evidence {
+            let removed = self.db.delete_edges_with_metadata_source(
+                EdgeKind::Tests,
+                crate::test_evidence::EDGE_SOURCE,
+            )?;
+            if removed > 0 {
+                eprintln!("  executable evidence: removed {} stale edges", removed);
+            }
+        }
+
         phase_start = Instant::now();
 
         for (container_id, member_id) in &pending_contains {
@@ -494,6 +707,58 @@ impl<'a> Indexer<'a> {
         }
         stats.edges_inserted += call_edges_inserted;
         stats.calls_extracted = pending_calls.len();
+
+        let mut evidence_by_pair: BTreeMap<(i64, i64), TestEvidenceAggregate> = BTreeMap::new();
+        for pending in pending_test_evidence {
+            let Some((target_id, resolution)) = resolve_test_target(
+                &pending.callee_name,
+                pending.receiver.as_deref(),
+                &pending.local_name_to_ids,
+                &global_name_to_ids,
+                &symbol_refs,
+            ) else {
+                continue;
+            };
+
+            if pending.test_id == target_id {
+                continue;
+            }
+
+            let evidence = evidence_by_pair
+                .entry((pending.test_id, target_id))
+                .or_default();
+            evidence.calls.push(PendingTestEvidenceCall {
+                callee_name: pending.callee_name,
+                receiver: pending.receiver,
+                node_text: pending.node_text,
+                line: pending.line,
+            });
+            evidence.resolutions.insert(resolution.to_string());
+        }
+
+        let mut executable_evidence_edges = 0usize;
+        for ((test_id, target_id), evidence) in evidence_by_pair {
+            let Some(test_info) = symbol_refs.get(&test_id) else {
+                continue;
+            };
+            let metadata =
+                test_evidence_metadata(test_info, &evidence, test_assertions.get(&test_id));
+            self.db.insert_edge(
+                test_id,
+                target_id,
+                EdgeKind::Tests,
+                EdgeKind::Tests.path_weight(),
+                metadata,
+            )?;
+            executable_evidence_edges += 1;
+        }
+        stats.executable_evidence_edges = executable_evidence_edges;
+        if self.executable_evidence {
+            eprintln!(
+                "  phase executable evidence: {} test edges",
+                executable_evidence_edges
+            );
+        }
 
         let mut import_edges_inserted = 0;
         for pi in &pending_imports {
@@ -1377,6 +1642,230 @@ fn is_embed_test_path(path: &str) -> bool {
     patterns.iter().any(|p| lower.contains(p))
 }
 
+fn collect_test_evidence_calls(
+    call_sites: &[calls::CallSite],
+    symbols: &[crate::chunker::ParsedSymbol],
+    local_name_to_id: Arc<HashMap<String, i64>>,
+    local_name_to_ids: Arc<HashMap<String, Vec<i64>>>,
+    test_symbol_ids: &HashSet<i64>,
+    pending: &mut Vec<PendingTestEvidence>,
+    assertions: &mut HashMap<i64, Vec<calls::CallSite>>,
+) {
+    for call in call_sites {
+        let Some(caller_id) = find_enclosing_symbol(&local_name_to_id, symbols, call.line) else {
+            continue;
+        };
+        if !test_symbol_ids.contains(&caller_id) {
+            continue;
+        }
+
+        if crate::test_evidence::is_assertion_call(call) {
+            assertions.entry(caller_id).or_default().push(call.clone());
+        } else {
+            pending.push(PendingTestEvidence {
+                test_id: caller_id,
+                callee_name: call.callee.clone(),
+                receiver: call.receiver.clone(),
+                node_text: call.node_text.clone(),
+                line: call.line,
+                local_name_to_ids: Arc::clone(&local_name_to_ids),
+            });
+        }
+    }
+}
+
+fn is_callable_test_target(info: &SymbolRefInfo) -> bool {
+    !crate::test_evidence::is_test_symbol(&info.file_path, &info.name)
+        && !matches!(
+            info.kind,
+            SymbolKind::Import
+                | SymbolKind::Export
+                | SymbolKind::Section
+                | SymbolKind::Field
+                | SymbolKind::Constant
+                | SymbolKind::TypeAlias
+                | SymbolKind::Module
+                | SymbolKind::Namespace
+        )
+}
+
+fn receiver_matches(info: &SymbolRefInfo, receiver: &str) -> bool {
+    let wanted = receiver
+        .trim()
+        .trim_start_matches('&')
+        .trim_start_matches('*')
+        .to_lowercase();
+    if wanted.is_empty() {
+        return false;
+    }
+
+    let Some(declared) = info
+        .metadata
+        .get("receiver")
+        .and_then(serde_json::Value::as_str)
+    else {
+        return false;
+    };
+
+    declared
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .filter(|token| !token.is_empty())
+        .any(|token| token.eq_ignore_ascii_case(&wanted))
+}
+
+fn resolve_test_target(
+    callee_name: &str,
+    receiver: Option<&str>,
+    local_name_to_ids: &HashMap<String, Vec<i64>>,
+    global_name_to_ids: &HashMap<String, Vec<i64>>,
+    symbol_refs: &HashMap<i64, SymbolRefInfo>,
+) -> Option<(i64, &'static str)> {
+    if callee_name.is_empty() {
+        return None;
+    }
+
+    let callable = |id: &i64| {
+        symbol_refs
+            .get(id)
+            .map(is_callable_test_target)
+            .unwrap_or(false)
+    };
+
+    let local: Vec<i64> = local_name_to_ids
+        .get(callee_name)
+        .into_iter()
+        .flatten()
+        .filter(|id| callable(id))
+        .copied()
+        .collect();
+
+    let global: Vec<i64> = global_name_to_ids
+        .get(callee_name)
+        .into_iter()
+        .flatten()
+        .filter(|id| callable(id))
+        .copied()
+        .collect();
+
+    if let Some(receiver) = receiver {
+        // A receiver-qualified call is only evidence when the receiver can be
+        // matched to exactly one declared method. Falling back to a unique
+        // name would silently attach calls such as `client.Close()` to an
+        // unrelated `Close` implementation from another package.
+        let local_matches: Vec<i64> = local
+            .iter()
+            .filter(|id| {
+                symbol_refs
+                    .get(id)
+                    .map(|info| receiver_matches(info, receiver))
+                    .unwrap_or(false)
+            })
+            .copied()
+            .collect();
+        if local_matches.len() == 1 {
+            return Some((local_matches[0], "same_file_receiver"));
+        }
+        if local_matches.len() > 1 {
+            return None;
+        }
+
+        let global_matches: Vec<i64> = global
+            .iter()
+            .filter(|id| {
+                symbol_refs
+                    .get(id)
+                    .map(|info| receiver_matches(info, receiver))
+                    .unwrap_or(false)
+            })
+            .copied()
+            .collect();
+        if global_matches.len() == 1 {
+            return Some((global_matches[0], "global_receiver"));
+        }
+        return None;
+    }
+
+    if local.len() == 1 {
+        return Some((local[0], "same_file"));
+    }
+    if !local.is_empty() {
+        return None;
+    }
+    if global.len() == 1 {
+        return Some((global[0], "unique_global"));
+    }
+
+    None
+}
+
+fn short_evidence_text(text: &str) -> String {
+    const MAX_CHARS: usize = 240;
+    let mut shortened: String = text.chars().take(MAX_CHARS).collect();
+    if text.chars().count() > MAX_CHARS {
+        shortened.push('…');
+    }
+    shortened
+}
+
+fn test_evidence_metadata(
+    test_info: &SymbolRefInfo,
+    evidence: &TestEvidenceAggregate,
+    assertions: Option<&Vec<calls::CallSite>>,
+) -> serde_json::Value {
+    let mut calls: Vec<_> = evidence.calls.iter().collect();
+    calls.sort_by(|a, b| {
+        a.line
+            .cmp(&b.line)
+            .then_with(|| a.callee_name.cmp(&b.callee_name))
+            .then_with(|| a.node_text.cmp(&b.node_text))
+    });
+    let call_records: Vec<serde_json::Value> = calls
+        .iter()
+        .take(32)
+        .map(|call| {
+            serde_json::json!({
+                "callee": call.callee_name,
+                "receiver": call.receiver,
+                "line": call.line + 1,
+                "source": short_evidence_text(&call.node_text),
+            })
+        })
+        .collect();
+
+    let assertion_count = assertions.map_or(0, |calls| calls.len());
+    let mut assertion_calls: Vec<&calls::CallSite> = assertions.into_iter().flatten().collect();
+    assertion_calls.sort_by(|a, b| {
+        a.line
+            .cmp(&b.line)
+            .then_with(|| a.callee.cmp(&b.callee))
+            .then_with(|| a.node_text.cmp(&b.node_text))
+    });
+    let assertion_records: Vec<serde_json::Value> = assertion_calls
+        .into_iter()
+        .take(32)
+        .map(|assertion| {
+            serde_json::json!({
+                "callee": assertion.callee,
+                "receiver": assertion.receiver,
+                "line": assertion.line + 1,
+                "source": short_evidence_text(&assertion.node_text),
+            })
+        })
+        .collect();
+
+    serde_json::json!({
+        "source": crate::test_evidence::EDGE_SOURCE,
+        "version": 1,
+        "test_file": test_info.file_path,
+        "test_symbol": test_info.name,
+        "resolution": evidence.resolutions.iter().collect::<Vec<_>>(),
+        "call_count": evidence.calls.len(),
+        "calls": call_records,
+        "assertion_count": assertion_count,
+        "assertions": assertion_records,
+    })
+}
+
 fn resolve_symbol(name_map: &HashMap<String, Vec<i64>>, name: &str) -> Option<i64> {
     name_map.get(name).and_then(|ids| ids.first().copied())
 }
@@ -1487,6 +1976,7 @@ pub struct IndexStats {
     pub rels_extracted: usize,
     pub calls_extracted: usize,
     pub edges_inserted: usize,
+    pub executable_evidence_edges: usize,
 }
 
 fn generate_path_variants(module_path: &str) -> Vec<String> {
@@ -2037,6 +2527,295 @@ function formatName(name: string): string {
             source.name == "greet" && target.name == "formatName"
         });
         assert!(has_greet_to_format, "greet should call formatName");
+    }
+
+    #[test]
+    fn test_executable_evidence_is_opt_in_and_records_observations() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("src/service.ts"),
+            "export function produce(): boolean { return true; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("src/service.test.ts"),
+            "function testService(): void { const value = produce(); expect(value).toBe(true); }\n",
+        )
+        .unwrap();
+
+        let baseline_db = GraphDb::open_in_memory().unwrap();
+        Indexer::new(&baseline_db)
+            .index_project(tmp.path())
+            .unwrap();
+        assert!(baseline_db
+            .edges_by_kind(EdgeKind::Tests, 100)
+            .unwrap()
+            .is_empty());
+
+        let evidence_db = GraphDb::open_in_memory().unwrap();
+        let stats = Indexer::new(&evidence_db)
+            .with_executable_evidence(true)
+            .index_project(tmp.path())
+            .unwrap();
+
+        assert_eq!(stats.executable_evidence_edges, 1);
+        let edges = evidence_db.edges_by_kind(EdgeKind::Tests, 100).unwrap();
+        assert_eq!(edges.len(), 1);
+        let source = evidence_db.get_symbol(edges[0].source_id).unwrap().unwrap();
+        let target = evidence_db.get_symbol(edges[0].target_id).unwrap().unwrap();
+        assert_eq!(source.name, "testService");
+        assert_eq!(target.name, "produce");
+        assert_eq!(
+            edges[0].metadata.get("source").and_then(|v| v.as_str()),
+            Some(crate::test_evidence::EDGE_SOURCE)
+        );
+        assert_eq!(
+            edges[0].metadata.get("test_file").and_then(|v| v.as_str()),
+            Some("src/service.test.ts")
+        );
+        assert_eq!(
+            edges[0]
+                .metadata
+                .get("resolution")
+                .and_then(|v| v.as_array())
+                .and_then(|v| v.first())
+                .and_then(|v| v.as_str()),
+            Some("unique_global")
+        );
+        assert_eq!(
+            edges[0].metadata.get("call_count").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        assert_eq!(
+            edges[0]
+                .metadata
+                .get("assertion_count")
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn test_executable_evidence_does_not_guess_ambiguous_targets() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(
+            tmp.path().join("src/one.ts"),
+            "export function produce(): boolean { return true; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("src/two.ts"),
+            "export function produce(): boolean { return false; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("src/service.test.ts"),
+            "function testService(): void { produce(); }\n",
+        )
+        .unwrap();
+
+        let db = GraphDb::open_in_memory().unwrap();
+        Indexer::new(&db)
+            .with_executable_evidence(true)
+            .index_project(tmp.path())
+            .unwrap();
+
+        assert!(db.edges_by_kind(EdgeKind::Tests, 100).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_executable_evidence_uses_receiver_to_disambiguate_methods() {
+        let mut refs = HashMap::new();
+        refs.insert(
+            1,
+            SymbolRefInfo {
+                name: "Close".into(),
+                file_path: "src/client.go".into(),
+                kind: SymbolKind::Method,
+                metadata: serde_json::json!({"receiver": "(c *Client)"}),
+            },
+        );
+        refs.insert(
+            2,
+            SymbolRefInfo {
+                name: "Close".into(),
+                file_path: "src/server.go".into(),
+                kind: SymbolKind::Method,
+                metadata: serde_json::json!({"receiver": "(s *Server)"}),
+            },
+        );
+        let mut global = HashMap::new();
+        global.insert("Close".into(), vec![1, 2]);
+
+        assert_eq!(
+            resolve_test_target("Close", Some("client"), &HashMap::new(), &global, &refs),
+            Some((1, "global_receiver"))
+        );
+        assert_eq!(
+            resolve_test_target("Close", Some("unknown"), &HashMap::new(), &global, &refs),
+            None
+        );
+    }
+
+    #[test]
+    fn test_executable_evidence_aggregates_repeated_calls() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("service.ts"),
+            "function produce(): boolean { return true; }\nfunction TestProduce(): void { produce(); produce(); assert(produce()); }\n",
+        )
+        .unwrap();
+
+        let db = GraphDb::open_in_memory().unwrap();
+        Indexer::new(&db)
+            .with_executable_evidence(true)
+            .index_project(tmp.path())
+            .unwrap();
+
+        let edges = db.edges_by_kind(EdgeKind::Tests, 100).unwrap();
+        assert_eq!(edges.len(), 1);
+        assert_eq!(
+            edges[0].metadata.get("call_count").and_then(|v| v.as_u64()),
+            Some(3)
+        );
+        assert_eq!(
+            edges[0]
+                .metadata
+                .get("assertion_count")
+                .and_then(|v| v.as_u64()),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn test_executable_evidence_does_not_add_assertion_call_edges() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("service.ts"),
+            "function assert(): void {}\nfunction produce(): boolean { return true; }\nfunction TestProduce(): void { assert(); produce(); }\n",
+        )
+        .unwrap();
+
+        let baseline_db = GraphDb::open_in_memory().unwrap();
+        Indexer::new(&baseline_db)
+            .index_project(tmp.path())
+            .unwrap();
+        let evidence_db = GraphDb::open_in_memory().unwrap();
+        Indexer::new(&evidence_db)
+            .with_executable_evidence(true)
+            .index_project(tmp.path())
+            .unwrap();
+
+        let call_names = |db: &GraphDb| {
+            let mut names = db
+                .edges_by_kind(EdgeKind::Calls, 100)
+                .unwrap()
+                .into_iter()
+                .map(|edge| db.get_symbol(edge.target_id).unwrap().unwrap().name)
+                .collect::<Vec<_>>();
+            names.sort_unstable();
+            names
+        };
+        assert_eq!(call_names(&baseline_db), call_names(&evidence_db));
+    }
+
+    #[test]
+    fn test_executable_evidence_rebuilds_when_resolution_becomes_ambiguous() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(
+            tmp.path().join("service.ts"),
+            "export function produce(): boolean { return true; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("service.test.ts"),
+            "function testService(): void { produce(); }\n",
+        )
+        .unwrap();
+
+        let db = GraphDb::open_in_memory().unwrap();
+        let indexer = Indexer::new(&db).with_executable_evidence(true);
+        indexer.index_project(tmp.path()).unwrap();
+        assert_eq!(db.edges_by_kind(EdgeKind::Tests, 100).unwrap().len(), 1);
+
+        std::fs::write(
+            tmp.path().join("other.ts"),
+            "export function produce(): boolean { return false; }\n",
+        )
+        .unwrap();
+        indexer.index_project(tmp.path()).unwrap();
+        assert!(db.edges_by_kind(EdgeKind::Tests, 100).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_executable_evidence_rebuilds_after_target_change() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("service.ts");
+        std::fs::write(
+            &target,
+            "export function produce(): boolean { return true; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("service.test.ts"),
+            "function testService(): void { produce(); }\n",
+        )
+        .unwrap();
+
+        let db = GraphDb::open_in_memory().unwrap();
+        let indexer = Indexer::new(&db).with_executable_evidence(true);
+        indexer.index_project(tmp.path()).unwrap();
+        let first = db.edges_by_kind(EdgeKind::Tests, 100).unwrap();
+        assert_eq!(first.len(), 1);
+
+        std::fs::write(
+            &target,
+            "export function produce(): boolean { return false; }\n",
+        )
+        .unwrap();
+        indexer.index_project(tmp.path()).unwrap();
+
+        let second = db.edges_by_kind(EdgeKind::Tests, 100).unwrap();
+        assert_eq!(second.len(), 1);
+        let second_target = db.get_symbol(second[0].target_id).unwrap().unwrap();
+        assert_eq!(second_target.name, "produce");
+        assert!(second_target.source.contains("return false"));
+
+        std::fs::write(
+            tmp.path().join("service.test.ts"),
+            "function testService(): void { expect(true).toBe(true); }\n",
+        )
+        .unwrap();
+        indexer.index_project(tmp.path()).unwrap();
+        assert!(db.edges_by_kind(EdgeKind::Tests, 100).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_executable_evidence_requires_a_separate_index_mode() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("service.ts"), "function service() {}\n").unwrap();
+
+        let db = GraphDb::open_in_memory().unwrap();
+        Indexer::new(&db).index_project(tmp.path()).unwrap();
+        let error = Indexer::new(&db)
+            .with_executable_evidence(true)
+            .index_project(tmp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("separate --db"));
+
+        let evidence_db = GraphDb::open_in_memory().unwrap();
+        Indexer::new(&evidence_db)
+            .with_executable_evidence(true)
+            .index_project(tmp.path())
+            .unwrap();
+        let error = Indexer::new(&evidence_db)
+            .index_project(tmp.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("separate --db"));
     }
 
     #[test]

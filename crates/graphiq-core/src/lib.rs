@@ -88,6 +88,7 @@ pub mod seeds;
 pub mod structural_alias;
 pub mod subsystems;
 pub mod symbol;
+pub mod test_evidence;
 pub mod tokenize;
 pub mod trace;
 

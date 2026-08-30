@@ -1,0 +1,61 @@
+[
+  {"id":"mrr-fp-01","query":"platform/core/src/search.ts hybrid vector keyword retrieval","category":"file-path","expected_symbol":"hybridSearch","expected_file":"platform/core/src/search.ts"},
+  {"id":"mrr-fp-02","query":"platform/daemon/src/knowledge-graph.ts canonical entity resolution","category":"file-path","expected_symbol":"resolveNamedEntity","expected_file":"platform/daemon/src/knowledge-graph.ts"},
+  {"id":"mrr-fp-03","query":"platform/daemon/src/auth/middleware.ts bearer authentication middleware","category":"file-path","expected_symbol":"createAuthMiddleware","expected_file":"platform/daemon/src/auth/middleware.ts"},
+  {"id":"mrr-fp-04","query":"platform/daemon/src/connectors/filesystem.ts incremental document synchronization","category":"file-path","expected_symbol":"syncIncremental","expected_file":"platform/daemon/src/connectors/filesystem.ts"},
+  {"id":"mrr-fp-05","query":"surfaces/cli/src/features/setup-plan.ts validate setup plan","category":"file-path","expected_symbol":"parseSetupPlan","expected_file":"surfaces/cli/src/features/setup-plan.ts"},
+
+  {"id":"mrr-exact-01","query":"buildFtsMatchQuery","category":"symbol-exact","expected_symbol":"buildFtsMatchQuery","expected_file":"platform/core/src/search.ts"},
+  {"id":"mrr-exact-02","query":"getGraphBoostIds","category":"symbol-exact","expected_symbol":"getGraphBoostIds","expected_file":"platform/daemon/src/pipeline/graph-search.ts"},
+  {"id":"mrr-exact-03","query":"scanMemoryContent","category":"symbol-exact","expected_symbol":"scanMemoryContent","expected_file":"platform/core/src/memory-content-safety.ts"},
+  {"id":"mrr-exact-04","query":"resolveAgentMemoryPolicy","category":"symbol-exact","expected_symbol":"resolveAgentMemoryPolicy","expected_file":"platform/core/src/agents.ts"},
+  {"id":"mrr-exact-05","query":"resolveRoutingDecision","category":"symbol-exact","expected_symbol":"resolveRoutingDecision","expected_file":"platform/core/src/routing.ts"},
+
+  {"id":"mrr-partial-01","query":"hybridS","category":"symbol-partial","expected_symbol":"hybridSearch","expected_file":"platform/core/src/search.ts"},
+  {"id":"mrr-partial-02","query":"resolveNamedE","category":"symbol-partial","expected_symbol":"resolveNamedEntity","expected_file":"platform/daemon/src/knowledge-graph.ts"},
+  {"id":"mrr-partial-03","query":"chunkMarkdownH","category":"symbol-partial","expected_symbol":"chunkMarkdownHierarchically","expected_file":"platform/core/src/import.ts"},
+  {"id":"mrr-partial-04","query":"createAuthM","category":"symbol-partial","expected_symbol":"createAuthMiddleware","expected_file":"platform/daemon/src/auth/middleware.ts"},
+  {"id":"mrr-partial-05","query":"parseRecallP","category":"symbol-partial","expected_symbol":"parseRecallPayload","expected_file":"platform/core/src/recall.ts"},
+
+  {"id":"mrr-desc-01","query":"combine vector and BM25 retrieval with a configurable blend","category":"nl-descriptive","expected_symbol":"hybridSearch","expected_file":"platform/core/src/search.ts"},
+  {"id":"mrr-desc-02","query":"choose a canonical knowledge entity before aliases and prefix matches","category":"nl-descriptive","expected_symbol":"resolveNamedEntity","expected_file":"platform/daemon/src/knowledge-graph.ts"},
+  {"id":"mrr-desc-03","query":"walk a source directory and synchronize changed documents incrementally","category":"nl-descriptive","expected_symbol":"syncIncremental","expected_file":"platform/daemon/src/connectors/filesystem.ts"},
+  {"id":"mrr-desc-04","query":"normalize memory text and return a stable content hash","category":"nl-descriptive","expected_symbol":"tsNormalizeAndHashContent","expected_file":"platform/daemon/src/content-normalization.ts"},
+  {"id":"mrr-desc-05","query":"lease the oldest pending job and mark it as in progress","category":"nl-descriptive","expected_symbol":"leaseJob","expected_file":"platform/core/src/database.ts"},
+
+  {"id":"mrr-medium-01","query":"enforce a token budget while selecting context for a prompt","category":"nl-medium","expected_symbol":"applyTokenBudget","expected_file":"platform/daemon/src/context-budget.ts"},
+  {"id":"mrr-medium-02","query":"split markdown into chunks while preserving section headers","category":"nl-medium","expected_symbol":"chunkMarkdownHierarchically","expected_file":"platform/core/src/import.ts"},
+  {"id":"mrr-medium-03","query":"choose an inference target from workload and routing policy","category":"nl-medium","expected_symbol":"resolveRoutingDecision","expected_file":"platform/core/src/routing.ts"},
+  {"id":"mrr-medium-04","query":"recover a deleted memory and append a recovery history event","category":"nl-medium","expected_symbol":"recoverMemory","expected_file":"platform/core/src/database.ts"},
+  {"id":"mrr-medium-05","query":"expand memory recall through entities and one graph hop","category":"nl-medium","expected_symbol":"getGraphBoostIds","expected_file":"platform/daemon/src/pipeline/graph-search.ts"},
+
+  {"id":"mrr-error-01","query":"reject prompt injection and tool directives hidden in memory content","category":"error-debug","expected_symbol":"scanMemoryContent","expected_file":"platform/core/src/memory-content-safety.ts"},
+  {"id":"mrr-error-02","query":"verify a signed bearer token and reject expired claims","category":"error-debug","expected_symbol":"verifyToken","expected_file":"platform/daemon/src/auth/tokens.ts"},
+  {"id":"mrr-error-03","query":"deny a request when its role lacks the required permission","category":"error-debug","expected_symbol":"checkPermission","expected_file":"platform/daemon/src/auth/policy.ts"},
+  {"id":"mrr-error-04","query":"retry daemon socket binding after an address conflict","category":"error-debug","expected_symbol":"bindWithRetry","expected_file":"platform/daemon/src/bind-with-retry.ts"},
+  {"id":"mrr-error-05","query":"fall back to a bounded recent cosine scan when vector search fails","category":"error-debug","expected_symbol":"boundedCosineFallback","expected_file":"platform/core/src/search.ts"},
+
+  {"id":"mrr-beh-01","query":"add a memory and immediately record its content safety assessment","category":"behavioral","expected_symbol":"addMemory","expected_file":"platform/core/src/database.ts"},
+  {"id":"mrr-beh-02","query":"soft delete a memory while retaining an audit history event","category":"behavioral","expected_symbol":"softDeleteMemory","expected_file":"platform/core/src/database.ts"},
+  {"id":"mrr-beh-03","query":"lease a pending memory job before processing it","category":"behavioral","expected_symbol":"leaseJob","expected_file":"platform/core/src/database.ts"},
+  {"id":"mrr-beh-04","query":"synchronize changed filesystem documents using an incremental cursor","category":"behavioral","expected_symbol":"syncIncremental","expected_file":"platform/daemon/src/connectors/filesystem.ts"},
+  {"id":"mrr-beh-05","query":"load the identity files that define an agent workspace","category":"behavioral","expected_symbol":"loadIdentityFiles","expected_file":"platform/core/src/identity.ts"},
+
+  {"id":"mrr-cross-01","query":"all search paths that combine lexical and vector evidence","category":"cross-cutting","expected_symbol":"hybridSearch","expected_file":"platform/core/src/search.ts"},
+  {"id":"mrr-cross-02","query":"all components that enforce agent scope before protected operations","category":"cross-cutting","expected_symbol":"checkScope","expected_file":"platform/daemon/src/auth/policy.ts"},
+  {"id":"mrr-cross-03","query":"all export paths that preserve memory provenance","category":"cross-cutting","expected_symbol":"collectExportData","expected_file":"platform/core/src/export.ts"},
+  {"id":"mrr-cross-04","query":"all startup paths that resolve identity context files","category":"cross-cutting","expected_symbol":"resolveStartupIdentityFiles","expected_file":"platform/core/src/identity.ts"},
+  {"id":"mrr-cross-05","query":"all connectors registered for discovering and synchronizing documents","category":"cross-cutting","expected_symbol":"registerConnector","expected_file":"platform/daemon/src/connectors/registry.ts"},
+
+  {"id":"mrr-rel-01","query":"what calls hybridSearch?","category":"relationship","expected_symbol":"search","expected_file":"platform/core/src/search.ts"},
+  {"id":"mrr-rel-02","query":"who calls resolveNamedEntity?","category":"relationship","expected_symbol":"getKnowledgeEntityByName","expected_file":"platform/daemon/src/knowledge-graph.ts"},
+  {"id":"mrr-rel-03","query":"what does createAuthMiddleware call to verify signed credentials?","category":"relationship","expected_symbol":"verifyToken","expected_file":"platform/daemon/src/auth/tokens.ts"},
+  {"id":"mrr-rel-04","query":"what does applyTokenBudget call to measure and truncate context?","category":"relationship","expected_symbol":"countTokens","expected_file":"platform/daemon/src/pipeline/tokenizer.ts"},
+  {"id":"mrr-rel-05","query":"what does resolveRoutingDecision invoke to classify a request?","category":"relationship","expected_symbol":"classifyRouteRequest","expected_file":"platform/core/src/routing.ts"},
+
+  {"id":"mrr-abstract-01","query":"what governs keeping injected prompt context within a safe budget","category":"nl-abstract","expected_symbol":"applyTokenBudget","expected_file":"platform/daemon/src/context-budget.ts"},
+  {"id":"mrr-abstract-02","query":"how does Signet combine memory search signals before recall","category":"nl-abstract","expected_symbol":"hybridRecall","expected_file":"platform/daemon/src/memory-search.ts"},
+  {"id":"mrr-abstract-03","query":"what maintains durable evidence-backed understanding over time","category":"nl-abstract","expected_symbol":"runDreamingAgentPass","expected_file":"platform/daemon/src/pipeline/dreaming.ts"},
+  {"id":"mrr-abstract-04","query":"how does an agent workspace resolve its base identity directory","category":"nl-abstract","expected_symbol":"resolveAgentBasePath","expected_file":"platform/core/src/identity.ts"},
+  {"id":"mrr-abstract-05","query":"what records memory changes so they can be audited later","category":"nl-abstract","expected_symbol":"addHistoryEvent","expected_file":"platform/core/src/database.ts"}
+]
