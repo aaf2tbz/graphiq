@@ -53,7 +53,7 @@ fn evidence_weight(kind_str: &str) -> f64 {
 ///
 /// Previously the label was the last two path components of a single
 /// "dominant" file, which collided across unrelated directories — symbols in
-/// `crates/graphiq-core/src/roles.rs` and `apps/desktop/src/renderer/src/styles.css`
+/// `crates/graphiq-core/src/roles.rs` and `web/src/renderer/src/styles.css`
 /// both reduced to `src/<file>`, so a big cluster of Rust symbols could be
 /// labeled "Src / Styles.css".
 ///
@@ -1423,8 +1423,8 @@ mod tests {
     fn test_cluster_directory_label_single_file() {
         // A single file resolves to its directory, not to "<dir>/<file>".
         assert_eq!(
-            cluster_directory_label(&["apps/desktop/src/renderer/src/styles.css"]),
-            "apps/desktop/src/renderer/src"
+            cluster_directory_label(&["web/src/renderer/src/styles.css"]),
+            "web/src/renderer/src"
         );
         assert_eq!(cluster_directory_label(&["main.rs"]), ".");
     }
@@ -1438,7 +1438,7 @@ mod tests {
             "crates/graphiq-core/src/roles.rs",
             "crates/graphiq-core/src/index.rs",
             "crates/graphiq-core/src/db.rs",
-            "apps/desktop/src/renderer/src/styles.css",
+            "web/src/renderer/src/styles.css",
         ]);
         // Majority (3/4) live under crates/graphiq-core — that is the honest
         // dominant area, and it is NOT the misleading "src/styles.css".

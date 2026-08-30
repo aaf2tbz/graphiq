@@ -8,23 +8,6 @@ cd graphiq
 cargo build --release
 ```
 
-## Desktop app
-
-```bash
-cd apps/desktop
-npm install
-npm run dev
-```
-
-Package installers locally with:
-
-```bash
-cd apps/desktop
-npm run package
-```
-
-Artifacts are written to `apps/desktop/release/`.
-
 ## Architecture
 
 GraphIQ is a Rust workspace. The layout:
@@ -35,7 +18,6 @@ GraphIQ is a Rust workspace. The layout:
 | `graphiq-cli` | Command-line interface → `graphiq` binary |
 | `graphiq-mcp` | MCP stdio server → `graphiq-mcp` binary |
 | `graphiq-bench` | Benchmark harness |
-| `apps/desktop` | Electron desktop shell for browsing local indexes |
 | `signet-plugin/` | Signet managed-plugin manifest + session hooks |
 | `integrations/pi/` | pi extension (no MCP — shells out to the CLI) |
 

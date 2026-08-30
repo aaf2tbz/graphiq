@@ -74,61 +74,6 @@ jobs:
             dist/${{ matrix.artifact }}.tar.gz
             dist/${{ matrix.artifact }}.sha256
 
-  desktop-macos:
-    runs-on: macos-14
-    continue-on-error: true
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: apps/desktop/package-lock.json
-
-      - name: Install desktop dependencies
-        working-directory: apps/desktop
-        run: npm ci
-
-      - name: Package desktop app
-        working-directory: apps/desktop
-        env:
-          # No Apple Developer ID in this repo. The afterPack hook
-          # (build/adhoc-deep-sign.cjs) ad-hoc signs every Mach-O and bundle
-          # inside the .app during packaging, so the resulting DMG ships a
-          # validly-signed app that users can run via right-click → Open or
-          # System Settings → Privacy & Security. CSC_IDENTITY_AUTO_DISCOVERY
-          # must be false so electron-builder doesn't fail looking for a cert.
-          # When a Developer ID is available, set CSC_LINK/CSC_KEY_PASSWORD and
-          # the hook skips itself so electron-builder does real signing.
-          CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run package
-
-      - name: Verify the packaged app is signed
-        working-directory: apps/desktop
-        run: |
-          set -euo pipefail
-          APP="$(find release/mac -maxdepth 1 -name '*.app' -print -quit 2>/dev/null || true)"
-          if [ -n "$APP" ]; then
-            echo "Verifying signature of $APP"
-            codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | head -5 || {
-              echo "warning: signature verification failed" >&2
-              exit 0
-            }
-            echo "App signature verified."
-          else
-            echo "No unpacked .app in release/mac (DMG-only build); the DMG embeds the signed app."
-          fi
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: graphiq-desktop-macos-arm64
-          path: |
-            apps/desktop/release/*.dmg
-            apps/desktop/release/*-mac.zip
-
   release:
     needs: [build]
     if: always() && needs.build.result == 'success'
@@ -144,7 +89,4 @@ jobs:
         with:
           files: |
             artifacts/**/*.tar.gz
-            artifacts/**/*.dmg
-            artifacts/**/*-mac.zip
-            artifacts/**/*.blockmap
           generate_release_notes: true

@@ -46,7 +46,6 @@
 - **[CLI reference](docs/cli.md)** — every command and flag
 - **[MCP tools](docs/mcp.md)** — the tool surface agents see
 - **[Supported harnesses](docs/supported-harnesses.md)** — Claude Code, Codex, OpenCode, Cursor, Pi, and more
-- **[Desktop app](docs/desktop.md)** — the visual index browser
 
 ### Reliability & performance
 
