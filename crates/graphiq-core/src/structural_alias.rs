@@ -128,7 +128,7 @@ fn compute_edge_mix(outgoing: &[(String, String)], incoming: &[(String, String)]
     }
 
     let mut sorted: Vec<(String, usize)> = kind_counts.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
 
     let mut parts = Vec::new();
     for (label, count) in sorted.iter().take(4) {
@@ -198,7 +198,11 @@ fn compute_neighborhood_signature(
     }
 
     let mut sorted: Vec<(String, f64)> = neighbor_terms.into_iter().collect();
-    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.0.cmp(&b.0))
+    });
     sorted.truncate(MAX_ALIAS_TOKENS);
 
     sorted

@@ -1,0 +1,61 @@
+[
+  {"id":"mrr-fp-01","query":"src/croc/tailcat_negotiation.go direct transport fallback","category":"file-path","expected_symbol":"selectRelayAfterTailcatFailure","expected_file":"src/croc/tailcat_negotiation.go"},
+  {"id":"mrr-fp-02","query":"web/src/protocol/storage.ts collision-safe browser download","category":"file-path","expected_symbol":"uniqueName","expected_file":"web/src/protocol/storage.ts"},
+  {"id":"mrr-fp-03","query":"src/store/service.go remove expired stored ciphertext","category":"file-path","expected_symbol":"Sweep","expected_file":"src/store/service.go"},
+  {"id":"mrr-fp-04","query":"src/receivefs/path.go validate received paths","category":"file-path","expected_symbol":"ValidateEntries","expected_file":"src/receivefs/path.go"},
+  {"id":"mrr-fp-05","query":"internal/tailcat/tailcat.go discover peer endpoints","category":"file-path","expected_symbol":"Expand","expected_file":"internal/tailcat/tailcat.go"},
+
+  {"id":"mrr-desc-01","query":"turn the shared code into transcript-bound session keys","category":"nl-descriptive","expected_symbol":"derivePakeKeys","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-desc-02","query":"write a received file using an atomic temporary path","category":"nl-descriptive","expected_symbol":"WriteFileAtomic","expected_file":"src/receivefs/root.go"},
+  {"id":"mrr-desc-03","query":"collect files while applying exact exclusion paths","category":"nl-descriptive","expected_symbol":"GetFilesInfoWithExactExclusions","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-desc-04","query":"decide whether a file is worth compressing from a sample","category":"nl-descriptive","expected_symbol":"shouldCompressFile","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-desc-05","query":"select the first healthy relay from parallel probes","category":"nl-descriptive","expected_symbol":"SelectFirst","expected_file":"src/publicrelay/publicrelay.go"},
+
+  {"id":"mrr-partial-01","query":"emitChunked","category":"symbol-partial","expected_symbol":"emitChunkedSenderInfo","expected_file":"src/croc/file_manifest.go"},
+  {"id":"mrr-partial-02","query":"verifyAnd","category":"symbol-partial","expected_symbol":"verifyAndUse","expected_file":"src/tcp/capability.go"},
+  {"id":"mrr-partial-03","query":"SealCh","category":"symbol-partial","expected_symbol":"SealChunk","expected_file":"src/storecrypto/storecrypto.go"},
+  {"id":"mrr-partial-04","query":"processMessagePakeC","category":"symbol-partial","expected_symbol":"processMessagePakeConfirm","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-partial-05","query":"activateTailcat","category":"symbol-partial","expected_symbol":"activateTailcatSender","expected_file":"src/croc/tailcat_negotiation.go"},
+
+  {"id":"mrr-error-01","query":"receiving a symlink target that escapes the destination","category":"error-debug","expected_symbol":"validateReceiveSymlinkTarget","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-error-02","query":"stored upload has the wrong ciphertext length","category":"error-debug","expected_symbol":"uploadObject","expected_file":"src/store/service.go"},
+  {"id":"mrr-error-03","query":"decompression exceeds the permitted output limit","category":"error-debug","expected_symbol":"decompress","expected_file":"src/compress/compress.go"},
+  {"id":"mrr-error-04","query":"peer sends an unsupported PAKE version","category":"error-debug","expected_symbol":"processMessagePake","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-error-05","query":"relay route error is fatal before retrying","category":"error-debug","expected_symbol":"isFatalSenderRouteError","expected_file":"src/croc/croc.go"},
+
+  {"id":"mrr-medium-01","query":"resume transfer by asking for only the missing chunk ranges","category":"nl-medium","expected_symbol":"MissingChunks","expected_file":"src/utils/utils.go"},
+  {"id":"mrr-medium-02","query":"renew a stored download claim while chunks are still arriving","category":"nl-medium","expected_symbol":"renewClaim","expected_file":"src/storeclient/client.go"},
+  {"id":"mrr-medium-03","query":"choose direct DERP eligibility before opening the data path","category":"nl-medium","expected_symbol":"autoTailcatEligible","expected_file":"src/croc/tailcat_negotiation.go"},
+  {"id":"mrr-medium-04","query":"validate every archive entry before extraction","category":"nl-medium","expected_symbol":"validateZipEntries","expected_file":"src/utils/utils.go"},
+  {"id":"mrr-medium-05","query":"reuse the remembered public relay until it becomes unhealthy","category":"nl-medium","expected_symbol":"loadBestPublicRelay","expected_file":"src/cli/cli.go"},
+
+  {"id":"mrr-beh-01","query":"hash every outgoing file and reject changes during preparation","category":"behavioral","expected_symbol":"prepareFile","expected_file":"src/croc/file_preparation.go"},
+  {"id":"mrr-beh-02","query":"send only the chunks a receiver still needs after resume","category":"behavioral","expected_symbol":"sendData","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-beh-03","query":"start a local peer transfer before using the public relay","category":"behavioral","expected_symbol":"transferOverLocalRelay","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-beh-04","query":"extract a received archive after checking its paths and size","category":"behavioral","expected_symbol":"extractReceivedArchives","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-beh-05","query":"show receiver progress as files and chunks complete","category":"behavioral","expected_symbol":"updateState","expected_file":"src/croc/croc.go"},
+
+  {"id":"mrr-cross-01","query":"all functions that choose or cache a public relay","category":"cross-cutting","expected_symbol":"selectPublicRelay","expected_file":"src/cli/cli.go"},
+  {"id":"mrr-cross-02","query":"all paths that enforce safe destination metadata","category":"cross-cutting","expected_symbol":"validateReceiveMetadata","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-cross-03","query":"all stored-transfer lifecycle handlers","category":"cross-cutting","expected_symbol":"complete","expected_file":"src/store/service.go"},
+  {"id":"mrr-cross-04","query":"all code that negotiates direct Tailcat capability","category":"cross-cutting","expected_symbol":"activateSecureChannel","expected_file":"src/croc/tailcat_negotiation.go"},
+  {"id":"mrr-cross-05","query":"all helpers that compute file hashes","category":"cross-cutting","expected_symbol":"HashFileCtx","expected_file":"src/utils/ctx.go"},
+
+  {"id":"mrr-rel-01","query":"what calls EncryptAEAD?","category":"relationship","expected_symbol":"Encrypt","expected_file":"src/crypt/crypt.go"},
+  {"id":"mrr-rel-02","query":"who invokes processMessagePake?","category":"relationship","expected_symbol":"processMessage","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-rel-03","query":"what calls MissingChunks during receiver initialization?","category":"relationship","expected_symbol":"recipientInitializeFile","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-rel-04","query":"who uses WriteFileAtomic to persist download state?","category":"relationship","expected_symbol":"writeStateRoot","expected_file":"src/storeclient/client.go"},
+  {"id":"mrr-rel-05","query":"what does sendData invoke for late sender workers?","category":"relationship","expected_symbol":"startLateSenderWorker","expected_file":"src/croc/chunk_queue.go"},
+
+  {"id":"mrr-abstract-01","query":"how does croc turn a short human code into an authenticated transfer","category":"nl-abstract","expected_symbol":"Derive","expected_file":"src/pakekey/pakekey.go"},
+  {"id":"mrr-abstract-02","query":"what manages expiration and cleanup for stored transfers","category":"nl-abstract","expected_symbol":"tombstone","expected_file":"src/store/service.go"},
+  {"id":"mrr-abstract-03","query":"how does the receiver prevent incoming metadata from escaping its root","category":"nl-abstract","expected_symbol":"validateReceiveMetadata","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-abstract-04","query":"what governs switching from Tailcat to relay when direct setup fails","category":"nl-abstract","expected_symbol":"tailcatFallbackAllowed","expected_file":"src/croc/tailcat_negotiation.go"},
+  {"id":"mrr-abstract-05","query":"how does a resumed stored download keep its local state coherent","category":"nl-abstract","expected_symbol":"writeStateRoot","expected_file":"src/storeclient/client.go"},
+
+  {"id":"mrr-exact-01","query":"ParseTransportMode","category":"symbol-exact","expected_symbol":"ParseTransportMode","expected_file":"src/croc/croc.go"},
+  {"id":"mrr-exact-02","query":"newRequestedChunkQueue","category":"symbol-exact","expected_symbol":"newRequestedChunkQueue","expected_file":"src/croc/chunk_queue.go"},
+  {"id":"mrr-exact-03","query":"ValidateEntries","category":"symbol-exact","expected_symbol":"ValidateEntries","expected_file":"src/receivefs/path.go"},
+  {"id":"mrr-exact-04","query":"CapabilityVerifier","category":"symbol-exact","expected_symbol":"CapabilityVerifier","expected_file":"src/storecrypto/storecrypto.go"},
+  {"id":"mrr-exact-05","query":"RelayIndex","category":"symbol-exact","expected_symbol":"RelayIndex","expected_file":"src/codephrase/codephrase.go"}
+]

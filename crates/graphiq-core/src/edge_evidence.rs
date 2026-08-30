@@ -422,10 +422,34 @@ fn detect_motif_members(db: &GraphDb) -> HashMap<i64, Vec<String>> {
 
 pub fn write_edge_evidence(db: &GraphDb, evidence: &EdgeEvidenceIndex) -> Result<usize, String> {
     let conn = db.conn();
+    let mut existing_metadata: HashMap<(i64, i64, String), serde_json::Value> = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT source_id, target_id, kind, metadata FROM edges")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (source_id, target_id, kind, metadata) = row.map_err(|e| e.to_string())?;
+            existing_metadata.insert(
+                (source_id, target_id, kind),
+                serde_json::from_str(&metadata).unwrap_or(serde_json::Value::Null),
+            );
+        }
+    }
+
     let mut updated = 0;
 
     for ((src, tgt, kind_str), profile) in &evidence.edge_evidence {
-        let meta = serde_json::json!({
+        let evidence_meta = serde_json::json!({
             "evidence": {
                 "kind": profile.kind.as_str(),
                 "multiplicity": profile.multiplicity,
@@ -434,6 +458,17 @@ pub fn write_edge_evidence(db: &GraphDb, evidence: &EdgeEvidenceIndex) -> Result
                 "motif": profile.motif_name,
             }
         });
+        let mut meta = existing_metadata
+            .remove(&(*src, *tgt, kind_str.clone()))
+            .unwrap_or(serde_json::Value::Null);
+        if !meta.is_object() {
+            meta = serde_json::json!({});
+        }
+        if let (Some(meta), Some(evidence)) =
+            (meta.as_object_mut(), evidence_meta.get("evidence").cloned())
+        {
+            meta.insert("evidence".into(), evidence);
+        }
 
         let result = conn.execute(
             "UPDATE edges SET metadata = ?1 WHERE source_id = ?2 AND target_id = ?3 AND kind = ?4",
@@ -571,6 +606,14 @@ mod tests {
     #[test]
     fn test_write_evidence_updates_db() {
         let db = setup_db();
+        db.insert_edge(
+            1,
+            2,
+            EdgeKind::Calls,
+            EdgeKind::Calls.path_weight(),
+            serde_json::json!({"source": "fixture", "call_line": 3}),
+        )
+        .unwrap();
         let evidence = infer_edge_evidence(&db).unwrap();
         let updated = write_edge_evidence(&db, &evidence).unwrap();
 
@@ -584,6 +627,12 @@ mod tests {
         );
         let ev = &call_edge.metadata["evidence"];
         assert!(ev["kind"].is_string(), "evidence should have kind");
+        assert_eq!(
+            call_edge.metadata["source"].as_str(),
+            Some("fixture"),
+            "derived evidence must preserve existing provenance"
+        );
+        assert_eq!(call_edge.metadata["call_line"].as_u64(), Some(3));
     }
 
     #[test]

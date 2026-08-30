@@ -1,0 +1,72 @@
+[
+  {
+    "id": "mrr-beh-05",
+    "query": "load the identity files that define an agent workspace",
+    "category": "behavioral",
+    "expected_symbol": "loadIdentityFiles",
+    "expected_file": "platform/core/src/identity.ts"
+  },
+  {
+    "id": "mrr-cross-05",
+    "query": "all connectors registered for discovering and synchronizing documents",
+    "category": "cross-cutting",
+    "expected_symbol": "registerConnector",
+    "expected_file": "platform/daemon/src/connectors/registry.ts"
+  },
+  {
+    "id": "mrr-error-05",
+    "query": "fall back to a bounded recent cosine scan when vector search fails",
+    "category": "error-debug",
+    "expected_symbol": "boundedCosineFallback",
+    "expected_file": "platform/core/src/search.ts"
+  },
+  {
+    "id": "mrr-fp-05",
+    "query": "surfaces/cli/src/features/setup-plan.ts validate setup plan",
+    "category": "file-path",
+    "expected_symbol": "parseSetupPlan",
+    "expected_file": "surfaces/cli/src/features/setup-plan.ts"
+  },
+  {
+    "id": "mrr-abstract-05",
+    "query": "what records memory changes so they can be audited later",
+    "category": "nl-abstract",
+    "expected_symbol": "addHistoryEvent",
+    "expected_file": "platform/core/src/database.ts"
+  },
+  {
+    "id": "mrr-desc-05",
+    "query": "lease the oldest pending job and mark it as in progress",
+    "category": "nl-descriptive",
+    "expected_symbol": "leaseJob",
+    "expected_file": "platform/core/src/database.ts"
+  },
+  {
+    "id": "mrr-medium-05",
+    "query": "expand memory recall through entities and one graph hop",
+    "category": "nl-medium",
+    "expected_symbol": "getGraphBoostIds",
+    "expected_file": "platform/daemon/src/pipeline/graph-search.ts"
+  },
+  {
+    "id": "mrr-rel-05",
+    "query": "what does resolveRoutingDecision invoke to classify a request?",
+    "category": "relationship",
+    "expected_symbol": "classifyRouteRequest",
+    "expected_file": "platform/core/src/routing.ts"
+  },
+  {
+    "id": "mrr-exact-05",
+    "query": "resolveRoutingDecision",
+    "category": "symbol-exact",
+    "expected_symbol": "resolveRoutingDecision",
+    "expected_file": "platform/core/src/routing.ts"
+  },
+  {
+    "id": "mrr-partial-05",
+    "query": "parseRecallP",
+    "category": "symbol-partial",
+    "expected_symbol": "parseRecallPayload",
+    "expected_file": "platform/core/src/recall.ts"
+  }
+]

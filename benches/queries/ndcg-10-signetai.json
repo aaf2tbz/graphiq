@@ -1,0 +1,109 @@
+[
+  {
+    "id": "ndcg-beh-05",
+    "query": "plan and synthesize an aggregate recall answer from evidence",
+    "category": "behavioral",
+    "relevance": {
+      "platform/daemon/src/aggregate-recall.ts::aggregateRecall": 3,
+      "platform/daemon/src/aggregate-recall.ts::planQueries": 2,
+      "platform/daemon/src/aggregate-recall.ts::synthesize": 2,
+      "platform/daemon/src/aggregate-recall.ts::uniqueEvidence": 1
+    }
+  },
+  {
+    "id": "ndcg-cross-05",
+    "query": "all connector operations that register and advance document synchronization",
+    "category": "cross-cutting",
+    "relevance": {
+      "platform/daemon/src/connectors/registry.ts::registerConnector": 3,
+      "platform/daemon/src/connectors/registry.ts::updateConnectorStatus": 2,
+      "platform/daemon/src/connectors/registry.ts::updateCursor": 2,
+      "platform/daemon/src/connectors/registry.ts::removeConnector": 1
+    }
+  },
+  {
+    "id": "ndcg-error-05",
+    "query": "detect instruction-shaped or dangerous shell content before memory projection",
+    "category": "error-debug",
+    "relevance": {
+      "platform/core/src/memory-content-safety.ts::scanMemoryContent": 3,
+      "platform/core/src/memory-content-safety.ts::hasActionableMatch": 2,
+      "platform/core/src/memory-content-safety.ts::hasDangerousShell": 2,
+      "platform/core/src/memory-content-safety.ts::isMemoryContentContextEligible": 1
+    }
+  },
+  {
+    "id": "ndcg-fp-05",
+    "query": "platform/daemon/src/connectors/filesystem.ts",
+    "category": "file-path",
+    "relevance_files": {
+      "platform/daemon/src/connectors/filesystem.ts": 3,
+      "platform/daemon/src/connectors/registry.ts": 2
+    }
+  },
+  {
+    "id": "ndcg-abstract-05",
+    "query": "what controls which model or provider handles a workload",
+    "category": "nl-abstract",
+    "relevance": {
+      "platform/core/src/routing.ts::resolveRoutingDecision": 3,
+      "platform/core/src/routing.ts::classifyRouteRequest": 2,
+      "platform/core/src/routing.ts::buildCandidateTrace": 2,
+      "platform/core/src/routing.ts::orderedPreferenceLists": 1
+    }
+  },
+  {
+    "id": "ndcg-desc-05",
+    "query": "lease the oldest pending job and mark it as in progress",
+    "category": "nl-descriptive",
+    "relevance": {
+      "platform/core/src/database.ts::leaseJob": 3,
+      "platform/core/src/database.ts::enqueueJob": 2,
+      "platform/core/src/database.ts::completeJob": 2,
+      "platform/core/src/database.ts::failJob": 1
+    }
+  },
+  {
+    "id": "ndcg-medium-05",
+    "query": "expand memory recall through entities and one graph hop",
+    "category": "nl-medium",
+    "relevance": {
+      "platform/daemon/src/pipeline/graph-search.ts::getGraphBoostIds": 3,
+      "platform/daemon/src/pipeline/graph-search.ts::tokenizeGraphQuery": 2,
+      "platform/daemon/src/memory-search.ts::hybridRecall": 2,
+      "platform/daemon/src/memory-search.ts::buildFilterClause": 1
+    }
+  },
+  {
+    "id": "ndcg-rel-05",
+    "query": "what does resolveRoutingDecision invoke to classify a request?",
+    "category": "relationship",
+    "relevance": {
+      "platform/core/src/routing.ts::classifyRouteRequest": 3,
+      "platform/core/src/routing.ts::orderedPreferenceLists": 2,
+      "platform/core/src/routing.ts::workloadBindingForOperation": 2,
+      "platform/core/src/routing.ts::parseRoutingTargetRef": 1
+    }
+  },
+  {
+    "id": "ndcg-exact-05",
+    "query": "createAuthMiddleware",
+    "category": "symbol-exact",
+    "relevance": {
+      "platform/daemon/src/auth/middleware.ts::createAuthMiddleware": 3,
+      "platform/daemon/src/auth/tokens.ts::verifyToken": 2,
+      "platform/daemon/src/auth/api-keys.ts::verifyApiKey": 2,
+      "platform/daemon/src/auth/middleware.ts::requirePermission": 1
+    }
+  },
+  {
+    "id": "ndcg-partial-05",
+    "query": "graphBoost",
+    "category": "symbol-partial",
+    "relevance": {
+      "platform/daemon/src/pipeline/graph-search.ts::getGraphBoostIds": 3,
+      "platform/daemon/src/pipeline/graph-search.ts::tokenizeGraphQuery": 2,
+      "platform/daemon/src/memory-search.ts::hybridRecall": 1
+    }
+  }
+]

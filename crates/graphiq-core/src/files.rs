@@ -365,10 +365,7 @@ mod tests {
         assert!(is_data_file(Path::new("whatever.lock"), 10));
 
         // Path-prefixed lockfiles.
-        assert!(is_data_file(
-            Path::new("apps/desktop/package-lock.json"),
-            10
-        ));
+        assert!(is_data_file(Path::new("project/package-lock.json"), 10));
     }
 
     #[test]

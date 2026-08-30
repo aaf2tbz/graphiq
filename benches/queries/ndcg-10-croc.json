@@ -1,0 +1,110 @@
+[
+  {
+    "id": "ndcg-beh-05",
+    "query": "negotiate Tailcat then switch to croc relay when necessary",
+    "category": "behavioral",
+    "relevance": {
+      "src/croc/tailcat_negotiation.go::activateTailcatSender": 3,
+      "src/croc/tailcat_negotiation.go::selectRelayAfterTailcatFailure": 3,
+      "src/croc/tailcat_negotiation.go::processTransportSelect": 2,
+      "src/croc/croc.go::finishDataTransportActivation": 2
+    }
+  },
+  {
+    "id": "ndcg-cross-05",
+    "query": "all file and chunk hashing and integrity verification routines",
+    "category": "cross-cutting",
+    "relevance": {
+      "src/utils/ctx.go::HashFileCtx": 3,
+      "src/storeclient/client.go::hashFile": 2,
+      "web/src/protocol/storage.ts::verifySinkSHA256": 2,
+      "src/storecrypto/storecrypto.go::ValidateManifest": 2,
+      "src/croc/progressive_hash.go::processExactHashResult": 1
+    }
+  },
+  {
+    "id": "ndcg-error-05",
+    "query": "unsupported PAKE version error from a peer",
+    "category": "error-debug",
+    "relevance": {
+      "src/croc/croc.go::processMessagePake": 3,
+      "src/croc/croc.go::incompatiblePakeVersionError": 2,
+      "web/src/protocol/client.ts::requirePakeVersion": 2,
+      "src/croc/file_manifest.go::validateChunkedFileInfoMessage": 1
+    }
+  },
+  {
+    "id": "ndcg-fp-05",
+    "query": "web/src/protocol/metadata.ts",
+    "category": "file-path",
+    "relevance_files": {
+      "web/src/protocol/metadata.ts": 3,
+      "web/src/protocol/stored.ts": 2
+    }
+  },
+  {
+    "id": "ndcg-abstract-05",
+    "query": "how does a browser download keep its claim and local state coherent after interruption",
+    "category": "nl-abstract",
+    "relevance": {
+      "src/storeclient/client.go::readDownloadStateRoot": 3,
+      "src/storeclient/client.go::writeStateRoot": 3,
+      "src/storeclient/client.go::withFreshClaim": 2,
+      "src/storeclient/client.go::getChunkWithClaimRetry": 2
+    }
+  },
+  {
+    "id": "ndcg-desc-05",
+    "query": "build the outgoing file list while honoring ignore and exclusion rules",
+    "category": "nl-descriptive",
+    "relevance": {
+      "src/croc/croc.go::GetFilesInfoWithExactExclusions": 3,
+      "src/croc/croc.go::GetFilesInfo": 2,
+      "src/croc/croc.go::gitWalk": 2,
+      "src/croc/croc.go::sendCollectFiles": 2,
+      "src/croc/croc.go::exactPathExcluded": 1
+    }
+  },
+  {
+    "id": "ndcg-medium-05",
+    "query": "validate a sender manifest before accepting its declared files",
+    "category": "nl-medium",
+    "relevance": {
+      "src/croc/file_manifest.go::validateFileInfoManifestHeader": 3,
+      "src/croc/file_manifest.go::processMessageFileInfoStartWithLimits": 2,
+      "src/croc/croc.go::processSenderInfo": 2,
+      "web/src/protocol/metadata.ts::validateSenderInfo": 2
+    }
+  },
+  {
+    "id": "ndcg-rel-05",
+    "query": "how does selectPublicRelay relate to selectBestRelay",
+    "category": "relationship",
+    "relevance": {
+      "src/cli/cli.go::send": 3,
+      "web/src/public-relay.ts::selectRelayForSend": 3,
+      "src/cli/cli.go::selectPublicRelay": 2,
+      "web/src/public-relay.ts::selectBestRelay": 2
+    }
+  },
+  {
+    "id": "ndcg-exact-05",
+    "query": "WriteFileAtomic",
+    "category": "symbol-exact",
+    "relevance": {
+      "src/receivefs/root.go::WriteFileAtomic": 3,
+      "src/storeclient/client.go::writeStateRoot": 2
+    }
+  },
+  {
+    "id": "ndcg-partial-05",
+    "query": "authorize",
+    "category": "symbol-partial",
+    "relevance": {
+      "src/store/service.go::authorizeRedeem": 3,
+      "src/store/service.go::authorizeClaim": 3,
+      "src/store/service.go::authorizeCommittedClaim": 2,
+      "web/src/protocol/stored.ts::authorizedFetch": 2
+    }
+  }
+]

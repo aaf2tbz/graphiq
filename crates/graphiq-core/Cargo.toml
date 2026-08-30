@@ -29,6 +29,7 @@ tree-sitter-toml-ng = "0.6"
 tree-sitter-html = "0.23"
 tree-sitter-css = "0.23"
 regex = "1"
+aho-corasick = "1.1"
 dashmap = "6.1.0"
 lru = "0.17.0"
 

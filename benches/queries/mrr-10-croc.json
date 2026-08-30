@@ -1,0 +1,72 @@
+[
+  {
+    "id": "mrr-beh-05",
+    "query": "show receiver progress as files and chunks complete",
+    "category": "behavioral",
+    "expected_symbol": "updateState",
+    "expected_file": "src/croc/croc.go"
+  },
+  {
+    "id": "mrr-cross-05",
+    "query": "all helpers that compute file hashes",
+    "category": "cross-cutting",
+    "expected_symbol": "HashFileCtx",
+    "expected_file": "src/utils/ctx.go"
+  },
+  {
+    "id": "mrr-error-05",
+    "query": "relay route error is fatal before retrying",
+    "category": "error-debug",
+    "expected_symbol": "isFatalSenderRouteError",
+    "expected_file": "src/croc/croc.go"
+  },
+  {
+    "id": "mrr-fp-05",
+    "query": "internal/tailcat/tailcat.go discover peer endpoints",
+    "category": "file-path",
+    "expected_symbol": "Expand",
+    "expected_file": "internal/tailcat/tailcat.go"
+  },
+  {
+    "id": "mrr-abstract-05",
+    "query": "how does a resumed stored download keep its local state coherent",
+    "category": "nl-abstract",
+    "expected_symbol": "writeStateRoot",
+    "expected_file": "src/storeclient/client.go"
+  },
+  {
+    "id": "mrr-desc-05",
+    "query": "select the first healthy relay from parallel probes",
+    "category": "nl-descriptive",
+    "expected_symbol": "SelectFirst",
+    "expected_file": "src/publicrelay/publicrelay.go"
+  },
+  {
+    "id": "mrr-medium-05",
+    "query": "reuse the remembered public relay until it becomes unhealthy",
+    "category": "nl-medium",
+    "expected_symbol": "loadBestPublicRelay",
+    "expected_file": "src/cli/cli.go"
+  },
+  {
+    "id": "mrr-rel-05",
+    "query": "what does sendData invoke for late sender workers?",
+    "category": "relationship",
+    "expected_symbol": "startLateSenderWorker",
+    "expected_file": "src/croc/chunk_queue.go"
+  },
+  {
+    "id": "mrr-exact-05",
+    "query": "RelayIndex",
+    "category": "symbol-exact",
+    "expected_symbol": "RelayIndex",
+    "expected_file": "src/codephrase/codephrase.go"
+  },
+  {
+    "id": "mrr-partial-05",
+    "query": "activateTailcat",
+    "category": "symbol-partial",
+    "expected_symbol": "activateTailcatSender",
+    "expected_file": "src/croc/tailcat_negotiation.go"
+  }
+]
