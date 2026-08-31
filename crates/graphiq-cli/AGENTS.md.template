@@ -73,12 +73,15 @@ regenerated on reinstall. Your project's own AGENTS.md is unaffected.
 scores, public API surface. Use `compact: true` for a shorter version.
 
 **search** — Primary exploration tool. Accepts symbol names, natural
-language, error messages, file path fragments. Returns ranked results
-with scores, file locations, signatures, and source previews. Use
-`file_filter` to narrow scope. Use `top_k` up to 50 for broad searches.
+language, error messages, file path fragments. Returns compact, readable
+ranked results with scores, file locations, signatures, and structural tags.
+Use `format: "detailed"` only when source previews and caller/callee lists
+are needed. Use `file_filter` to narrow scope, `cluster: false` to preserve
+pure score order, and `top_k` up to 50 for broad searches.
 
 **context** — Full source code for a symbol plus its structural
-neighborhood: callers, callees, contained members, parents, and tests.
+neighborhood: callers, callees, contained members, parents, and tests. Use
+`file_filter` with a search result path when the name is ambiguous.
 
 **blast** — Change impact analysis. Traces forward (what this symbol
 affects) and backward (what depends on it). Essential before refactors.
