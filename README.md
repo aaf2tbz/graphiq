@@ -16,7 +16,7 @@
 
 
 <p align="center">
-  **Local code intelligence for agents and developers.** GraphIQ indexes a repository into a structural graph of symbols,       calls, imports, constants, and type flow, then searches it with ranked retrieval that understands how code is connected—    not just what strings it contains. No embeddings. No LLM. No network calls. Everything lives in a single SQLite file.
+   Local code intelligence for agents and developers. GraphIQ indexes a repository into a structural graph of symbols,         calls, imports, constants, and type flow, then searches it with ranked retrieval that understands how code is connected—    not just what strings it contains. No embeddings. No LLM. No network calls. Everything lives in a single SQLite file.
 </p>
 
 ## Quickstart
