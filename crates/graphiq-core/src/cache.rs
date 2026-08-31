@@ -236,11 +236,25 @@ impl HotCache {
         }
     }
 
+    /// Remove cached search results without invalidating neighborhoods or
+    /// assembled context. Benchmark harnesses use this to measure the actual
+    /// search pipeline rather than the result-cache fast path.
+    pub fn clear_results(&self) {
+        if let Ok(mut cache) = self.results.lock() {
+            cache.clear();
+        }
+    }
+
     pub fn compute_query_hash(query: &str, top_k: usize) -> u64 {
+        Self::compute_query_hash_with_mode(query, top_k, false)
+    }
+
+    pub fn compute_query_hash_with_mode(query: &str, top_k: usize, exhaustive: bool) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         query.hash(&mut hasher);
         top_k.hash(&mut hasher);
+        exhaustive.hash(&mut hasher);
         hasher.finish()
     }
 
@@ -388,6 +402,9 @@ mod tests {
 
         cache.put_results(hash, vec![]);
         assert!(cache.get_results(hash).is_some());
+
+        cache.clear_results();
+        assert!(cache.get_results(hash).is_none());
     }
 
     #[test]
@@ -426,5 +443,8 @@ mod tests {
 
         let h3 = HotCache::compute_query_hash("other", 10);
         assert_ne!(h1, h3);
+
+        let exhaustive = HotCache::compute_query_hash_with_mode("test", 10, true);
+        assert_ne!(h1, exhaustive);
     }
 }

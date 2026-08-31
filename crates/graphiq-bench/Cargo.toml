@@ -13,6 +13,7 @@ path = "src/locomo.rs"
 
 [features]
 default = []
+gpu = ["graphiq-core/gpu"]
 embed = ["graphiq-core/embed"]
 
 [dependencies]

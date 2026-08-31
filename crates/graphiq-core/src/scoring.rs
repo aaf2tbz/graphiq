@@ -8,7 +8,7 @@
 //! Key function: [`score_candidates`] — scores all candidates and applies
 //! BM25 confidence lock, file diversity cap, and exact match promotion.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::cruncher::{kind_boost, test_penalty};
 use crate::cruncher::{CruncherIndex, QueryTerm};
@@ -156,6 +156,20 @@ pub fn score_candidates(
     config: &ScoreConfig,
     idx: &CruncherIndex,
 ) -> Vec<(usize, f64)> {
+    score_candidates_with_coverage_overrides(candidates, query_terms, config, idx, None)
+}
+
+/// Score candidates while optionally replacing the expensive per-candidate
+/// term-match calculation with a numerically equivalent batch result. All
+/// other ranking signals remain on the CPU so graph/policy behavior stays
+/// unchanged between CPU and GPU builds.
+pub fn score_candidates_with_coverage_overrides(
+    candidates: &std::collections::BTreeMap<usize, Candidate>,
+    query_terms: &[QueryTerm],
+    config: &ScoreConfig,
+    idx: &CruncherIndex,
+    coverage_overrides: Option<&HashMap<usize, (f64, usize)>>,
+) -> Vec<(usize, f64)> {
     let n_qt = query_terms.len();
     let idf_sum: f64 = query_terms.iter().map(|qt| qt.idf).sum();
 
@@ -169,8 +183,12 @@ pub fn score_candidates(
                 return None;
             }
 
+            let (coverage_score, coverage_count) = coverage_overrides
+                .and_then(|overrides| overrides.get(&c.idx).copied())
+                .unwrap_or((c.coverage_score, c.coverage_count));
+
             let cov_norm = if idf_sum > 0.0 {
-                c.coverage_score / idf_sum
+                coverage_score / idf_sum
             } else {
                 0.0
             };
@@ -211,7 +229,7 @@ pub fn score_candidates(
             };
 
             let coverage_frac = if n_qt > 0 {
-                c.coverage_count as f64 / n_qt as f64
+                coverage_count as f64 / n_qt as f64
             } else {
                 0.0
             };

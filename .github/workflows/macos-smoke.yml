@@ -1,7 +1,7 @@
 name: macOS smoke
 
-# Validates that graphiq builds and runs correctly on macOS using the native
-# Metal GPU feature and CPU fallback paths.
+# Validates native Apple Silicon builds, Metal index/search acceleration, and
+# the CPU fallback path.
 
 on:
   push:
@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+env:
+  MACOSX_DEPLOYMENT_TARGET: "11.0"
+  GRAPHIQ_GPU_TRACE: "1"
+
 jobs:
   smoke:
     runs-on: macos-14
@@ -20,11 +24,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Assert native Apple Silicon runner
+        run: test "$(uname -m)" = "arm64"
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
       - name: Build release (gpu feature)
         run: cargo build --release --features gpu
+
+      - name: Run Metal parity tests
+        run: cargo test -p graphiq-core --features gpu gpu_compute::tests -- --nocapture
 
       - name: Prove the binaries start with Metal available
         run: |
@@ -32,7 +42,7 @@ jobs:
           ./target/release/graphiq --version
           ./target/release/graphiq-mcp --help >/dev/null
 
-      - name: Build a fixture project and index it
+      - name: Build a sufficiently large fixture and index it with Metal
         run: |
           set -euo pipefail
           export PATH="$PWD/target/release:$PATH"
@@ -45,17 +55,62 @@ jobs:
           }
           pub fn handle_request(rl: &RateLimiter) -> bool { rl.check_rate() }
           RUST
+          for i in $(seq 1 96); do
+            cat >> fixture/src/lib.rs <<RUST
+          pub fn request_handler_${i}(cache: bool, retry: bool, rate: u32) -> bool { cache && retry && rate > 0 }
+          RUST
+          done
           (cd fixture && git init -q && git config user.email t@t && git config user.name t && git add -A && git commit -qm init)
-          graphiq index fixture --db fixture/.graphiq/graphiq.db | grep -E "Symbols: [0-9]+"
+          graphiq index fixture --db fixture/.graphiq/graphiq.db >index.out 2>index.err
+          cat index.out
+          cat index.err
+          grep -Eq 'Symbols: [0-9]+' index.out
 
-      - name: Run the full command surface
+      - name: Verify reported Metal capability
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/release:$PATH"
+          out="$(graphiq status --db fixture/.graphiq/graphiq.db)"
+          echo "$out"
+          echo "$out" | grep -q 'GPU: initialized OK (Metal'
+
+      - name: Run GPU-backed search and verify CPU parity
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/release:$PATH"
+          DB=fixture/.graphiq/graphiq.db
+          QUERY='request handler cache retry rate'
+
+          GRAPHIQ_GPU_MIN_SEARCH_CANDIDATES=24 \
+          GRAPHIQ_GPU_MIN_SEARCH_WORK_ITEMS=128 \
+          graphiq search "$QUERY" --db "$DB" --top 10 >gpu.out 2>gpu.err
+          cat gpu.out
+          cat gpu.err
+          grep -q 'GPU: initialized Metal' gpu.err
+          grep -q 'gpu acceleration: 3/3 phases on GPU' gpu.err
+          grep -q 'Search: GPU term scoring' gpu.err
+          grep -q 'request_handler_1' gpu.out
+
+          GRAPHIQ_DISABLE_GPU=1 graphiq search "$QUERY" --db "$DB" --top 10 >cpu.out 2>cpu.err
+          cat cpu.out
+          cat cpu.err
+          if grep -q 'Search: GPU term scoring' cpu.err; then
+            echo 'CPU fallback unexpectedly used GPU scoring' >&2
+            exit 1
+          fi
+          grep -q 'request_handler_1' cpu.out
+
+          grep '^#' gpu.out | awk '{print $NF}' >gpu.names
+          grep '^#' cpu.out | awk '{print $NF}' >cpu.names
+          diff -u cpu.names gpu.names
+          echo 'GPU and CPU ranked symbol names match'
+
+      - name: Run the remaining command surface
         run: |
           set -euo pipefail
           export PATH="$PWD/target/release:$PATH"
           DB=fixture/.graphiq/graphiq.db
 
-          # Capture command output before grepping it so a closed pipe cannot
-          # turn the expected SIGPIPE behavior into a false smoke failure.
           echo "--- search ---"
           out="$(graphiq search 'rate limit' --db "$DB" --top 3)"
           echo "$out" | grep -q "RateLimiter" || { echo "search did not find RateLimiter: $out" >&2; exit 1; }
