@@ -101,7 +101,11 @@ The MCP server already detects stored `project_root` mismatches (`main.rs:273-29
 
 ### 3A. Enriched search result format
 
-Currently each search result shows: rank, score, file:line, kind::name, signature, and optionally calls/callers. This is good but missing:
+The default MCP search response is now a compact Markdown list with rank,
+score, file:line, kind::name, signature/doc summary, and structural tags.
+`format: "detailed"` retains the richer source preview and calls/callers view.
+The compact view should keep the common agent path bounded while still
+surfacing:
 
 - **Subsystem membership** (which module/subsystem does this symbol belong to?)
 - **Structural role** (hub, bridge, leaf, entry point?)

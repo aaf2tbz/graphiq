@@ -21,6 +21,9 @@ use serde_json::{json, Value};
 const SERVER_NAME: &str = "graphiq";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "2024-11-05";
+const DEFAULT_SEARCH_TOP_K: usize = 10;
+const MAX_SEARCH_TOP_K: usize = 50;
+const COMPACT_TEXT_LIMIT: usize = 180;
 const PROVIDER_PROJECT_ENV_VARS: &[&str] = &[
     "GRAPHIQ_PROJECT_ROOT",
     "SIGNET_PROJECT_ROOT",
@@ -34,6 +37,51 @@ const PROVIDER_PROJECT_ENV_VARS: &[&str] = &[
     "INIT_CWD",
     "PWD",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchOutputFormat {
+    Compact,
+    Detailed,
+}
+
+impl SearchOutputFormat {
+    fn from_args(args: &Value) -> Result<Self, String> {
+        let Some(value) = args.get("format") else {
+            return Ok(Self::Compact);
+        };
+        match value.as_str() {
+            Some("compact") => Ok(Self::Compact),
+            Some("detailed") => Ok(Self::Detailed),
+            Some(value) => Err(format!(
+                "format must be \"compact\" or \"detailed\", got \"{}\"",
+                value
+            )),
+            None => Err("format must be a string: \"compact\" or \"detailed\"".into()),
+        }
+    }
+}
+
+/// Normalize user-controlled text before placing it on a single readable line.
+/// Keeping this character-based avoids panics on non-ASCII signatures and
+/// ensures a long doc comment cannot consume an unbounded response.
+fn compact_text(value: &str, limit: usize) -> String {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.chars().count() <= limit {
+        return normalized;
+    }
+
+    let mut truncated: String = normalized.chars().take(limit.saturating_sub(1)).collect();
+    truncated.push('…');
+    truncated
+}
+
+fn truncate_chars(value: &str, limit: usize) -> String {
+    value.chars().take(limit).collect()
+}
+
+fn markdown_code(value: &str, limit: usize) -> String {
+    compact_text(value, limit).replace('`', "'")
+}
 
 struct ServerState {
     project_root: PathBuf,
@@ -1088,7 +1136,7 @@ fn tools_list() -> Value {
             },
             {
                 "name": "search",
-                "description": "Find symbols by name, description, error message, or file path. Returns ranked results with scores, file locations, signatures, and source previews. This is your primary exploration tool — use it to find where things are, what functions exist, and how code is organized. Follow up with `context` to read full source, or `blast` to understand change impact.",
+                "description": "Find symbols by name, description, error message, or file path. Returns compact, readable ranked results by default. Use `format: \"detailed\"` only when you need source previews and caller/callee lists; use `context` for a specific implementation.",
                 "inputSchema": {
                     "type": "object",
                     "properties": {
@@ -1099,11 +1147,22 @@ fn tools_list() -> Value {
                         "top_k": {
                             "type": "integer",
                             "description": "Max results (default 10, max 50)",
-                            "default": 10
+                            "default": DEFAULT_SEARCH_TOP_K
                         },
                         "file_filter": {
                             "type": "string",
                             "description": "Restrict to files matching this substring"
+                        },
+                        "format": {
+                            "type": "string",
+                            "enum": ["compact", "detailed"],
+                            "description": "Output detail level. Compact is the default; detailed adds source previews and caller/callee lists.",
+                            "default": "compact"
+                        },
+                        "cluster": {
+                            "type": "boolean",
+                            "description": "Spread results across files (default true)",
+                            "default": true
                         }
                     },
                     "required": ["query"]
@@ -1118,6 +1177,10 @@ fn tools_list() -> Value {
                         "symbol": {
                             "type": "string",
                             "description": "Symbol name"
+                        },
+                        "file_filter": {
+                            "type": "string",
+                            "description": "Optional path substring to disambiguate same-named symbols using a search result's file path"
                         },
                         "context_lines": {
                             "type": "integer",
@@ -1524,44 +1587,75 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
         return tool_error("query must not be empty");
     }
 
-    let requested_top_k = args.get("top_k").and_then(|v| v.as_u64()).unwrap_or(10);
-    let top_k = requested_top_k.min(50) as usize;
+    let output_format = match SearchOutputFormat::from_args(&args) {
+        Ok(format) => format,
+        Err(message) => return tool_error(&message),
+    };
+    let requested_top_k = args
+        .get("top_k")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(DEFAULT_SEARCH_TOP_K as u64);
+    let top_k = requested_top_k.min(MAX_SEARCH_TOP_K as u64) as usize;
     let file_filter = args.get("file_filter").and_then(|v| v.as_str());
+    let cluster = args
+        .get("cluster")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    // Clustering needs candidates beyond the requested output window; if we
+    // only retrieve top_k, a single dense file can hide every other file.
+    let search_top_k = if cluster {
+        top_k.saturating_mul(3).min(MAX_SEARCH_TOP_K * 3)
+    } else {
+        top_k
+    };
 
     let mut engine = graphiq_core::search::SearchEngine::new(&state.db, &state.cache);
     if let Some(ci) = state.cruncher_index.as_ref() {
         engine = engine.with_cruncher(ci);
     }
-    let mut q = graphiq_core::search::SearchQuery::new(query).top_k(top_k);
+    let mut q = graphiq_core::search::SearchQuery::new(query).top_k(search_top_k);
     if let Some(f) = file_filter {
         q = q.file_filter(f);
     }
 
     let mut result = engine.search(&q);
 
-    let cluster = args
-        .get("cluster")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(true);
-    if cluster && result.results.len() > 3 {
-        let mut by_file: HashMap<String, Vec<usize>> = HashMap::new();
-        for (i, scored) in result.results.iter().enumerate() {
-            let file = scored.file_path.clone().unwrap_or_default();
-            by_file.entry(file).or_default().push(i);
+    if cluster {
+        // Keep the first-seen score order while spreading the first three
+        // results from each file ahead of same-file backfill. Iterating a
+        // HashMap here used to make otherwise identical searches reorder
+        // their output between processes.
+        if result.results.len() > 3 {
+            let mut group_by_file: HashMap<String, usize> = HashMap::new();
+            let mut groups: Vec<Vec<usize>> = Vec::new();
+            for (i, scored) in result.results.iter().enumerate() {
+                let file = scored.file_path.clone().unwrap_or_default();
+                let group = match group_by_file.get(&file) {
+                    Some(&group) => group,
+                    None => {
+                        let group = groups.len();
+                        group_by_file.insert(file, group);
+                        groups.push(Vec::new());
+                        group
+                    }
+                };
+                groups[group].push(i);
+            }
+            let mut clustered: Vec<usize> = Vec::new();
+            let mut backfill: Vec<usize> = Vec::new();
+            for indices in &groups {
+                let take = indices.len().min(3);
+                clustered.extend(indices.iter().take(take));
+                backfill.extend(indices.iter().skip(take));
+            }
+            clustered.extend(backfill);
+            let mut new_results = Vec::with_capacity(clustered.len());
+            for idx in clustered {
+                new_results.push(result.results[idx].clone());
+            }
+            result.results = new_results;
         }
-        let mut clustered: Vec<usize> = Vec::new();
-        let mut backfill: Vec<usize> = Vec::new();
-        for (_, indices) in &by_file {
-            let take = indices.len().min(3);
-            clustered.extend(indices.iter().take(take));
-            backfill.extend(indices.iter().skip(take));
-        }
-        clustered.extend(backfill);
-        let mut new_results = Vec::with_capacity(clustered.len());
-        for idx in clustered {
-            new_results.push(result.results[idx].clone());
-        }
-        result.results = new_results;
+        result.results.truncate(top_k);
     }
 
     let mut lines = Vec::new();
@@ -1571,12 +1665,19 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
         String::new()
     };
     lines.push(format!(
-        "Search: \"{}\" ({} results, family: {}, mode: {}{})",
-        query,
+        "## Search results for `{}`",
+        markdown_code(query, COMPACT_TEXT_LIMIT)
+    ));
+    lines.push(format!(
+        "{} matches · family: {} · mode: {} · format: {}{}",
         result.results.len(),
         result.query_family,
         result.search_mode,
-        cap_note,
+        match output_format {
+            SearchOutputFormat::Compact => "compact",
+            SearchOutputFormat::Detailed => "detailed",
+        },
+        cap_note
     ));
     lines.push(String::new());
 
@@ -1624,6 +1725,62 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
         } else {
             format!(" subsystem: {}", subsystem_str)
         };
+
+        if output_format == SearchOutputFormat::Compact {
+            let line_range = if sym.line_end > sym.line_start {
+                format!("{}-{}", sym.line_start, sym.line_end)
+            } else {
+                sym.line_start.to_string()
+            };
+            let role_tag = if role_tag.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", role_tag)
+            };
+            let subsystem_tag = if subsystem_str.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " · subsystem: {}",
+                    markdown_code(&subsystem_str, COMPACT_TEXT_LIMIT)
+                )
+            };
+            let edge_tag = neighborhood
+                .as_ref()
+                .filter(|n| !n.callers.is_empty() || !n.callees.is_empty())
+                .map(|n| format!(" · edges {} in/{} out", n.callers.len(), n.callees.len()))
+                .unwrap_or_default();
+            lines.push(format!(
+                "{}. **`{}`** · {} · `{}`:{} · score {:.2}{}{}{}",
+                i + 1,
+                markdown_code(&sym.name, COMPACT_TEXT_LIMIT),
+                sym.kind.as_str(),
+                markdown_code(file, COMPACT_TEXT_LIMIT),
+                line_range,
+                scored.score,
+                role_tag,
+                subsystem_tag,
+                edge_tag,
+            ));
+            if let Some(signature) = sym.signature.as_deref() {
+                lines.push(format!(
+                    "   `{}`",
+                    markdown_code(signature, COMPACT_TEXT_LIMIT)
+                ));
+            } else if let Some(doc) = sym.doc_comment.as_deref() {
+                if let Some(first_line) = doc.lines().find(|line| !line.trim().is_empty()) {
+                    lines.push(format!(
+                        "   {}",
+                        markdown_code(first_line, COMPACT_TEXT_LIMIT)
+                    ));
+                }
+            }
+            if i + 1 < result.results.len() {
+                lines.push(String::new());
+            }
+            continue;
+        }
+
         lines.push(format!(
             "#{} [{:.2}] {}:{}  {}::{} ({}L){}{}",
             i + 1,
@@ -1677,7 +1834,7 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
         if !source_lines.is_empty() {
             let preview = source_lines.join("\n    ");
             if preview.len() > 200 {
-                lines.push(format!("    {}...", &preview[..200]));
+                lines.push(format!("    {}...", truncate_chars(&preview, 200)));
             } else {
                 lines.push(format!("    {}", preview));
             }
@@ -1692,18 +1849,24 @@ fn tool_search(state: &ServerState, args: Value) -> Value {
                 *acc.entry(r.symbol.name.clone()).or_insert(0) += 1;
                 acc
             });
-        let ambiguous: Vec<&str> = name_counts
+        let mut ambiguous: Vec<&str> = name_counts
             .iter()
             .filter(|(_, &count)| count > 1)
             .map(|(name, _)| name.as_str())
             .collect();
+        ambiguous.sort_unstable();
         if !ambiguous.is_empty() {
             lines.push(String::new());
             lines.push(format!(
-                "Note: {} — use context with file path or qualified name for specific result.",
+                "Note: {} — use context with `file_filter` matching the path above to choose a specific result.",
                 ambiguous
                     .iter()
-                    .map(|n| format!("'{}' appears multiple times", n))
+                    .map(|n| {
+                        format!(
+                            "`{}` appears multiple times",
+                            markdown_code(n, COMPACT_TEXT_LIMIT)
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join("; ")
             ));
@@ -1878,21 +2041,46 @@ fn tool_context(
         return tool_error("symbol must not be empty");
     }
 
-    let candidates = match db.symbols_by_name(symbol_name) {
+    let all_candidates = match db.symbols_by_name(symbol_name) {
         Ok(c) => c,
         Err(e) => return tool_error(&format!("database error: {e}")),
     };
 
+    let file_filter = args
+        .get("file_filter")
+        .and_then(|v| v.as_str())
+        .filter(|filter| !filter.trim().is_empty());
+    let candidates: Vec<_> = all_candidates
+        .iter()
+        .filter(|candidate| {
+            file_filter.is_none_or(|filter| {
+                db.file_path_for_id(candidate.file_id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|path| path.contains(filter))
+            })
+        })
+        .cloned()
+        .collect();
+
     let sym = match candidates.first() {
         Some(s) => s,
+        None if file_filter.is_some() => {
+            return tool_error(&format!(
+                "symbol not found: {} (no match for file_filter: {})",
+                symbol_name,
+                file_filter.unwrap_or_default()
+            ));
+        }
         None => return tool_error(&format!("symbol not found: {symbol_name}")),
     };
 
-    if candidates.len() > 1 {
+    if all_candidates.len() > 1 {
         log_err(&format!(
-            "context: {} matches for '{}', using first (id={})",
-            candidates.len(),
+            "context: {} matches for '{}' ({} after file filter), using first (id={})",
+            all_candidates.len(),
             symbol_name,
+            candidates.len(),
             sym.id
         ));
     }
@@ -1905,10 +2093,13 @@ fn tool_context(
     if let Some(ref sig) = sym.signature {
         lines.push(format!("Signature: {}", sig));
     }
-    lines.push(format!(
-        "Location: line {}-{}",
-        sym.line_start, sym.line_end
-    ));
+    let location = db
+        .file_path_for_id(sym.file_id)
+        .ok()
+        .flatten()
+        .map(|path| format!("{}:{}-{}", path, sym.line_start, sym.line_end))
+        .unwrap_or_else(|| format!("line {}-{}", sym.line_start, sym.line_end));
+    lines.push(format!("Location: {}", location));
     lines.push(String::new());
     lines.push("Source:".into());
 
@@ -3427,5 +3618,204 @@ mod tests {
 
         // Whitespace tolerated.
         assert_eq!(resolve_cpu_threads_from(Some("  2 "), None, 8, false), 2);
+    }
+
+    fn tool_text(value: Value) -> String {
+        value["content"][0]["text"]
+            .as_str()
+            .expect("tool response should contain text")
+            .to_string()
+    }
+
+    #[test]
+    fn search_format_defaults_to_compact_and_is_advertised() {
+        assert_eq!(
+            SearchOutputFormat::from_args(&serde_json::json!({})),
+            Ok(SearchOutputFormat::Compact)
+        );
+        assert_eq!(
+            SearchOutputFormat::from_args(&serde_json::json!({"format": "detailed"})),
+            Ok(SearchOutputFormat::Detailed)
+        );
+        assert!(SearchOutputFormat::from_args(&serde_json::json!({
+            "format": "verbose"
+        }))
+        .is_err());
+        assert!(SearchOutputFormat::from_args(&serde_json::json!({
+            "format": 1
+        }))
+        .is_err());
+        assert!(SearchOutputFormat::from_args(&serde_json::json!({
+            "format": null
+        }))
+        .is_err());
+
+        let tool_list = tools_list();
+        let search = tool_list["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "search")
+            .expect("search tool should be listed");
+        assert_eq!(
+            search["inputSchema"]["properties"]["format"]["default"],
+            "compact"
+        );
+        assert_eq!(
+            search["inputSchema"]["properties"]["cluster"]["default"],
+            true
+        );
+    }
+
+    #[test]
+    fn compact_text_normalizes_and_bounds_dynamic_values() {
+        assert_eq!(
+            compact_text("first\nsecond\tthird", 100),
+            "first second third"
+        );
+
+        let long = "x".repeat(COMPACT_TEXT_LIMIT + 20);
+        let compact = compact_text(&long, COMPACT_TEXT_LIMIT);
+        assert_eq!(compact.chars().count(), COMPACT_TEXT_LIMIT);
+        assert_eq!(compact.chars().last(), Some('…'));
+    }
+
+    #[test]
+    fn compact_search_omits_source_preview() {
+        let dir = temp_path("compact-search");
+        make_repo(&dir);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("src").join("lib.rs"),
+            "pub fn alpha() -> u32 {\n    // COMPACT_SOURCE_MARKER\n    42\n}\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join(".graphiq")).unwrap();
+        let db_path = dir.join(".graphiq").join("graphiq.db");
+        {
+            let db = graphiq_core::db::GraphDb::open(&db_path).unwrap();
+            graphiq_core::index::Indexer::new(&db)
+                .index_project(&dir)
+                .unwrap();
+        }
+
+        let state = ServerState {
+            project_root: dir.clone(),
+            db_path: db_path.clone(),
+            db: graphiq_core::db::GraphDb::open(&db_path).unwrap(),
+            cache: graphiq_core::cache::HotCache::with_defaults(),
+            cruncher_index: None,
+            watching: false,
+            last_cruncher_rebuild_at: None,
+            last_staleness_check_at: None,
+            suppress_auto_index: false,
+        };
+
+        let compact = tool_text(tool_search(&state, serde_json::json!({"query": "alpha"})));
+        let compact_again = tool_text(tool_search(&state, serde_json::json!({"query": "alpha"})));
+        let detailed = tool_text(tool_search(
+            &state,
+            serde_json::json!({"query": "alpha", "format": "detailed"}),
+        ));
+
+        assert_eq!(compact, compact_again);
+        assert!(compact.contains("## Search results for `alpha`"));
+        assert!(compact.contains("format: compact"));
+        assert!(compact.contains("**`alpha`**"));
+        assert!(!compact.contains("COMPACT_SOURCE_MARKER"));
+        assert!(detailed.contains("COMPACT_SOURCE_MARKER"));
+        assert!(
+            compact.len() < detailed.len(),
+            "compact={} detailed={}\ncompact:\n{}\ndetailed:\n{}",
+            compact.len(),
+            detailed.len(),
+            compact,
+            detailed
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn clustered_search_retrieves_beyond_output_window() {
+        let dir = temp_path("search-cluster");
+        make_repo(&dir);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        let source_for = |prefix: &str| {
+            (0..6)
+                .map(|i| format!("pub fn shared_{prefix}_{i}() {{}}\n"))
+                .collect::<String>()
+        };
+        fs::write(dir.join("src").join("a.rs"), source_for("a")).unwrap();
+        fs::write(dir.join("src").join("b.rs"), source_for("b")).unwrap();
+        fs::create_dir_all(dir.join(".graphiq")).unwrap();
+        let db_path = dir.join(".graphiq").join("graphiq.db");
+        {
+            let db = graphiq_core::db::GraphDb::open(&db_path).unwrap();
+            graphiq_core::index::Indexer::new(&db)
+                .index_project(&dir)
+                .unwrap();
+        }
+        let state = ServerState {
+            project_root: dir.clone(),
+            db_path: db_path.clone(),
+            db: graphiq_core::db::GraphDb::open(&db_path).unwrap(),
+            cache: graphiq_core::cache::HotCache::with_defaults(),
+            cruncher_index: None,
+            watching: false,
+            last_cruncher_rebuild_at: None,
+            last_staleness_check_at: None,
+            suppress_auto_index: false,
+        };
+
+        let output = tool_text(tool_search(
+            &state,
+            serde_json::json!({"query": "shared", "top_k": 4}),
+        ));
+
+        assert!(output.contains("src/a.rs"));
+        assert!(output.contains("src/b.rs"));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn context_file_filter_selects_the_requested_same_named_symbol() {
+        let dir = temp_path("context-filter");
+        make_repo(&dir);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(
+            dir.join("src").join("one.rs"),
+            "pub fn shared() -> &'static str { \"ONE_CONTEXT_MARKER\" }\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("src").join("two.rs"),
+            "pub fn shared() -> &'static str { \"TWO_CONTEXT_MARKER\" }\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.join(".graphiq")).unwrap();
+        let db_path = dir.join(".graphiq").join("graphiq.db");
+        {
+            let db = graphiq_core::db::GraphDb::open(&db_path).unwrap();
+            graphiq_core::index::Indexer::new(&db)
+                .index_project(&dir)
+                .unwrap();
+        }
+        let db = graphiq_core::db::GraphDb::open(&db_path).unwrap();
+        let output = tool_text(tool_context(
+            &db,
+            &graphiq_core::cache::HotCache::with_defaults(),
+            serde_json::json!({
+                "symbol": "shared",
+                "file_filter": "src/two.rs"
+            }),
+        ));
+
+        assert!(output.contains("TWO_CONTEXT_MARKER"));
+        assert!(!output.contains("ONE_CONTEXT_MARKER"));
+        assert!(output.contains("Location: src/two.rs:"));
+
+        let _ = fs::remove_dir_all(dir);
     }
 }

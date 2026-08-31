@@ -26,6 +26,33 @@ The server auto-binds supported provider workspace roots, lazily builds its inde
 | `status` / `doctor` / `upgrade_index` | Index health, diagnosis, rebuild |
 | `index` / `clear` | Full reindex / wipe to empty |
 
+## Search output
+
+`search` returns a compact Markdown result list by default. Each result includes
+the symbol, kind, file and line range, score, and small structural tags; a
+signature or one-line doc comment is included when available. This keeps the
+common exploration path readable and bounded for agent context windows.
+
+```text
+## Search results for `rate limit middleware`
+4 matches · family: NaturalDescriptive · mode: GraphWalk · format: compact
+
+1. **RateLimiter** · class · src/auth/rate_limit.rs:18-74 · score 8.52 · hub
+   `pub struct RateLimiter { ... }`
+```
+
+Use `format: "detailed"` when source previews and caller/callee lists are
+actually needed. Use `context` for one selected implementation; when a name
+is ambiguous, pass the result's path as `file_filter`:
+
+```json
+{"symbol":"RateLimiter","file_filter":"src/auth/rate_limit.rs"}
+```
+
+Search still accepts `top_k` (default 10, maximum 50), `file_filter`, and
+`cluster` (default true). Clustering retrieves a wider candidate pool, then
+spreads results across files while preserving the underlying scores.
+
 ## Tool naming across surfaces
 
 | Surface | Tool names |
