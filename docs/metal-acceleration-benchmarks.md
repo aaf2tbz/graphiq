@@ -38,9 +38,22 @@ GRAPHIQ_DISABLE_GPU=1 ./target/release/graphiq-bench metal-exhaustive /tmp/graph
 ```
 
 The regular seeded benchmark did not dispatch Metal for the current GraphIQ
-index because its candidate batches remain below the default threshold of 128
+index because its candidate batches remain below the default threshold of 512
 candidates and 32,768 estimated work items. This is intentional: forcing Metal
 for those smaller interactive searches increased latency on the same machine.
+
+A candidate-limit sweep on the same clean checkout confirmed the dispatch gate:
+
+| Exhaustive candidate limit | GPU dispatches (10 iterations × 3 queries) |
+|---:|---:|
+| 1 | 0 |
+| 10 | 0 |
+| 50 | 0 |
+| 200 | 0 |
+| 2,109 | 45 |
+
+The `metal-exhaustive` command accepts arbitrary limits, so larger 10k/100k
+fixtures can be added without changing the benchmark code.
 
 ## Interpretation
 

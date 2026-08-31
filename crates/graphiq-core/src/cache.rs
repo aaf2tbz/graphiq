@@ -250,11 +250,21 @@ impl HotCache {
     }
 
     pub fn compute_query_hash_with_mode(query: &str, top_k: usize, exhaustive: bool) -> u64 {
+        Self::compute_query_hash_with_options(query, top_k, exhaustive, None)
+    }
+
+    pub fn compute_query_hash_with_options(
+        query: &str,
+        top_k: usize,
+        exhaustive: bool,
+        exhaustive_limit: Option<usize>,
+    ) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         query.hash(&mut hasher);
         top_k.hash(&mut hasher);
         exhaustive.hash(&mut hasher);
+        exhaustive_limit.hash(&mut hasher);
         hasher.finish()
     }
 

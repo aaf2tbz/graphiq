@@ -19,7 +19,7 @@ pub const GPU_INDEX_DATA_VERSION: u32 = 1;
 
 const DEFAULT_GPU_MIN_INDEX_SYMBOLS: usize = 32;
 const DEFAULT_GPU_MIN_INDEX_TERMS: usize = 128;
-const DEFAULT_GPU_MIN_SEARCH_CANDIDATES: usize = 128;
+const DEFAULT_GPU_MIN_SEARCH_CANDIDATES: usize = 512;
 const DEFAULT_GPU_MIN_SEARCH_WORK_ITEMS: usize = 32768;
 
 #[cfg(feature = "gpu")]

@@ -538,6 +538,7 @@ fn run_metal_search_bench(
     query_file: Option<&str>,
     iterations: usize,
     exhaustive: bool,
+    exhaustive_limit: Option<usize>,
 ) {
     use std::time::Instant;
 
@@ -599,6 +600,9 @@ fn run_metal_search_bench(
             ""
         }
     );
+    if let Some(limit) = exhaustive_limit {
+        println!("exhaustive candidate limit: {limit}");
+    }
     println!(
         "{} files, {} symbols, {} edges",
         stats.files, stats.symbols, stats.edges
@@ -619,9 +623,15 @@ fn run_metal_search_bench(
     let mut all_times = Vec::new();
     let mut all_candidate_counts = Vec::new();
     for query in &queries {
-        let search_query = SearchQuery::new(&query.query)
-            .top_k(10)
-            .exhaustive(exhaustive);
+        let search_query = if let Some(limit) = exhaustive_limit {
+            SearchQuery::new(&query.query)
+                .top_k(10)
+                .exhaustive_limit(limit)
+        } else {
+            SearchQuery::new(&query.query)
+                .top_k(10)
+                .exhaustive(exhaustive)
+        };
         for _ in 0..warmup {
             cache.clear_results();
             let _ = engine.search(&search_query);
@@ -739,7 +749,7 @@ fn main() {
     if matches!(metal_mode, Some("metal") | Some("metal-exhaustive")) {
         if args.len() < 3 {
             eprintln!(
-                "usage: graphiq-bench {} <db-path> [queries.json] [iterations]",
+                "usage: graphiq-bench {} <db-path> [queries.json] [iterations] [candidate-limit]",
                 metal_mode.unwrap_or("metal")
             );
             std::process::exit(1);
@@ -757,11 +767,13 @@ fn main() {
                 .map(String::as_str)
                 .filter(|path| !path.is_empty())
         };
+        let exhaustive_limit = args.get(5).and_then(|value| value.parse::<usize>().ok());
         run_metal_search_bench(
             &args[2],
             query_file,
             iterations,
             metal_mode == Some("metal-exhaustive"),
+            exhaustive_limit,
         );
         return;
     }

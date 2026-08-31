@@ -60,6 +60,8 @@ pub struct SearchQuery {
     /// FTS seeds. Normal interactive searches leave this disabled; it gives
     /// the benchmark harness a deterministic large scoring batch.
     pub exhaustive: bool,
+    /// Optional cap for the diagnostic exhaustive candidate batch.
+    pub exhaustive_limit: Option<usize>,
 }
 
 impl SearchQuery {
@@ -75,6 +77,7 @@ impl SearchQuery {
             blast_depth: 3,
             collect_trace: false,
             exhaustive: false,
+            exhaustive_limit: None,
         }
     }
 
@@ -102,6 +105,12 @@ impl SearchQuery {
 
     pub fn exhaustive(mut self, enabled: bool) -> Self {
         self.exhaustive = enabled;
+        self
+    }
+
+    pub fn exhaustive_limit(mut self, limit: usize) -> Self {
+        self.exhaustive = true;
+        self.exhaustive_limit = Some(limit.max(1));
         self
     }
 
@@ -164,8 +173,12 @@ impl<'a> SearchEngine<'a> {
     }
 
     pub fn search(&self, query: &SearchQuery) -> SearchResult {
-        let query_hash =
-            HotCache::compute_query_hash_with_mode(&query.query, query.top_k, query.exhaustive);
+        let query_hash = HotCache::compute_query_hash_with_options(
+            &query.query,
+            query.top_k,
+            query.exhaustive,
+            query.exhaustive_limit,
+        );
         // A one-token code fragment cannot be classified reliably without the
         // index.  For example, `Chunk` is an exact symbol while `SealCh` is a
         // prefix fragment.  Use the database to make that distinction at the
@@ -328,7 +341,15 @@ impl<'a> SearchEngine<'a> {
         let ci = self.cruncher_index.unwrap();
 
         let (seeds, total_fts) = if query.exhaustive {
-            (ci.symbol_ids.iter().map(|&id| (id, 0.0)).collect(), ci.n)
+            let limit = query.exhaustive_limit.unwrap_or(ci.n).min(ci.n);
+            (
+                ci.symbol_ids
+                    .iter()
+                    .take(limit)
+                    .map(|&id| (id, 0.0))
+                    .collect(),
+                limit,
+            )
         } else {
             let seed_config = crate::seeds::SeedConfig::for_family(family);
             let (seeds, total_fts, _bm25_original) =
@@ -339,7 +360,7 @@ impl<'a> SearchEngine<'a> {
         let pipeline_config = crate::pipeline::PipelineConfig {
             top_k: query.top_k,
             seed_limit: if query.exhaustive {
-                ci.n
+                query.exhaustive_limit.unwrap_or(ci.n).min(ci.n)
             } else {
                 crate::cruncher::MAX_SEEDS
             },
