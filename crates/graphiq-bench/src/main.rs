@@ -620,6 +620,29 @@ fn run_metal_search_bench(
         iterations
     );
 
+    let rss_before = process_rss_bytes();
+    let first_query = if let Some(limit) = exhaustive_limit {
+        SearchQuery::new(&queries[0].query)
+            .top_k(10)
+            .exhaustive_limit(limit)
+    } else {
+        SearchQuery::new(&queries[0].query)
+            .top_k(10)
+            .exhaustive(exhaustive)
+    };
+    cache.clear_results();
+    let cold_started = Instant::now();
+    let cold_result = engine.search(&first_query);
+    let cold_us = cold_started.elapsed().as_micros() as u64;
+    assert!(
+        !cold_result.from_cache,
+        "cold benchmark search unexpectedly hit cache"
+    );
+    let mut peak_rss = rss_before;
+    if let Some(rss) = process_rss_bytes() {
+        peak_rss = Some(peak_rss.map_or(rss, |peak| peak.max(rss)));
+    }
+
     let mut all_times = Vec::new();
     let mut all_candidate_counts = Vec::new();
     for query in &queries {
@@ -648,6 +671,9 @@ fn run_metal_search_bench(
             times.push(elapsed_us);
             all_times.push(elapsed_us);
             all_candidate_counts.push(candidate_count);
+            if let Some(rss) = process_rss_bytes() {
+                peak_rss = Some(peak_rss.map_or(rss, |peak| peak.max(rss)));
+            }
             assert!(
                 !result.from_cache,
                 "benchmark search unexpectedly hit cache"
@@ -678,6 +704,26 @@ fn run_metal_search_bench(
         "GPU search dispatches: {}",
         graphiq_core::gpu_compute::gpu_search_dispatch_count()
     );
+    println!("cold first-search latency: {cold_us}us");
+    if let (Some(before), Some(peak)) = (rss_before, peak_rss) {
+        println!(
+            "process RSS: before={} MB peak={} MB delta={} MB",
+            before / 1024 / 1024,
+            peak / 1024 / 1024,
+            peak.saturating_sub(before) / 1024 / 1024,
+        );
+    }
+    let gpu_timings = graphiq_core::gpu_compute::gpu_search_timing_totals();
+    if gpu_timings.dispatches > 0 {
+        let n = gpu_timings.dispatches;
+        println!(
+            "GPU timings avg (us): resident_upload={} transient_upload={} submit={} readback={}",
+            gpu_timings.resident_upload_us / n,
+            gpu_timings.transient_upload_us / n,
+            gpu_timings.submit_us / n,
+            gpu_timings.readback_us / n,
+        );
+    }
 }
 
 fn percentile(sorted: &[f64], p: f64) -> f64 {
@@ -686,6 +732,22 @@ fn percentile(sorted: &[f64], p: f64) -> f64 {
     }
     let index = ((p / 100.0) * (sorted.len() - 1) as f64).round() as usize;
     sorted[index.min(sorted.len() - 1)]
+}
+
+fn process_rss_bytes() -> Option<u64> {
+    let pid = std::process::id().to_string();
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let rss_kb = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    Some(rss_kb.saturating_mul(1024))
 }
 
 fn main() {

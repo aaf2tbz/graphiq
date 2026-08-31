@@ -23,7 +23,14 @@ const DEFAULT_GPU_MIN_SEARCH_CANDIDATES: usize = 512;
 const DEFAULT_GPU_MIN_SEARCH_WORK_ITEMS: usize = 32768;
 
 #[cfg(feature = "gpu")]
-static GPU_SEARCH_DISPATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static GPU_SEARCH_TIMINGS: std::sync::Mutex<GpuTimingTotals> =
+    std::sync::Mutex::new(GpuTimingTotals {
+        dispatches: 0,
+        resident_upload_us: 0,
+        transient_upload_us: 0,
+        submit_us: 0,
+        readback_us: 0,
+    });
 
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
@@ -50,14 +57,40 @@ pub fn gpu_trace_enabled() -> bool {
 
 pub fn reset_gpu_search_dispatch_count() {
     #[cfg(feature = "gpu")]
-    GPU_SEARCH_DISPATCHES.store(0, std::sync::atomic::Ordering::Relaxed);
+    if let Ok(mut totals) = GPU_SEARCH_TIMINGS.lock() {
+        *totals = GpuTimingTotals::default();
+    }
 }
 
 pub fn gpu_search_dispatch_count() -> u64 {
     #[cfg(feature = "gpu")]
-    return GPU_SEARCH_DISPATCHES.load(std::sync::atomic::Ordering::Relaxed);
+    return GPU_SEARCH_TIMINGS
+        .lock()
+        .map(|totals| totals.dispatches)
+        .unwrap_or(0);
     #[cfg(not(feature = "gpu"))]
     0
+}
+
+pub fn gpu_search_timing_totals() -> GpuTimingTotals {
+    #[cfg(feature = "gpu")]
+    return GPU_SEARCH_TIMINGS
+        .lock()
+        .map(|totals| *totals)
+        .unwrap_or_default();
+    #[cfg(not(feature = "gpu"))]
+    GpuTimingTotals::default()
+}
+
+#[cfg(feature = "gpu")]
+fn record_gpu_search_timing(timing: GpuDispatchTimings) {
+    if let Ok(mut totals) = GPU_SEARCH_TIMINGS.lock() {
+        totals.dispatches += 1;
+        totals.resident_upload_us += timing.resident_upload_us;
+        totals.transient_upload_us += timing.transient_upload_us;
+        totals.submit_us += timing.submit_us;
+        totals.readback_us += timing.readback_us;
+    }
 }
 
 /// Minimum number of symbols before index crunching considers the GPU.
@@ -311,6 +344,23 @@ pub struct PackedGpuQuery {
     pub probe_weights: Vec<f32>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GpuDispatchTimings {
+    pub resident_upload_us: u64,
+    pub transient_upload_us: u64,
+    pub submit_us: u64,
+    pub readback_us: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GpuTimingTotals {
+    pub dispatches: u64,
+    pub resident_upload_us: u64,
+    pub transient_upload_us: u64,
+    pub submit_us: u64,
+    pub readback_us: u64,
+}
+
 #[derive(Debug)]
 pub struct GpuSearchResult {
     pub candidate_indices: Vec<usize>,
@@ -318,6 +368,7 @@ pub struct GpuSearchResult {
     pub matched: Vec<u32>,
     pub elapsed_ms: u64,
     pub device: GpuDeviceInfo,
+    pub timings: GpuDispatchTimings,
 }
 
 // ---------------------------------------------------------------------------
@@ -612,12 +663,12 @@ mod wgpu_backend {
             &self.info
         }
 
-        fn resident_index(&self, data: &super::GpuIndexData) -> Arc<ResidentIndex> {
+        fn resident_index(&self, data: &super::GpuIndexData) -> (Arc<ResidentIndex>, bool) {
             let fingerprint = data.fingerprint();
             if let Ok(guard) = self.resident_index.lock() {
                 if let Some((cached_fingerprint, resident)) = guard.as_ref() {
                     if *cached_fingerprint == fingerprint {
-                        return resident.clone();
+                        return (resident.clone(), false);
                     }
                 }
             }
@@ -642,7 +693,7 @@ mod wgpu_backend {
             if let Ok(mut guard) = self.resident_index.lock() {
                 *guard = Some((fingerprint, resident.clone()));
             }
-            resident
+            (resident, true)
         }
 
         fn make_pipeline(device: &wgpu::Device, src: &str, label: &str) -> wgpu::ComputePipeline {
@@ -1018,13 +1069,22 @@ mod wgpu_backend {
             query: &super::PackedGpuQuery,
             candidates: &[usize],
             data: &super::GpuIndexData,
-        ) -> Option<(Vec<f32>, Vec<u32>)> {
+        ) -> Option<(Vec<f32>, Vec<u32>, super::GpuDispatchTimings)> {
             let nc = candidates.len() as u32;
             let nq = query.query_idfs.len() as u32;
             if nc == 0 || nq == 0 || query.probe_ids.is_empty() || !data.is_compatible() {
                 return None;
             }
 
+            let resident_started = std::time::Instant::now();
+            let (resident, resident_created) = self.resident_index(data);
+            let resident_upload_us = if resident_created {
+                resident_started.elapsed().as_micros() as u64
+            } else {
+                0
+            };
+
+            let transient_started = std::time::Instant::now();
             let q_idfs_b =
                 self.storage_init(&super::f32_to_bytes(&query.query_idfs), "tm-q-idfs", false);
             let q_offsets_b = self.storage_init(
@@ -1040,7 +1100,6 @@ mod wgpu_backend {
             // Keep the compact index vectors resident on the device after the
             // first search. Each query uploads only its sparse probes and the
             // candidate IDs, while the candidate list still bounds shader work.
-            let resident = self.resident_index(data);
             let s_offsets_b = &resident.symbol_offsets;
             let s_terms_b = &resident.term_ids;
             let s_weights_b = &resident.term_weights;
@@ -1058,6 +1117,7 @@ mod wgpu_backend {
                 .flat_map(|value| value.to_ne_bytes())
                 .collect();
             let params_b = self.uniform_init(&params_bytes, "tm-params");
+            let transient_upload_us = transient_started.elapsed().as_micros() as u64;
 
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("tm-bind-group"),
@@ -1116,8 +1176,22 @@ mod wgpu_backend {
                 pass.set_bind_group(0, &bind_group, &[]);
                 pass.dispatch_workgroups(nc.div_ceil(64), 1, 1);
             }
+            let submit_started = std::time::Instant::now();
             self.queue.submit(std::iter::once(encoder.finish()));
-            self.readback_matches(&results_b, candidates.len())
+            let submit_us = submit_started.elapsed().as_micros() as u64;
+            let readback_started = std::time::Instant::now();
+            let (scores, matched) = self.readback_matches(&results_b, candidates.len())?;
+            let readback_us = readback_started.elapsed().as_micros() as u64;
+            Some((
+                scores,
+                matched,
+                super::GpuDispatchTimings {
+                    resident_upload_us,
+                    transient_upload_us,
+                    submit_us,
+                    readback_us,
+                },
+            ))
         }
     }
 }
@@ -1220,17 +1294,18 @@ pub fn try_gpu_term_match(
     }))
     .ok()
     .flatten()?;
-    let (scores, matched) = dispatch;
+    let (scores, matched, timings) = dispatch;
     if scores.len() != candidates.len() || matched.len() != candidates.len() {
         return None;
     }
-    GPU_SEARCH_DISPATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    record_gpu_search_timing(timings);
     Some(GpuSearchResult {
         candidate_indices: candidates.to_vec(),
         scores,
         matched,
         elapsed_ms: started.elapsed().as_millis() as u64,
         device: context.info().clone(),
+        timings,
     })
 }
 
@@ -1731,7 +1806,7 @@ mod tests {
             None => return,
         };
         let packed = data.pack_query(&query);
-        let (gpu_scores, gpu_matched) = context
+        let (gpu_scores, gpu_matched, _timings) = context
             .dispatch_term_match(&packed, &[0, 1], &data)
             .expect("Metal/Vulkan dispatch should return readback data");
 
