@@ -1,4 +1,8 @@
 <p align="center">
+  ## GraphIQ 
+
+  ___
+  
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/graphiq-logo-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/graphiq-logo-light.png">
@@ -12,7 +16,7 @@
   <a href="https://github.com/aaf2tbz/graphiq/actions/workflows/linux-smoke.yml"><img src="https://img.shields.io/github/actions/workflow/status/aaf2tbz/graphiq/linux-smoke.yml?branch=main&label=linux&style=for-the-badge" alt="Linux smoke"></a>
 </p>
 
-# GraphIQ
+
 
 **Local code intelligence for agents and developers.** GraphIQ indexes a repository into a structural graph of symbols, calls, imports, constants, and type flow, then searches it with ranked retrieval that understands how code is connected—not just what strings it contains.
 
