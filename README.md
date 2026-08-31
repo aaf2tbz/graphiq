@@ -1,8 +1,8 @@
-<p align="center">
-  ## GraphIQ 
+<t align="center">
+  GraphIq
+</t>
 
-  ___
-  
+<p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/graphiq-logo-dark.png">
     <source media="(prefers-color-scheme: light)" srcset="docs/assets/graphiq-logo-light.png">
