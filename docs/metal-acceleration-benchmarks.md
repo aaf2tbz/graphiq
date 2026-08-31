@@ -10,7 +10,7 @@ class before changing dispatch thresholds.
 - macOS: 27.0 (build 26A5416b)
 - Memory: 16 GB
 - Build: `cargo build --release --features gpu`
-- Database: GraphIQ itself, 181 files, 2,109 symbols, 6,559 edges
+- Database: a clean checkout of GraphIQ itself, 185 files, 2,109 symbols, 6,564 edges
 - Benchmark: 5 warmups and 50 uncached iterations per query
 
 ## Results
@@ -21,12 +21,12 @@ FTS seed cap:
 
 | Mode | Median | P95 | GPU dispatches |
 |---|---:|---:|---:|
-| Metal | 18,094 us | 24,102 us | 165 |
-| CPU (`GRAPHIQ_DISABLE_GPU=1`) | 21,075 us | 21,945 us | 0 |
+| Metal | 16,058 us | 22,781 us | 165 |
+| CPU (`GRAPHIQ_DISABLE_GPU=1`) | 21,350 us | 22,171 us | 0 |
 
-Metal was approximately 14% faster at median latency for this workload. Its
-P95 was higher because the synchronous buffer readback is sensitive to host/GPU
-scheduling.
+Metal was approximately 25% faster at median latency for this workload. Its
+P95 was slightly higher because synchronous buffer readback is sensitive to
+host/GPU scheduling.
 
 Command:
 
