@@ -1,0 +1,18 @@
+[
+  {
+    "query": "rate limit middleware",
+    "category": "natural-descriptive"
+  },
+  {
+    "query": "callers of authenticate",
+    "category": "relationship"
+  },
+  {
+    "query": "all connector implementations",
+    "category": "cross-cutting"
+  },
+  {
+    "query": "timeout in channel send",
+    "category": "error-debug"
+  }
+]

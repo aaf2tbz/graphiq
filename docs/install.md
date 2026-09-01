@@ -25,7 +25,7 @@ cd graphiq
 cargo build --release
 ```
 
-For GPU acceleration add `--features gpu` (requires a Vulkan-capable GPU + loader).
+For GPU acceleration add `--features gpu`. On macOS this selects the system Metal backend (no Vulkan or extra runtime is required); on Linux it uses Vulkan when a compatible loader/GPU is available and otherwise falls back to CPU. Indexing and large search score batches use the GPU automatically; small searches stay on CPU to avoid transfer overhead. Set `GRAPHIQ_DISABLE_GPU=1` to force the fallback path.
 
 ## Requirements
 
@@ -38,8 +38,8 @@ For GPU acceleration add `--features gpu` (requires a Vulkan-capable GPU + loade
 
 | Platform | Status | Notes |
 |---|---|---|
-| **macOS** (Apple Silicon) | ✅ Primary | prebuilt release |
-| **macOS** (Intel) | ✅ Supported | prebuilt release |
+| **macOS** (Apple Silicon) | ✅ Primary | prebuilt release; Metal acceleration on macOS 11+ |
+| **macOS** (Intel) | ✅ Supported | prebuilt release; Metal acceleration depends on the OS/GPU |
 | **Linux** (x86_64) | ✅ Supported | prebuilt release; [smoke-tested in CI](https://github.com/aaf2tbz/graphiq/actions/workflows/linux-smoke.yml) with zero Vulkan installed |
 | **Linux** (aarch64) | ✅ Built | prebuilt release; built + RPATH-asserted in CI |
 | **Windows** | ⚠️ Builds | not prebuilt; `which`/path checks fall back to `where` |

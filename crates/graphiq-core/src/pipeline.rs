@@ -13,13 +13,16 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 
 use crate::cruncher::{
     alias_match_score, build_query_terms, compute_name_overlap, name_coverage,
-    neighbor_match_score, per_term_match, term_match_score, CruncherIndex, MAX_SEEDS,
+    neighbor_match_score, per_term_match, term_match_score, CruncherIndex,
 };
 use crate::query_family::QueryFamily;
-use crate::scoring::{apply_bm25_lock, score_candidates, Candidate, ScoreConfig};
+use crate::scoring::{
+    apply_bm25_lock, score_candidates_with_coverage_overrides, Candidate, ScoreConfig,
+};
 
 pub struct PipelineConfig {
     pub top_k: usize,
+    pub seed_limit: usize,
 }
 
 pub fn unified_search(
@@ -43,9 +46,12 @@ pub fn unified_search(
 
     let mut candidates: BTreeMap<usize, Candidate> = BTreeMap::new();
 
-    for &(id, score) in bm25_seeds.iter().take(MAX_SEEDS) {
+    for &(id, score) in bm25_seeds.iter().take(config.seed_limit) {
         if let Some(&i) = idx.id_to_idx.get(&id) {
-            let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
+            // Coverage is computed once after candidate generation. This
+            // avoids doing the same work on CPU before a GPU batch can take
+            // over for a large candidate set.
+            let (cov_score, cov_count) = (0.0, 0);
             let (name_s, _) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
             let no = compute_name_overlap(&query_terms, &idx.term_sets[i].name_terms);
             let ns = neighbor_match_score(&query_terms, &idx.neighbor_terms[i]);
@@ -86,7 +92,7 @@ pub fn unified_search(
                 if candidates.contains_key(&i) {
                     continue;
                 }
-                let (cov_score, cov_count) = term_match_score(&query_terms, &idx.term_sets[i]);
+                let (cov_score, cov_count) = (0.0, 0);
                 let (name_s, _) = name_coverage(&query_terms, &idx.term_sets[i].name_terms);
                 let no = compute_name_overlap(&query_terms, &idx.term_sets[i].name_terms);
                 let ns = neighbor_match_score(&query_terms, &idx.neighbor_terms[i]);
@@ -215,7 +221,50 @@ pub fn unified_search(
         }
     }
 
-    let mut scored = score_candidates(&candidates, &query_terms, &score_config, idx);
+    let candidate_indices: Vec<usize> = candidates.keys().copied().collect();
+    let gpu_coverage_overrides = idx.gpu_data.as_ref().and_then(|data| {
+        let result =
+            crate::gpu_compute::try_gpu_term_match(data, &query_terms, &candidate_indices)?;
+        if crate::gpu_compute::gpu_trace_enabled() {
+            eprintln!(
+                "  Search: GPU term scoring on {} candidates via {} ({}ms)",
+                result.candidate_indices.len(),
+                result.device,
+                result.elapsed_ms,
+            );
+        }
+        let mut overrides = std::collections::HashMap::with_capacity(result.scores.len());
+        for ((&candidate, &score), &matched) in result
+            .candidate_indices
+            .iter()
+            .zip(result.scores.iter())
+            .zip(result.matched.iter())
+        {
+            overrides.insert(candidate, (score as f64, matched as usize));
+        }
+        Some(overrides)
+    });
+
+    let cpu_coverage_overrides = if gpu_coverage_overrides.is_none() {
+        let mut overrides = std::collections::HashMap::with_capacity(candidates.len());
+        for (&candidate, entry) in &candidates {
+            let (score, matched) = term_match_score(&query_terms, &idx.term_sets[entry.idx]);
+            overrides.insert(candidate, (score, matched));
+        }
+        Some(overrides)
+    } else {
+        None
+    };
+
+    let mut scored = score_candidates_with_coverage_overrides(
+        &candidates,
+        &query_terms,
+        &score_config,
+        idx,
+        gpu_coverage_overrides
+            .as_ref()
+            .or(cpu_coverage_overrides.as_ref()),
+    );
     apply_bm25_lock(&mut scored, bm25_seeds, &query_terms, idx);
 
     let mut results: Vec<(i64, f64)> = Vec::with_capacity(config.top_k);

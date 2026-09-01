@@ -533,11 +533,230 @@ fn run_speed_bench(fe: &FullEngine, queries: &[BenchQuery]) {
     }
 }
 
+fn run_metal_search_bench(
+    db_path: &str,
+    query_file: Option<&str>,
+    iterations: usize,
+    exhaustive: bool,
+    exhaustive_limit: Option<usize>,
+) {
+    use std::time::Instant;
+
+    let db = GraphDb::open(Path::new(db_path)).unwrap_or_else(|e| {
+        eprintln!("error opening database: {e}");
+        std::process::exit(1);
+    });
+    let stats = db.stats().unwrap_or_else(|e| {
+        eprintln!("error reading database stats: {e}");
+        std::process::exit(1);
+    });
+    let cruncher = cruncher::build_cruncher_index(&db).unwrap_or_else(|e| {
+        eprintln!("cruncher build failed: {e}");
+        std::process::exit(1);
+    });
+    let cache = HotCache::with_defaults();
+    cache.prewarm(&db, 200);
+    let engine = SearchEngine::new(&db, &cache).with_cruncher(&cruncher);
+
+    let queries: Vec<BenchQuery> = if let Some(file) = query_file {
+        let content = std::fs::read_to_string(file).unwrap_or_else(|e| {
+            eprintln!("error reading query file: {e}");
+            std::process::exit(1);
+        });
+        serde_json::from_str(&content).unwrap_or_else(|e| {
+            eprintln!("error parsing query file: {e}");
+            std::process::exit(1);
+        })
+    } else {
+        [
+            "request handler cache retry rate",
+            "error handling and recovery",
+            "database indexing pipeline",
+        ]
+        .into_iter()
+        .map(|query| BenchQuery {
+            query: query.to_string(),
+            category: "metal-benchmark".to_string(),
+            expected_symbol: None,
+            relevance: std::collections::HashMap::new(),
+        })
+        .collect()
+    };
+
+    if queries.is_empty() {
+        eprintln!("no benchmark queries provided");
+        std::process::exit(1);
+    }
+
+    let iterations = iterations.max(1);
+    let warmup = 5;
+    let status = graphiq_core::gpu_compute::gpu_status();
+    graphiq_core::gpu_compute::reset_gpu_search_dispatch_count();
+    println!(
+        "GraphIQ Metal/Search Benchmark{}",
+        if exhaustive {
+            " (exhaustive scoring)"
+        } else {
+            ""
+        }
+    );
+    if let Some(limit) = exhaustive_limit {
+        println!("exhaustive candidate limit: {limit}");
+    }
+    println!(
+        "{} files, {} symbols, {} edges",
+        stats.files, stats.symbols, stats.edges
+    );
+    println!("GPU status: {status:?}");
+    println!(
+        "thresholds: {} candidates, {} work items",
+        graphiq_core::gpu_compute::gpu_min_search_candidates(),
+        graphiq_core::gpu_compute::gpu_min_search_work_items()
+    );
+    println!(
+        "queries: {}, warmup: {}, iterations: {}",
+        queries.len(),
+        warmup,
+        iterations
+    );
+
+    let rss_before = process_rss_bytes();
+    let first_query = if let Some(limit) = exhaustive_limit {
+        SearchQuery::new(&queries[0].query)
+            .top_k(10)
+            .exhaustive_limit(limit)
+    } else {
+        SearchQuery::new(&queries[0].query)
+            .top_k(10)
+            .exhaustive(exhaustive)
+    };
+    cache.clear_results();
+    let cold_started = Instant::now();
+    let cold_result = engine.search(&first_query);
+    let cold_us = cold_started.elapsed().as_micros() as u64;
+    assert!(
+        !cold_result.from_cache,
+        "cold benchmark search unexpectedly hit cache"
+    );
+    let mut peak_rss = rss_before;
+    if let Some(rss) = process_rss_bytes() {
+        peak_rss = Some(peak_rss.map_or(rss, |peak| peak.max(rss)));
+    }
+
+    let mut all_times = Vec::new();
+    let mut all_candidate_counts = Vec::new();
+    for query in &queries {
+        let search_query = if let Some(limit) = exhaustive_limit {
+            SearchQuery::new(&query.query)
+                .top_k(10)
+                .exhaustive_limit(limit)
+        } else {
+            SearchQuery::new(&query.query)
+                .top_k(10)
+                .exhaustive(exhaustive)
+        };
+        for _ in 0..warmup {
+            cache.clear_results();
+            let _ = engine.search(&search_query);
+        }
+
+        let mut times = Vec::with_capacity(iterations);
+        let mut candidate_count = 0;
+        for _ in 0..iterations {
+            cache.clear_results();
+            let started = Instant::now();
+            let result = engine.search(&search_query);
+            let elapsed_us = started.elapsed().as_micros() as f64;
+            candidate_count = result.total_fts_candidates + result.total_expanded;
+            times.push(elapsed_us);
+            all_times.push(elapsed_us);
+            all_candidate_counts.push(candidate_count);
+            if let Some(rss) = process_rss_bytes() {
+                peak_rss = Some(peak_rss.map_or(rss, |peak| peak.max(rss)));
+            }
+            assert!(
+                !result.from_cache,
+                "benchmark search unexpectedly hit cache"
+            );
+        }
+
+        times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        println!(
+            "  {:<40} candidates={:<4} median={:>8.0}us p95={:>8.0}us",
+            query.query,
+            candidate_count,
+            percentile(&times, 50.0),
+            percentile(&times, 95.0),
+        );
+    }
+
+    all_times.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let average_candidates = all_candidate_counts.iter().sum::<usize>() as f64
+        / all_candidate_counts.len().max(1) as f64;
+    println!();
+    println!(
+        "overall: median={:.0}us p95={:.0}us average_candidates={:.1}",
+        percentile(&all_times, 50.0),
+        percentile(&all_times, 95.0),
+        average_candidates
+    );
+    println!(
+        "GPU search dispatches: {}",
+        graphiq_core::gpu_compute::gpu_search_dispatch_count()
+    );
+    println!("cold first-search latency: {cold_us}us");
+    if let (Some(before), Some(peak)) = (rss_before, peak_rss) {
+        println!(
+            "process RSS: before={} MB peak={} MB delta={} MB",
+            before / 1024 / 1024,
+            peak / 1024 / 1024,
+            peak.saturating_sub(before) / 1024 / 1024,
+        );
+    }
+    let gpu_timings = graphiq_core::gpu_compute::gpu_search_timing_totals();
+    if gpu_timings.dispatches > 0 {
+        let n = gpu_timings.dispatches;
+        println!(
+            "GPU timings avg (us): resident_upload={} transient_upload={} submit={} readback={}",
+            gpu_timings.resident_upload_us / n,
+            gpu_timings.transient_upload_us / n,
+            gpu_timings.submit_us / n,
+            gpu_timings.readback_us / n,
+        );
+    }
+}
+
+fn percentile(sorted: &[f64], p: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let index = ((p / 100.0) * (sorted.len() - 1) as f64).round() as usize;
+    sorted[index.min(sorted.len() - 1)]
+}
+
+fn process_rss_bytes() -> Option<u64> {
+    let pid = std::process::id().to_string();
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let rss_kb = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    Some(rss_kb.saturating_mul(1024))
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
         eprintln!("usage: graphiq-bench <db-path> [ndcg-queries.json] [mrr-queries.json]");
         eprintln!("       graphiq-bench speed <db-path> <mrr-queries.json>");
+        eprintln!("       graphiq-bench metal <db-path> [queries.json] [iterations]");
+        eprintln!("       graphiq-bench metal-exhaustive <db-path> [queries.json] [iterations]");
         std::process::exit(1);
     }
 
@@ -585,6 +804,39 @@ fn main() {
         queries.truncate(10);
 
         run_speed_bench(&fe, &queries);
+        return;
+    }
+
+    let metal_mode = args.get(1).map(String::as_str);
+    if matches!(metal_mode, Some("metal") | Some("metal-exhaustive")) {
+        if args.len() < 3 {
+            eprintln!(
+                "usage: graphiq-bench {} <db-path> [queries.json] [iterations] [candidate-limit]",
+                metal_mode.unwrap_or("metal")
+            );
+            std::process::exit(1);
+        }
+        let third_arg_iterations = args.get(3).and_then(|value| value.parse::<usize>().ok());
+        let iterations = args
+            .get(4)
+            .and_then(|value| value.parse::<usize>().ok())
+            .or(third_arg_iterations)
+            .unwrap_or(50);
+        let query_file = if third_arg_iterations.is_some() {
+            None
+        } else {
+            args.get(3)
+                .map(String::as_str)
+                .filter(|path| !path.is_empty())
+        };
+        let exhaustive_limit = args.get(5).and_then(|value| value.parse::<usize>().ok());
+        run_metal_search_bench(
+            &args[2],
+            query_file,
+            iterations,
+            metal_mode == Some("metal-exhaustive"),
+            exhaustive_limit,
+        );
         return;
     }
 

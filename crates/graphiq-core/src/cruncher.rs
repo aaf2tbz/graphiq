@@ -98,6 +98,11 @@ pub struct CruncherIndex {
 
     pub alias_terms: Vec<HashSet<String>>,
     pub collision_names: HashSet<String>,
+    /// Optional compact representation used by the GPU search scorer. It is
+    /// populated only by GPU-enabled builds and is deliberately independent
+    /// from the wgpu device/context lifetime.
+    #[serde(default)]
+    pub gpu_data: Option<crate::gpu_compute::GpuIndexData>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -344,6 +349,7 @@ pub fn build_cruncher_index_with_options(
             neighbor_terms: Vec::new(),
             alias_terms: Vec::new(),
             collision_names: HashSet::new(),
+            gpu_data: None,
         });
     }
 
@@ -506,19 +512,28 @@ pub fn build_cruncher_index_with_options(
     let raw_counts = std::mem::take(&mut flat.raw_counts);
     drop(raw_term_lists);
 
-    let gpu_ctx = gpu_context();
     let results = {
         #[cfg(feature = "gpu")]
         {
-            if let Some(ref ctx) = gpu_ctx {
-                crate::gpu_compute::accelerated_compute_gpu(&flat, n, raw_counts, ctx)
+            if crate::gpu_compute::should_use_gpu_for_index(n, flat.term_ids.len()) {
+                if let Some(ctx) = crate::gpu_compute::shared_context() {
+                    crate::gpu_compute::accelerated_compute_gpu(&flat, n, raw_counts, &ctx)
+                } else {
+                    crate::gpu_compute::accelerated_compute(&flat, n, raw_counts)
+                }
             } else {
+                eprintln!(
+                    "  Cruncher: GPU skipped ({} symbols, {} term entries; threshold {} symbols/{} terms)",
+                    n,
+                    flat.term_ids.len(),
+                    crate::gpu_compute::gpu_min_index_symbols(),
+                    crate::gpu_compute::gpu_min_index_terms(),
+                );
                 crate::gpu_compute::accelerated_compute(&flat, n, raw_counts)
             }
         }
         #[cfg(not(feature = "gpu"))]
         {
-            let _ = gpu_ctx;
             crate::gpu_compute::accelerated_compute(&flat, n, raw_counts)
         }
     };
@@ -654,6 +669,14 @@ pub fn build_cruncher_index_with_options(
         .map(|(name, _)| name.clone())
         .collect();
 
+    #[cfg(feature = "gpu")]
+    let gpu_data = Some(crate::gpu_compute::GpuIndexData::from_term_sets(
+        &term_sets,
+        &global_idf,
+    ));
+    #[cfg(not(feature = "gpu"))]
+    let gpu_data = None;
+
     Ok(CruncherIndex {
         n,
         symbol_ids,
@@ -676,30 +699,8 @@ pub fn build_cruncher_index_with_options(
         neighbor_terms,
         alias_terms,
         collision_names,
+        gpu_data,
     })
-}
-
-#[cfg(feature = "gpu")]
-fn gpu_context() -> Option<std::sync::Arc<crate::gpu_compute::GpuContext>> {
-    use std::sync::Arc;
-    use std::sync::OnceLock;
-    static CTX: OnceLock<Option<Arc<crate::gpu_compute::GpuContext>>> = OnceLock::new();
-    CTX.get_or_init(|| match crate::gpu_compute::GpuContext::new() {
-        Some(ctx) => {
-            eprintln!("  Cruncher: GPU context initialized (wgpu)");
-            Some(Arc::new(ctx))
-        }
-        None => {
-            eprintln!("  Cruncher: no GPU available, using CPU+rayon");
-            None
-        }
-    })
-    .clone()
-}
-
-#[cfg(not(feature = "gpu"))]
-fn gpu_context() -> Option<()> {
-    None
 }
 
 pub fn build_query_terms(query: &str, idf: &HashMap<String, f64>) -> Vec<QueryTerm> {

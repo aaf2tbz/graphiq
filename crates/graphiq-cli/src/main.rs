@@ -685,6 +685,9 @@ fn cmd_status(db_path: &std::path::Path) {
                 println!();
                 println!("  Manifest: not found (run `graphiq index` or `graphiq upgrade-index`)");
             }
+
+            println!();
+            print_gpu_status();
         }
         Err(e) => {
             eprintln!("error opening database: {e}");
@@ -1087,33 +1090,20 @@ fn cmd_doctor(db_path: &std::path::Path) {
     }
 
     println!();
-    print!("  GPU: ");
-    if std::env::consts::OS == "macos" {
-        #[cfg(feature = "gpu")]
-        {
-            match graphiq_core::gpu_compute::GpuContext::new() {
-                Some(_) => println!("Metal (initialized OK)"),
-                None => println!("Metal (init failed — will use CPU)"),
-            }
+    print_gpu_status();
+}
+
+fn print_gpu_status() {
+    match graphiq_core::gpu_compute::gpu_status() {
+        graphiq_core::gpu_compute::GpuStatus::Disabled => {
+            println!("  GPU: disabled (binary was built without the gpu feature)");
         }
-        #[cfg(not(feature = "gpu"))]
-        {
-            println!("Metal (built-in, GPU build not enabled)");
+        graphiq_core::gpu_compute::GpuStatus::Available(info) => {
+            println!("  GPU: initialized OK ({info})");
         }
-    } else if vulkan_available() {
-        #[cfg(feature = "gpu")]
-        {
-            match graphiq_core::gpu_compute::GpuContext::new() {
-                Some(_) => println!("Vulkan (initialized OK)"),
-                None => println!("Vulkan loader found but GPU init failed — will use CPU"),
-            }
+        graphiq_core::gpu_compute::GpuStatus::Unavailable(reason) => {
+            println!("  GPU: unavailable ({reason}); using CPU fallback");
         }
-        #[cfg(not(feature = "gpu"))]
-        {
-            println!("Vulkan loader found (GPU build not enabled)");
-        }
-    } else {
-        println!("MISSING — install libvulkan1 for GPU acceleration");
     }
 }
 

@@ -56,6 +56,12 @@ pub struct SearchQuery {
     pub blast_radius: bool,
     pub blast_depth: usize,
     pub collect_trace: bool,
+    /// Diagnostic mode that scores every indexed symbol instead of relying on
+    /// FTS seeds. Normal interactive searches leave this disabled; it gives
+    /// the benchmark harness a deterministic large scoring batch.
+    pub exhaustive: bool,
+    /// Optional cap for the diagnostic exhaustive candidate batch.
+    pub exhaustive_limit: Option<usize>,
 }
 
 impl SearchQuery {
@@ -70,6 +76,8 @@ impl SearchQuery {
             blast_radius: false,
             blast_depth: 3,
             collect_trace: false,
+            exhaustive: false,
+            exhaustive_limit: None,
         }
     }
 
@@ -92,6 +100,17 @@ impl SearchQuery {
     pub fn with_blast(mut self, depth: usize) -> Self {
         self.blast_radius = true;
         self.blast_depth = depth;
+        self
+    }
+
+    pub fn exhaustive(mut self, enabled: bool) -> Self {
+        self.exhaustive = enabled;
+        self
+    }
+
+    pub fn exhaustive_limit(mut self, limit: usize) -> Self {
+        self.exhaustive = true;
+        self.exhaustive_limit = Some(limit.max(1));
         self
     }
 
@@ -154,7 +173,12 @@ impl<'a> SearchEngine<'a> {
     }
 
     pub fn search(&self, query: &SearchQuery) -> SearchResult {
-        let query_hash = HotCache::compute_query_hash(&query.query, query.top_k);
+        let query_hash = HotCache::compute_query_hash_with_options(
+            &query.query,
+            query.top_k,
+            query.exhaustive,
+            query.exhaustive_limit,
+        );
         // A one-token code fragment cannot be classified reliably without the
         // index.  For example, `Chunk` is an exact symbol while `SealCh` is a
         // prefix fragment.  Use the database to make that distinction at the
@@ -316,11 +340,31 @@ impl<'a> SearchEngine<'a> {
     ) -> SearchResult {
         let ci = self.cruncher_index.unwrap();
 
-        let seed_config = crate::seeds::SeedConfig::for_family(family);
-        let (seeds, total_fts, _bm25_original) =
-            crate::seeds::generate_seeds(self.db, &query.query, &seed_config);
+        let (seeds, total_fts) = if query.exhaustive {
+            let limit = query.exhaustive_limit.unwrap_or(ci.n).min(ci.n);
+            (
+                ci.symbol_ids
+                    .iter()
+                    .take(limit)
+                    .map(|&id| (id, 0.0))
+                    .collect(),
+                limit,
+            )
+        } else {
+            let seed_config = crate::seeds::SeedConfig::for_family(family);
+            let (seeds, total_fts, _bm25_original) =
+                crate::seeds::generate_seeds(self.db, &query.query, &seed_config);
+            (seeds, total_fts)
+        };
 
-        let pipeline_config = crate::pipeline::PipelineConfig { top_k: query.top_k };
+        let pipeline_config = crate::pipeline::PipelineConfig {
+            top_k: query.top_k,
+            seed_limit: if query.exhaustive {
+                query.exhaustive_limit.unwrap_or(ci.n).min(ci.n)
+            } else {
+                crate::cruncher::MAX_SEEDS
+            },
+        };
 
         let raw_results =
             crate::pipeline::unified_search(&query.query, ci, &seeds, &pipeline_config, family);

@@ -46,9 +46,26 @@ The CLI surfaces index/search/blast plus lifecycle commands: `setup`, `sync`
 - **`linux-smoke.yml`** — builds with `--features gpu` on ubuntu, strips all
   Vulkan, and proves the binaries start + run the full command surface on CPU.
   This is the gate that answers "does it work on Linux".
+- **`macos-smoke.yml`** — builds natively on Apple Silicon, proves Metal index
+  acceleration and hybrid search scoring, then verifies CPU fallback and result
+  parity.
 - **`release.yml`** — cross-builds macOS (arm64 + x86_64) and Linux (x86_64 +
   aarch64) releases with SHA-256 checksums.
 - **`auto-release.yml`** — tags the next version on every push to `main`.
+
+For Apple Silicon search measurements, build with the GPU feature and run:
+
+```bash
+cargo build --release --features gpu
+./target/release/graphiq-bench metal <db-path> [queries.json] [iterations]
+./target/release/graphiq-bench metal-exhaustive <db-path> [queries.json] [iterations]
+```
+
+`metal` measures normal seeded searches. `metal-exhaustive` is a deliberately
+large scoring-batch benchmark that bypasses FTS seed limits so the numeric
+Metal kernel can be measured independently of small-query transfer overhead.
+Set `GRAPHIQ_DISABLE_GPU=1` for the CPU baseline. Set `GRAPHIQ_GPU_TRACE=1`
+to confirm that a search dispatched its score batch to Metal.
 
 ## Commit style
 
