@@ -99,6 +99,18 @@ impl ParsedFile {
     }
 }
 
+/// Store project-relative paths with the same slash-separated representation
+/// on every platform. This keeps persisted paths, import resolution, search
+/// filters, and user-facing results portable between Windows and Unix.
+fn stored_relative_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    if cfg!(windows) {
+        path.replace('\\', "/")
+    } else {
+        path.into_owned()
+    }
+}
+
 impl<'a> Indexer<'a> {
     pub fn new(db: &'a GraphDb) -> Self {
         Self {
@@ -235,10 +247,12 @@ impl<'a> Indexer<'a> {
             let current_paths: HashSet<String> = files
                 .iter()
                 .filter_map(|path| path.strip_prefix(root).ok())
-                .map(|path| path.to_string_lossy().into_owned())
+                .map(stored_relative_path)
                 .collect();
             for path in self.db.file_paths()? {
-                if !current_paths.contains(&path) && self.db.delete_file(&path)? {
+                if !current_paths.contains(&stored_relative_path(Path::new(&path)))
+                    && self.db.delete_file(&path)?
+                {
                     files_deleted += 1;
                 }
             }
@@ -295,7 +309,7 @@ impl<'a> Indexer<'a> {
         let file_plans: Vec<FilePlan> = file_data
             .iter()
             .map(|(rel_path, _, _, hash, _, _)| {
-                let path_str = rel_path.to_string_lossy();
+                let path_str = stored_relative_path(rel_path);
                 let existing = self.db.get_file_by_path(&path_str)?;
                 let changed = existing
                     .as_ref()
@@ -334,7 +348,7 @@ impl<'a> Indexer<'a> {
                     return ParsedFile::empty();
                 }
 
-                let path_str = rel_path.to_string_lossy();
+                let path_str = stored_relative_path(rel_path);
                 let chunker = get_chunker(*lang);
                 let mut result = chunker.parse(source, &path_str);
                 // Call extraction only needs the tree during this worker call.
@@ -378,7 +392,7 @@ impl<'a> Indexer<'a> {
             .zip(file_plans.iter())
             .zip(parsed_files.iter())
         {
-            let path_str = rel_path.to_string_lossy();
+            let path_str = stored_relative_path(rel_path);
 
             if let Some(ref f) = plan.existing {
                 if !plan.changed {
