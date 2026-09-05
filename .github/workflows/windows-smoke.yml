@@ -85,7 +85,13 @@ jobs:
           $configPath = Join-Path $fixture '.claude\.mcp.json'
           $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
           if ($null -eq $config.mcpServers.graphiq) { throw 'setup did not write the Claude Code MCP entry' }
-          if ($config.mcpServers.graphiq.args[0] -ne $fixture) { throw 'setup wrote the wrong Windows project path' }
+          $configuredProject = [string]$config.mcpServers.graphiq.args[0]
+          # Rust canonicalize may use the Windows extended-path prefix; both
+          # spellings identify the same project and are accepted by the MCP.
+          if ($configuredProject.StartsWith('\\?\')) {
+            $configuredProject = $configuredProject.Substring(4)
+          }
+          if ($configuredProject -ne $fixture) { throw "setup wrote the wrong Windows project path: $configuredProject" }
 
           $sync = (& $graphiq sync --project $fixture --harness claude-code | Out-String)
           if ($LASTEXITCODE -ne 0 -or $sync -notmatch 'connected:') {
