@@ -24,6 +24,9 @@ import { join } from "node:path";
 
 // Resolve the graphiq binary: explicit override, then PATH lookup, then sibling.
 const GRAPHIQ_BIN = process.env.GRAPHIQ_BIN ?? "graphiq";
+const INSTALL_HINT = process.platform === "win32"
+  ? "GraphIQ not installed. Run the PowerShell installer from https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.ps1"
+  : "GraphIQ not installed. Run: curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash";
 
 function graphiq(ctx: any, args: string[], opts: { timeoutMs?: number } = {}): Promise<string> {
   return new Promise((resolve) => {
@@ -81,7 +84,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     if (!isGraphiqInstalled()) {
       ctx.ui.notify(
-        "GraphIQ not installed. Run: curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash",
+        INSTALL_HINT,
         "info",
       );
       return;
@@ -185,7 +188,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       if (!isGraphiqInstalled()) {
         ctx.ui.notify(
-          "GraphIQ not installed. Run: curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash",
+          INSTALL_HINT,
           "warning",
         );
         return;

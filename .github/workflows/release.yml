@@ -31,6 +31,9 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04
             artifact: graphiq-aarch64-unknown-linux-gnu
+          - target: x86_64-pc-windows-msvc
+            os: windows-2022
+            artifact: graphiq-x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.os }}
 
@@ -61,23 +64,44 @@ jobs:
       - name: Build release
         run: cargo build --release --target ${{ matrix.target }} --features gpu
 
-      - name: Package
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
         run: |
+          set -euo pipefail
           mkdir -p dist
           for bin in graphiq graphiq-mcp graphiq-bench; do
-            if [ -f "target/${{ matrix.target }}/release/$bin" ]; then
-              cp "target/${{ matrix.target }}/release/$bin" dist/
-            fi
+            test -f "target/${{ matrix.target }}/release/$bin"
+            cp "target/${{ matrix.target }}/release/$bin" dist/
           done
           cd dist && tar czf "${{ matrix.artifact }}.tar.gz" -- *
           shasum -a 256 "${{ matrix.artifact }}.tar.gz" > "${{ matrix.artifact }}.sha256"
 
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $PWD 'dist'
+          New-Item -ItemType Directory -Path $dist -Force | Out-Null
+          $binaries = @('graphiq.exe', 'graphiq-mcp.exe', 'graphiq-bench.exe')
+          foreach ($binary in $binaries) {
+            $source = Join-Path $PWD "target\${{ matrix.target }}\release\$binary"
+            if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "missing release binary: $source"
+            }
+            Copy-Item -LiteralPath $source -Destination (Join-Path $dist $binary)
+          }
+          $archiveName = '${{ matrix.artifact }}.zip'
+          $archive = Join-Path $dist $archiveName
+          Compress-Archive -Path (Join-Path $dist 'graphiq.exe'), (Join-Path $dist 'graphiq-mcp.exe'), (Join-Path $dist 'graphiq-bench.exe') -DestinationPath $archive -Force
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archiveName" | Set-Content -LiteralPath (Join-Path $dist '${{ matrix.artifact }}.sha256')
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            dist/${{ matrix.artifact }}.tar.gz
-            dist/${{ matrix.artifact }}.sha256
+          path: dist/*
+          if-no-files-found: error
 
   release:
     needs: [build]
@@ -94,4 +118,6 @@ jobs:
         with:
           files: |
             artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/**/*.sha256
           generate_release_notes: true
