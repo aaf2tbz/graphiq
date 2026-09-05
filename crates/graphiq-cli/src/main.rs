@@ -1252,16 +1252,7 @@ struct DepCheck {
 }
 
 fn cmd_exists(cmd: &str) -> bool {
-    std::process::Command::new("which")
-        .arg(cmd)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-        || std::process::Command::new("command")
-            .args(["-v", cmd])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+    binary_on_path(cmd).is_some()
 }
 
 fn confirm(prompt: &str) -> bool {
@@ -1276,6 +1267,15 @@ fn confirm(prompt: &str) -> bool {
 }
 
 fn check_build_dependencies() {
+    // A release install has no source-build dependencies. In particular, a
+    // Windows install uses the system MSVC runtime and DirectX 12 when a GPU
+    // is available; it must not try to run the Unix/Linux package-manager
+    // probes below.
+    if cfg!(windows) {
+        println!("  Windows runtime: bundled SQLite; optional GPU acceleration uses DirectX 12");
+        return;
+    }
+
     let is_macos = std::env::consts::OS == "macos";
 
     let deps = [
@@ -1426,6 +1426,28 @@ fn check_build_dependencies() {
     }
 }
 
+/// Escape a value for a TOML basic string. Windows paths contain backslashes,
+/// which TOML treats as escape characters, so writing a raw `C:\\...` path
+/// would produce an invalid Codex configuration.
+fn toml_basic_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            ch if ch.is_control() => {
+                use std::fmt::Write;
+                let _ = write!(escaped, "\\u{:04x}", ch as u32);
+            }
+            ch => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
 /// Strip JSONC comments (`// line` and `/* block */`) from text so it can be
 /// parsed by a strict JSON parser (serde_json). String literals are preserved —
 /// a `//` or `/*` inside a string value (e.g. a URL) is NOT treated as a
@@ -1519,7 +1541,7 @@ fn parse_jsonc_config(content: &str) -> Option<serde_json::Value> {
 /// correctly detect an existing graphiq entry, we prefer the file that already
 /// exists (`.jsonc` first), and create `.jsonc` when neither exists.
 fn opencode_config_path(home: &std::path::Path) -> std::path::PathBuf {
-    let dir = home.join(".config").join("opencode");
+    let dir = opencode_config_dir(home);
     let jsonc = dir.join("opencode.jsonc");
     let json = dir.join("opencode.json");
     if jsonc.exists() {
@@ -1528,6 +1550,39 @@ fn opencode_config_path(home: &std::path::Path) -> std::path::PathBuf {
         json
     } else {
         jsonc
+    }
+}
+
+/// Return OpenCode's per-user configuration directory on the current OS.
+/// Linux/macOS use the XDG-style location already supported by GraphIQ;
+/// Windows applications conventionally use `%APPDATA%` instead.
+fn opencode_config_dir(home: &std::path::Path) -> std::path::PathBuf {
+    let base = if cfg!(windows) {
+        windows_roaming_dir(home)
+    } else {
+        home.join(".config")
+    };
+    base.join("opencode")
+}
+
+/// Resolve Windows' roaming application-data directory while keeping helpers
+/// that accept an explicit home path deterministic in tests. The real home
+/// directory uses `%APPDATA%` (which may be redirected); synthetic homes use
+/// the conventional `AppData\Roaming` location beneath the supplied path.
+fn windows_roaming_dir(home: &std::path::Path) -> std::path::PathBuf {
+    if let (Some(actual_home), Some(appdata)) = (dirs::home_dir(), std::env::var_os("APPDATA")) {
+        if actual_home == home {
+            return PathBuf::from(appdata);
+        }
+    }
+    home.join("AppData").join("Roaming")
+}
+
+fn platform_config_dir(home: &std::path::Path) -> Option<PathBuf> {
+    if cfg!(windows) {
+        Some(windows_roaming_dir(home))
+    } else {
+        dirs::config_dir()
     }
 }
 
@@ -1685,7 +1740,7 @@ struct HarnessTarget {
 fn harness_targets(home: &std::path::Path, project: &std::path::Path) -> Vec<HarnessTarget> {
     let mut out = Vec::new();
     if let Some(claude_desktop) =
-        dirs::config_dir().map(|d| d.join("Claude").join("claude_desktop_config.json"))
+        platform_config_dir(home).map(|d| d.join("Claude").join("claude_desktop_config.json"))
     {
         out.push(HarnessTarget {
             name: "claude-desktop",
@@ -1699,7 +1754,7 @@ fn harness_targets(home: &std::path::Path, project: &std::path::Path) -> Vec<Har
         shape: AttachShape::McpServers,
     });
     // OpenCode: same resolution setup uses (prefer existing .jsonc, else .json).
-    let oc_dir = home.join(".config").join("opencode");
+    let oc_dir = opencode_config_dir(home);
     let oc_path = {
         let jsonc = oc_dir.join("opencode.jsonc");
         if jsonc.exists() {
@@ -1744,24 +1799,21 @@ fn harness_targets(home: &std::path::Path, project: &std::path::Path) -> Vec<Har
 /// Resolve the graphiq-mcp binary: sibling of the running `graphiq` exe, then
 /// PATH lookup. Returns the path used (for the registry) or None.
 fn resolve_graphiq_mcp() -> Option<PathBuf> {
-    if let Some(sibling) = which_graphiq() {
-        return Some(sibling);
-    }
-    // Fallback: PATH lookup. `which` is Unix; on Windows `where` is the tool.
-    let probe = if cfg!(windows) { "where" } else { "which" };
-    std::process::Command::new(probe)
-        .arg("graphiq-mcp")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .and_then(|s| {
-            let line = s.lines().next()?.trim().to_string();
-            if line.is_empty() {
-                None
+    which_graphiq().or_else(|| binary_on_path("graphiq-mcp"))
+}
+
+/// Re-enter the CLI using the exact executable that is currently running.
+/// This matters for `sync --apply` when a user launched `graphiq.exe` by path
+/// before adding its directory to PATH.
+fn current_graphiq_command() -> std::process::Command {
+    std::env::current_exe()
+        .map(|path| std::process::Command::new(path))
+        .unwrap_or_else(|_| {
+            std::process::Command::new(if cfg!(windows) {
+                "graphiq.exe"
             } else {
-                Some(PathBuf::from(line))
-            }
+                "graphiq"
+            })
         })
 }
 
@@ -1788,6 +1840,7 @@ fn cmd_sync(project: Option<&std::path::Path>, harness_filter: Option<&str>, app
     println!("╭──────────────────────────────────────────────╮");
     println!("│            GraphIQ Sync                      │");
     println!("╰──────────────────────────────────────────────╯");
+
     println!("  Project: {}", project_path.display());
 
     // 1. Is graphiq-mcp reachable? This is the #1 attach failure.
@@ -1873,7 +1926,8 @@ fn cmd_sync(project: Option<&std::path::Path>, harness_filter: Option<&str>, app
         println!("  Re-applying graphiq config to missing harnesses via setup...");
         // setup is idempotent and scoped to installed harnesses; --skip-index
         // keeps it fast (sync never indexes).
-        let setup_status = std::process::Command::new("graphiq")
+        let mut setup_command = current_graphiq_command();
+        let setup_status = setup_command
             .arg("setup")
             .arg("--project")
             .arg(&project_path)
@@ -2135,10 +2189,15 @@ fn detect_signature(
 /// Resolve the full path for a harness's config-dir signal, given a home dir.
 /// Returns None if the signature has no config-dir signal.
 fn config_dir_path(home: &std::path::Path, sig: &HarnessSignature) -> Option<PathBuf> {
-    if sig.config_dir.is_empty() {
-        None
-    } else {
-        Some(home.join(sig.config_dir))
+    match sig.name {
+        // Claude Desktop stores its user config in %APPDATA% on Windows;
+        // keep the catalog's macOS-relative path for the other platforms.
+        "claude-desktop" if cfg!(windows) => platform_config_dir(home).map(|d| d.join("Claude")),
+        // OpenCode follows the same platform-specific roaming config root as
+        // setup/sync rather than the Unix ~/.config path in the catalog.
+        "opencode" => Some(opencode_config_dir(home)),
+        _ if sig.config_dir.is_empty() => None,
+        _ => Some(home.join(sig.config_dir)),
     }
 }
 
@@ -2149,8 +2208,28 @@ fn binary_on_path(binary: &str) -> Option<PathBuf> {
         return None;
     }
     let probe = if cfg!(windows) { "where" } else { "which" };
-    std::process::Command::new(probe)
+    let from_probe = std::process::Command::new(probe)
         .arg(binary)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| {
+            let line = s.lines().next()?.trim().to_string();
+            if line.is_empty() {
+                None
+            } else {
+                Some(PathBuf::from(line))
+            }
+        });
+    if from_probe.is_some() || cfg!(windows) {
+        return from_probe;
+    }
+
+    // Keep the old Unix fallback for minimal installations that have the
+    // shell builtin but not the standalone `which` utility.
+    std::process::Command::new("sh")
+        .args(["-c", "command -v \"$1\"", "graphiq-path", binary])
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -2860,6 +2939,8 @@ fn cmd_setup(
         },
     };
 
+    let home_dir = dirs::home_dir().unwrap_or_else(|| std::path::Path::new(".").to_path_buf());
+
     println!("  Project: {}", project_path.display());
     if ephemeral {
         println!("  Index storage: temp MCP database (--persistent opts into .graphiq)");
@@ -2869,19 +2950,16 @@ fn cmd_setup(
     println!();
 
     let graphiq_bin = which_graphiq();
-    if graphiq_bin.is_none() {
-        let found = std::process::Command::new("which")
-            .arg("graphiq-mcp")
-            .output()
-            .ok()
-            .filter(|o| o.status.success());
-        if found.is_none() {
-            eprintln!("  error: graphiq-mcp not found on PATH.");
-            eprintln!("  Install with: cargo install --path . --bin graphiq-mcp");
+    if graphiq_bin.is_none() && binary_on_path("graphiq-mcp").is_none() {
+        eprintln!("  error: graphiq-mcp not found on PATH.");
+        eprintln!("  Install with: cargo install --path . --bin graphiq-mcp");
+        if cfg!(windows) {
+            eprintln!("  Or: download and run install.ps1 from the GraphIQ release.");
+        } else {
             eprintln!("  Or: curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash");
-            eprintln!("  Then re-run setup.");
-            std::process::exit(1);
         }
+        eprintln!("  Then re-run setup.");
+        std::process::exit(1);
     }
 
     check_build_dependencies();
@@ -2921,18 +2999,10 @@ fn cmd_setup(
         }
     };
 
-    let _binary_on_path = |name: &str| -> bool {
-        std::process::Command::new("which")
-            .arg(name)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    };
-
     // Claude Desktop
     if should_configure("claude-desktop") {
-        let claude_config =
-            dirs::config_dir().map(|d| d.join("Claude").join("claude_desktop_config.json"));
+        let claude_config = platform_config_dir(&home_dir)
+            .map(|d| d.join("Claude").join("claude_desktop_config.json"));
 
         if let Some(ref config_path) = claude_config {
             if config_path.exists() || config_path.parent().map_or(false, |p| p.exists()) {
@@ -2995,18 +3065,16 @@ fn cmd_setup(
         // and merges them. Write to whichever already exists (prefer .jsonc) so
         // we don't spawn a second file, and parse JSONC safely so a commented
         // config is preserved rather than destroyed.
-        let opencode_config = dirs::home_dir()
-            .map(|h| opencode_config_path(&h))
-            .and_then(|p| {
-                // Only proceed if the opencode config directory itself exists —
-                // creating a brand-new opencode.jsonc in a missing dir would
-                // imply opencode is installed when it may not be.
-                if p.parent().map_or(false, |d| d.exists()) {
-                    Some(p)
-                } else {
-                    None
-                }
-            });
+        let opencode_config = Some(opencode_config_path(&home_dir)).and_then(|p| {
+            // Only proceed if the opencode config directory itself exists —
+            // creating a brand-new opencode.jsonc in a missing dir would
+            // imply opencode is installed when it may not be.
+            if p.parent().map_or(false, |d| d.exists()) {
+                Some(p)
+            } else {
+                None
+            }
+        });
 
         if let Some(ref config_path) = opencode_config {
             // Wrapped in a labeled block so recoverable opencode errors
@@ -3112,13 +3180,14 @@ fn cmd_setup(
 
     // Codex CLI
     if should_configure("codex") {
-        let codex_config = dirs::home_dir().map(|d| d.join(".codex").join("config.toml"));
+        let codex_config = Some(home_dir.join(".codex").join("config.toml"));
 
         if let Some(ref config_path) = codex_config {
             // Labeled block so a codex read failure skips ONLY codex, not the
             // rest of cmd_setup (Hermes/Cursor/Windsurf/Gemini/Aider/index).
             'codex: {
                 let project_str = project_path.display().to_string();
+                let project_arg = toml_basic_string(&project_str);
                 let args_suffix = if ephemeral { ", \"--ephemeral\"" } else { "" };
 
                 let (content, written) = if config_path.exists() {
@@ -3132,14 +3201,15 @@ fn cmd_setup(
                                     || t.starts_with("[mcp_servers.graphiq.")
                                     || t.starts_with("[mcp_servers.graphiq ")
                             });
-                            let same_project = existing.contains(&project_str);
+                            let same_project =
+                                existing.contains(&project_str) || existing.contains(&project_arg);
                             if has_graphiq && same_project {
                                 (existing, false)
                             } else {
                                 let mut cleaned = existing;
                                 let section = format!(
                             "\n[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"{}]\nenabled = true\n",
-                            project_str, args_suffix
+                            project_arg, args_suffix
                         );
                                 cleaned.push_str(&section);
                                 (cleaned, true)
@@ -3154,7 +3224,7 @@ fn cmd_setup(
                 } else {
                     let section = format!(
                 "[mcp_servers.graphiq]\ncommand = \"graphiq-mcp\"\nargs = [\"{}\"{}]\nenabled = true\n",
-                project_str, args_suffix
+                project_arg, args_suffix
             );
                     (section, true)
                 };
@@ -3299,7 +3369,7 @@ fn cmd_setup(
 
     // Gemini CLI
     if should_configure("gemini") {
-        let gemini_config = dirs::home_dir().map(|d| d.join(".gemini").join("settings.json"));
+        let gemini_config = Some(home_dir.join(".gemini").join("settings.json"));
         if let Some(ref config_path) = gemini_config {
             let project_str = project_path.display().to_string();
             let mut cmd = vec!["graphiq-mcp".to_string(), project_str.clone()];
@@ -3587,22 +3657,20 @@ fn write_agents_md(graphiq_dir: &std::path::Path) {
 }
 
 fn which_graphiq() -> Option<PathBuf> {
-    let graphiq_mcp = std::env::current_exe().ok()?;
-    let bin_name = graphiq_mcp.file_name()?.to_str()?.to_string();
-    if bin_name == "graphiq" {
-        let mut p = graphiq_mcp.clone();
-        p.set_file_name("graphiq-mcp");
-        if p.exists() {
-            return Some(p);
-        }
-        if let Some(parent) = graphiq_mcp.parent() {
-            let alt = parent.join("graphiq-mcp");
-            if alt.exists() {
-                return Some(alt);
-            }
-        }
+    let current_exe = std::env::current_exe().ok()?;
+    let bin_name = current_exe.file_stem()?.to_str()?;
+    if bin_name != "graphiq" {
+        return None;
     }
-    None
+
+    let parent = current_exe.parent()?;
+    let sibling_name = if cfg!(windows) {
+        "graphiq-mcp.exe"
+    } else {
+        "graphiq-mcp"
+    };
+    let sibling = parent.join(sibling_name);
+    sibling.exists().then_some(sibling)
 }
 
 fn cmd_context(symbol_name: &str, db_path: &std::path::Path) {
@@ -4815,7 +4883,7 @@ fn cmd_update() {
         }
     };
 
-    // fetch_latest_version returns a v-prefixed tag (e.g. "v4.3.3").
+    // fetch_latest_version returns a v-prefixed tag (e.g. "v4.5.0").
     let latest_version = latest_tag.strip_prefix('v').unwrap_or(&latest_tag);
 
     if latest_version == current_version {
@@ -4824,6 +4892,33 @@ fn cmd_update() {
     }
 
     println!("  Update available: {} -> {}", current_version, latest_tag);
+    if cfg!(windows) {
+        let install_dir = match std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|parent| parent.to_path_buf()))
+        {
+            Some(path) => path,
+            None => {
+                eprintln!("  error: could not determine the current install directory");
+                std::process::exit(1);
+            }
+        };
+
+        println!("  Launching the official PowerShell installer...");
+        match launch_windows_update(&latest_version, &install_dir) {
+            Ok(()) => {
+                println!(
+                    "  updater started; it will replace the binaries after this process exits."
+                );
+                return;
+            }
+            Err(e) => {
+                eprintln!("  error: failed to launch PowerShell installer: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     println!("  Running the official install script...");
 
     // Delegate to install.sh, which handles download, SHA-256 verification,
@@ -4858,10 +4953,8 @@ fn cmd_update() {
     // update takes effect for MCP servers and connector configs immediately.
     println!();
     println!("  Re-linking harnesses (graphiq sync --apply)...");
-    match std::process::Command::new("graphiq")
-        .args(["sync", "--apply"])
-        .status()
-    {
+    let mut sync_command = current_graphiq_command();
+    match sync_command.args(["sync", "--apply"]).status() {
         Ok(s) if s.success() => println!("  harnesses re-linked."),
         Ok(s) => eprintln!(
             "  warning: graphiq sync exited {} - run `graphiq sync --apply` manually",
@@ -4874,22 +4967,88 @@ fn cmd_update() {
     println!("  Done.");
 }
 
-fn fetch_latest_version(_client: &str) -> Result<String, String> {
-    let output = std::process::Command::new("curl")
+const WINDOWS_INSTALLER_URL: &str =
+    "https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.ps1";
+
+fn powershell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Start the Windows updater without waiting for it. Windows keeps an
+/// executable locked while it is running, so the installer waits for this
+/// process ID before atomically replacing the installed binaries.
+fn launch_windows_update(version: &str, install_dir: &std::path::Path) -> Result<(), String> {
+    let command = format!(
+        "$script = (Invoke-WebRequest -UseBasicParsing -Uri {}).Content; & ([scriptblock]::Create($script)) -Version {} -InstallDir {} -WaitForPid {}",
+        powershell_single_quote(WINDOWS_INSTALLER_URL),
+        powershell_single_quote(version),
+        powershell_single_quote(&install_dir.display().to_string()),
+        std::process::id(),
+    );
+
+    std::process::Command::new("powershell.exe")
         .args([
-            "-fsSL",
-            "--max-time",
-            "15",
-            "https://api.github.com/repos/aaf2tbz/graphiq/releases/latest",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &command,
         ])
-        .output()
-        .map_err(|e| format!("curl failed: {e}"))?;
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn fetch_latest_version(_client: &str) -> Result<String, String> {
+    let output = (if cfg!(windows) {
+        std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "(Invoke-RestMethod -Uri 'https://api.github.com/repos/aaf2tbz/graphiq/releases/latest').tag_name",
+            ])
+            .output()
+    } else {
+        std::process::Command::new("curl")
+            .args([
+                "-fsSL",
+                "--max-time",
+                "15",
+                "https://api.github.com/repos/aaf2tbz/graphiq/releases/latest",
+            ])
+            .output()
+    })
+        .map_err(|e| {
+            if cfg!(windows) {
+                format!("PowerShell failed: {e}")
+            } else {
+                format!("curl failed: {e}")
+            }
+        })?;
 
     if !output.status.success() {
         return Err("failed to fetch latest release info".into());
     }
 
-    let body = String::from_utf8_lossy(&output.stdout);
+    parse_release_tag(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_release_tag(body: &str) -> Result<String, String> {
+    let trimmed = body.trim();
+    if trimmed.starts_with('v') && !trimmed.contains('{') && !trimmed.contains('"') {
+        return Ok(trimmed.to_string());
+    }
+
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+        if let Some(version) = value.get("tag_name").and_then(|tag| tag.as_str()) {
+            if !version.is_empty() {
+                return Ok(version.to_string());
+            }
+        }
+    }
+
     for line in body.lines() {
         if line.contains("\"tag_name\"") {
             let version = line
@@ -5028,7 +5187,7 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let dir = tmp.join(".config").join("opencode");
+        let dir = opencode_config_dir(&tmp);
         std::fs::create_dir_all(&dir).unwrap();
 
         // Neither exists -> default to .jsonc (modern canonical).
@@ -5454,5 +5613,35 @@ mod tests {
         assert_eq!(format_unix_ts_iso(1782153600), "2026-06-22T18:40:00Z");
         // Unix epoch itself.
         assert_eq!(format_unix_ts_iso(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn toml_basic_string_escapes_windows_paths() {
+        assert_eq!(
+            toml_basic_string(r#"C:\Users\Avery\GraphIQ"#),
+            r#"C:\\Users\\Avery\\GraphIQ"#
+        );
+        assert_eq!(
+            toml_basic_string("line\nnext\tvalue"),
+            "line\\nnext\\tvalue"
+        );
+    }
+
+    #[test]
+    fn parse_release_tag_accepts_json_and_powershell_output() {
+        assert_eq!(
+            parse_release_tag(r#"{ "tag_name": "v4.5.0" }"#).unwrap(),
+            "v4.5.0"
+        );
+        assert_eq!(parse_release_tag("v4.5.0\r\n").unwrap(), "v4.5.0");
+        assert!(parse_release_tag("not a release").is_err());
+    }
+
+    #[test]
+    fn powershell_single_quote_escapes_embedded_quotes() {
+        assert_eq!(
+            powershell_single_quote("C:\\Avery's GraphIQ"),
+            "'C:\\Avery''s GraphIQ'"
+        );
     }
 }

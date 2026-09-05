@@ -49,8 +49,10 @@ The CLI surfaces index/search/blast plus lifecycle commands: `setup`, `sync`
 - **`macos-smoke.yml`** — builds natively on Apple Silicon, proves Metal index
   acceleration and hybrid search scoring, then verifies CPU fallback and result
   parity.
+- **`windows-smoke.yml`** — builds natively with MSVC, runs the CLI and MCP
+  protocol on Windows paths, and verifies the PowerShell installer.
 - **`release.yml`** — cross-builds macOS (arm64 + x86_64) and Linux (x86_64 +
-  aarch64) releases with SHA-256 checksums.
+  aarch64) plus Windows (x86_64 MSVC) releases with SHA-256 checksums.
 - **`auto-release.yml`** — tags the next version on every push to `main`.
 
 For Apple Silicon search measurements, build with the GPU feature and run:

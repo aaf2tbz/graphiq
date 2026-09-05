@@ -1,0 +1,174 @@
+name: Windows smoke
+
+# Validates the native Windows build, Windows path handling, setup/update
+# integration points, and the MCP stdio protocol. GPU availability is not a
+# property of the hosted runner, so the deterministic smoke path forces the
+# documented CPU fallback while the release build still includes the gpu feature.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: windows-2022
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build release (gpu feature)
+        run: cargo build --workspace --release --features gpu
+
+      - name: Run workspace tests
+        run: cargo test --workspace --features gpu
+
+      - name: Run Windows CLI and setup smoke
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = (Get-Location).Path
+          $graphiq = Join-Path $root 'target\release\graphiq.exe'
+          $mcp = Join-Path $root 'target\release\graphiq-mcp.exe'
+          $env:GRAPHIQ_DISABLE_GPU = '1'
+
+          $version = & $graphiq --version
+          if ($LASTEXITCODE -ne 0 -or $version -notmatch '^graphiq ') {
+            throw "graphiq --version failed: $version"
+          }
+
+          $fixture = Join-Path $env:RUNNER_TEMP 'graphiq Windows fixture with spaces'
+          Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path (Join-Path $fixture 'src') -Force | Out-Null
+          @'
+          pub struct RateLimiter { max: u32 }
+          impl RateLimiter {
+              pub fn check_rate(&self) -> bool { true }
+              pub fn reset(&self) {}
+          }
+          pub fn handle_request(rl: &RateLimiter) -> bool { rl.check_rate() }
+          '@ | Set-Content -LiteralPath (Join-Path $fixture 'src\lib.rs') -Encoding utf8
+
+          & git -C $fixture init --quiet
+          & git -C $fixture config user.email ci@example.invalid
+          & git -C $fixture config user.name 'GraphIQ CI'
+          & git -C $fixture add --all
+          & git -C $fixture commit --quiet -m init
+          if ($LASTEXITCODE -ne 0) { throw 'failed to create the Windows fixture repository' }
+
+          $db = Join-Path $fixture '.graphiq\graphiq.db'
+          & $graphiq index $fixture --db $db
+          if ($LASTEXITCODE -ne 0) { throw 'graphiq index failed on Windows' }
+
+          $search = (& $graphiq search 'rate limit' --db $db --top 3 | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $search -notmatch 'RateLimiter') {
+            throw "Windows search did not find RateLimiter: $search"
+          }
+
+          $status = (& $graphiq status --db $db | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $status -notmatch 'GPU: unavailable \(disabled by GRAPHIQ_DISABLE_GPU\)') {
+            throw "Windows status did not report the CPU fallback: $status"
+          }
+
+          # This exercises sibling graphiq-mcp.exe discovery, Windows command
+          # lookup, and the no-Unix-package-manager setup path.
+          & $graphiq setup --project $fixture --skip-index --persistent --harness claude-code
+          if ($LASTEXITCODE -ne 0) { throw 'graphiq setup failed on Windows' }
+          $configPath = Join-Path $fixture '.claude\.mcp.json'
+          $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+          if ($null -eq $config.mcpServers.graphiq) { throw 'setup did not write the Claude Code MCP entry' }
+          $configuredProject = [string]$config.mcpServers.graphiq.args[0]
+          # Rust canonicalize may use the Windows extended-path prefix; both
+          # spellings identify the same project and are accepted by the MCP.
+          if ($configuredProject.StartsWith('\\?\')) {
+            $configuredProject = $configuredProject.Substring(4)
+          }
+          if ($configuredProject -ne $fixture) { throw "setup wrote the wrong Windows project path: $configuredProject" }
+
+          $sync = (& $graphiq sync --project $fixture --harness claude-code | Out-String)
+          if ($LASTEXITCODE -ne 0 -or $sync -notmatch 'connected:') {
+            throw "graphiq sync did not verify the Windows MCP entry: $sync"
+          }
+
+          function Read-McpJsonLine([System.Diagnostics.Process]$Process) {
+            $read = $Process.StandardOutput.ReadLineAsync()
+            if (-not $read.Wait(10000)) { throw 'timed out waiting for MCP response' }
+            if ($null -eq $read.Result) { throw 'MCP exited before returning a response' }
+            return ($read.Result | ConvertFrom-Json)
+          }
+
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = $mcp
+          $quotedFixture = '"' + $fixture.Replace('"', '\"') + '"'
+          $quotedDb = '"' + $db.Replace('"', '\"') + '"'
+          $psi.Arguments = "$quotedFixture --db $quotedDb"
+          $psi.WorkingDirectory = $root
+          $psi.UseShellExecute = $false
+          $psi.CreateNoWindow = $true
+          $psi.RedirectStandardInput = $true
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $mcpProcess = New-Object System.Diagnostics.Process
+          $mcpProcess.StartInfo = $psi
+          [void]$mcpProcess.Start()
+          try {
+            $mcpProcess.StandardInput.WriteLine('{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci","version":"1"}}}')
+            $mcpProcess.StandardInput.WriteLine('{"jsonrpc":"2.0","method":"notifications/initialized"}')
+            $mcpProcess.StandardInput.WriteLine('{"jsonrpc":"2.0","id":2,"method":"ping"}')
+            $mcpProcess.StandardInput.WriteLine('{"jsonrpc":"2.0","id":3,"method":"shutdown"}')
+
+            $initialize = Read-McpJsonLine $mcpProcess
+            $ping = Read-McpJsonLine $mcpProcess
+            $shutdown = Read-McpJsonLine $mcpProcess
+            if ($initialize.id -ne 1 -or $initialize.result.serverInfo.name -ne 'graphiq') { throw 'invalid MCP initialize response on Windows' }
+            if ($ping.id -ne 2 -or $null -eq $ping.result) { throw 'invalid MCP ping response on Windows' }
+            if ($shutdown.id -ne 3) { throw 'invalid MCP shutdown response on Windows' }
+          } finally {
+            $mcpProcess.StandardInput.Close()
+            if (-not $mcpProcess.WaitForExit(10000)) {
+              $mcpProcess.Kill()
+              throw 'MCP process did not exit after stdin closed'
+            }
+            $mcpProcess.Dispose()
+          }
+
+      - name: Test PowerShell installer with the local release archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = (Get-Location).Path
+          $stage = Join-Path $env:RUNNER_TEMP 'graphiq Windows package'
+          $installDir = Join-Path $env:RUNNER_TEMP 'graphiq Windows install'
+          Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          foreach ($binary in @('graphiq.exe', 'graphiq-mcp.exe', 'graphiq-bench.exe')) {
+            Copy-Item -LiteralPath (Join-Path $root "target\release\$binary") -Destination (Join-Path $stage $binary)
+          }
+          $archiveName = 'graphiq-x86_64-pc-windows-msvc.zip'
+          $archive = Join-Path $stage $archiveName
+          Compress-Archive -Path (Join-Path $stage 'graphiq.exe'), (Join-Path $stage 'graphiq-mcp.exe'), (Join-Path $stage 'graphiq-bench.exe') -DestinationPath $archive -Force
+          $hash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archiveName" | Set-Content -LiteralPath ([IO.Path]::ChangeExtension($archive, 'sha256'))
+
+          & (Join-Path $root 'install.ps1') -ArchivePath $archive -InstallDir $installDir -NoPathUpdate -Version 'ci'
+          if (-not (Test-Path -LiteralPath (Join-Path $installDir 'graphiq.exe'))) {
+            throw 'PowerShell installer did not install graphiq.exe'
+          }
+          $installedVersion = & (Join-Path $installDir 'graphiq.exe') --version
+          if ($LASTEXITCODE -ne 0 -or $installedVersion -notmatch '^graphiq ') {
+            throw "installed Windows binary failed: $installedVersion"
+          }
+
+          & (Join-Path $root 'install.ps1') -Uninstall -InstallDir $installDir -NoPathUpdate
+          if (Test-Path -LiteralPath (Join-Path $installDir 'graphiq.exe')) {
+            throw 'PowerShell installer did not uninstall graphiq.exe'
+          }

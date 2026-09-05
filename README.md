@@ -13,6 +13,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge" alt="MIT License"></a>
   <a href="https://github.com/aaf2tbz/graphiq/actions/workflows/linux-smoke.yml"><img src="https://img.shields.io/github/actions/workflow/status/aaf2tbz/graphiq/linux-smoke.yml?branch=main&label=linux&style=for-the-badge" alt="Linux smoke"></a>
   <a href="https://github.com/aaf2tbz/graphiq/actions/workflows/macos-smoke.yml"><img src="https://img.shields.io/github/actions/workflow/status/aaf2tbz/graphiq/macos-smoke.yml?branch=main&label=macOS&style=for-the-badge" alt="macOS smoke"></a>
+  <a href="https://github.com/aaf2tbz/graphiq/actions/workflows/windows-smoke.yml"><img src="https://img.shields.io/github/actions/workflow/status/aaf2tbz/graphiq/windows-smoke.yml?branch=main&label=Windows&style=for-the-badge" alt="Windows smoke"></a>
 </p>
 
 
@@ -34,6 +35,18 @@ Or install a prebuilt binary on macOS or Linux:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.sh | bash
 ```
+
+On Windows, run the PowerShell installer:
+
+```powershell
+$installer = Join-Path $env:TEMP "graphiq-install.ps1"
+Invoke-WebRequest https://raw.githubusercontent.com/aaf2tbz/graphiq/main/install.ps1 -OutFile $installer
+powershell -ExecutionPolicy Bypass -File $installer
+Remove-Item $installer
+```
+
+The Windows installer places `graphiq.exe` and `graphiq-mcp.exe` in
+`%LOCALAPPDATA%\GraphIQ\bin` and adds that directory to the user PATH.
 
 ### Index and search
 
